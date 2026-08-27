@@ -1,0 +1,7 @@
+# Copy to /data/adb/router-storage.conf and chmod 600.
+VOLUME_UUID='<replace-with-blkid-uuid>'
+VOLUME_LABEL='ROUTER_DISK'
+COMPAT='/mnt/usb_disk'
+# SOURCE defaults to /mnt/media_rw/$VOLUME_UUID.
+# SOURCE='/mnt/media_rw/<replace-with-blkid-uuid>'
+# MOUNT_NTFS='/system_ext/bin/mount.ntfs'

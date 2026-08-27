@@ -1,0 +1,21 @@
+{
+    admin off
+    auto_https off
+}
+
+:6880 {
+    bind 0.0.0.0
+
+    handle /jsonrpc* {
+        reverse_proxy 127.0.0.1:6800
+    }
+
+    handle {
+        root * /data/data/com.termux/files/home/router-stack/www/ariang
+        file_server
+    }
+
+    log {
+        output discard
+    }
+}

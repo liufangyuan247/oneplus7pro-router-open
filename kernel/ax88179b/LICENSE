@@ -1,0 +1,10 @@
+SPDX-License-Identifier: GPL-2.0-only
+
+The Linux kernel compatibility patch and kernel-specific integration in this
+directory are distributed under GPL-2.0-only. The full license text is
+available in the Linux kernel source tree as COPYING and at:
+
+https://spdx.org/licenses/GPL-2.0-only.html
+
+The ASIX vendor source is not included. Obtain it from ASIX and follow the
+license terms shipped with that archive.

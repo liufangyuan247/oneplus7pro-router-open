@@ -1,0 +1,10 @@
+#!/data/data/com.termux/files/usr/bin/sh
+exec 2>&1
+export HOME='/data/data/com.termux/files/home' PREFIX='/data/data/com.termux/files/usr' PATH='/data/data/com.termux/files/usr/bin'
+
+# The active config is refreshed during installation. Thereafter update every
+# six hours; any network or subscription error leaves the last valid config.
+while :; do
+    sleep 21600
+    "$HOME/router-stack/bin/mihomo-update-subscription" || true
+done

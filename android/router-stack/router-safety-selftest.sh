@@ -1,0 +1,89 @@
+#!/system/bin/sh
+set -eu
+
+GUARD=/data/local/tmp/01-router-rollback-guard.sh
+SUPERVISOR=/data/local/tmp/22-router-network-safe.sh
+STABLE_MANAGER=/data/local/tmp/router-safety-fake-stable.sh
+FAILED_MANAGER=/data/local/tmp/router-safety-fake-failed.sh
+ROOT="$(mktemp -d /data/local/tmp/router-safety-test.XXXXXX)"
+BASE="$ROOT/base"
+SERVICE="$ROOT/22-router-network.sh"
+
+cleanup() {
+  if [ -s "$BASE/supervisor.pid" ]; then
+    kill "$(cat "$BASE/supervisor.pid" 2>/dev/null)" 2>/dev/null || true
+  fi
+  if [ -s "$BASE/manager.pid" ]; then
+    kill "$(cat "$BASE/manager.pid" 2>/dev/null)" 2>/dev/null || true
+  fi
+  case "$ROOT" in /data/local/tmp/router-safety-test.*) rm -rf "$ROOT" ;; esac
+}
+trap cleanup EXIT INT TERM
+
+mkdir -p "$BASE/runtime"
+cp "$SUPERVISOR" "$SERVICE"
+chmod 755 "$SERVICE"
+
+cp "$STABLE_MANAGER" "$BASE/router-network.backup"
+cp "$FAILED_MANAGER" "$BASE/router-network"
+chmod 700 "$BASE/router-network.backup" "$BASE/router-network"
+: > "$BASE/router-network.pending"
+: > "$BASE/router-network.trial"
+ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" /system/bin/sh "$GUARD"
+cmp -s "$BASE/router-network" "$BASE/router-network.backup"
+[ ! -e "$BASE/router-network.pending" ]
+[ ! -e "$BASE/router-network.trial" ]
+echo 'PASS previous-boot rollback'
+
+cp "$FAILED_MANAGER" "$BASE/router-network"
+chmod 700 "$BASE/router-network"
+: > "$BASE/router-network.pending"
+rm -f "$BASE/router-network.trial"
+ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" ROUTER_ROLLBACK_TIMEOUT=2 /system/bin/sh "$GUARD"
+sleep 3
+cmp -s "$BASE/router-network" "$BASE/router-network.backup"
+[ ! -e "$BASE/router-network.pending" ]
+echo 'PASS same-boot timeout rollback'
+
+cp "$STABLE_MANAGER" "$BASE/router-network"
+chmod 700 "$BASE/router-network"
+cp "$SERVICE" "$BASE/22-router-network.sh.backup"
+: > "$BASE/22-router-network.sh.pending"
+rm -f "$BASE/22-router-network.sh.trial"
+ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" ROUTER_SKIP_BOOT_WAIT=1 ROUTER_HEALTH_INTERVAL=1 ROUTER_HEALTH_SUCCESSES=2 ROUTER_HEALTH_TIMEOUT=5 /system/bin/sh "$SUPERVISOR" supervise &
+test_supervisor=$!
+sleep 4
+[ ! -e "$BASE/22-router-network.sh.pending" ]
+kill "$test_supervisor" 2>/dev/null || true
+[ ! -s "$BASE/manager.pid" ] || kill "$(cat "$BASE/manager.pid")" 2>/dev/null || true
+sleep 1
+echo 'PASS supervisor confirmation'
+
+cp "$STABLE_MANAGER" "$BASE/router-network"
+chmod 700 "$BASE/router-network"
+ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" ROUTER_SKIP_BOOT_WAIT=1 ROUTER_HEALTH_INTERVAL=1 ROUTER_HEALTH_SUCCESSES=2 ROUTER_HEALTH_TIMEOUT=5 /system/bin/sh "$SERVICE"
+sleep 2
+[ -s "$BASE/supervisor.pid" ]
+kill -0 "$(cat "$BASE/supervisor.pid")" 2>/dev/null
+[ -s "$BASE/manager.pid" ]
+kill -0 "$(cat "$BASE/manager.pid")" 2>/dev/null
+kill "$(cat "$BASE/supervisor.pid")" 2>/dev/null || true
+kill "$(cat "$BASE/manager.pid")" 2>/dev/null || true
+sleep 1
+echo 'PASS nonblocking service entrypoint'
+
+cp "$STABLE_MANAGER" "$BASE/router-network.backup"
+cp "$FAILED_MANAGER" "$BASE/router-network"
+chmod 700 "$BASE/router-network.backup" "$BASE/router-network"
+: > "$BASE/router-network.pending"
+: > "$BASE/router-network.trial"
+ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" ROUTER_SKIP_BOOT_WAIT=1 ROUTER_HEALTH_INTERVAL=1 ROUTER_HEALTH_SUCCESSES=2 ROUTER_HEALTH_TIMEOUT=4 /system/bin/sh "$SUPERVISOR" supervise &
+test_supervisor=$!
+sleep 4
+cmp -s "$BASE/router-network" "$BASE/router-network.backup"
+[ ! -e "$BASE/router-network.pending" ]
+kill "$test_supervisor" 2>/dev/null || true
+sleep 1
+echo 'PASS failed-manager rollback'
+
+echo ALL_TESTS_PASSED

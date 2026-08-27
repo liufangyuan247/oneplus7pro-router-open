@@ -1,0 +1,6 @@
+# Temporary bootstrap records for package installation while Android netd has
+# no framework-managed default network. Remove after the required packages are installed.
+127.0.0.1 localhost
+::1 ip6-localhost
+104.21.44.149 packages-cf.termux.dev
+5.75.242.194 packages.termux.dev

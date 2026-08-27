@@ -1,0 +1,3 @@
+# This file must contain exactly one subscription URL.
+# Store the real file at ~/router-data/mihomo/subscription.url with mode 600.
+https://subscription.example.invalid/replace-me

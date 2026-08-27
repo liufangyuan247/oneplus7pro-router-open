@@ -1,0 +1,33 @@
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:OP7_INPUT - [0:0]
+:OP7_FORWARD - [0:0]
+:OP7_OUTPUT - [0:0]
+-A OP7_INPUT -i eth1 -j ACCEPT
+-A OP7_INPUT -i ppp0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A OP7_INPUT -i ppp0 -j DROP
+-A OP7_FORWARD -i eth1 -o ppp0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+-A OP7_FORWARD -i eth1 -o ppp0 -j ACCEPT
+-A OP7_FORWARD -i ppp0 -o eth1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A OP7_FORWARD -i eth1 -o op7proxy -j ACCEPT
+-A OP7_FORWARD -i op7proxy -o eth1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A OP7_FORWARD -i eth1 -o eth0 -d 192.168.1.1/32 -j ACCEPT
+-A OP7_FORWARD -i ppp0 -o eth1 -j DROP
+-A OP7_OUTPUT -o eth+ -p udp --sport 68 --dport 67 -j DROP
+COMMIT
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+:OP7_DNS_OUTPUT - [0:0]
+:OP7_POSTROUTING - [0:0]
+-A OP7_DNS_OUTPUT -p udp -d 192.168.1.1/32 --dport 53 -j DNAT --to-destination 127.0.0.1:53
+-A OP7_DNS_OUTPUT -p tcp -d 192.168.1.1/32 --dport 53 -j DNAT --to-destination 127.0.0.1:53
+-A OP7_DNS_OUTPUT -p udp -d 192.168.3.1/32 --dport 53 -j DNAT --to-destination 127.0.0.1:53
+-A OP7_DNS_OUTPUT -p tcp -d 192.168.3.1/32 --dport 53 -j DNAT --to-destination 127.0.0.1:53
+-A OP7_POSTROUTING -s 192.168.2.0/24 -o ppp0 -j MASQUERADE
+-A OP7_POSTROUTING -s 192.168.2.0/24 -d 192.168.1.1/32 -o eth0 -j SNAT --to-source 192.168.1.2
+COMMIT

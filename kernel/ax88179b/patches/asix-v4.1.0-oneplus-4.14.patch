@@ -1,0 +1,67 @@
+diff --git a/drivers/net/usb/asix_ax88179b/ax_main.c b/drivers/net/usb/asix_ax88179b/ax_main.c
+--- a/drivers/net/usb/asix_ax88179b/ax_main.c
++++ b/drivers/net/usb/asix_ax88179b/ax_main.c
+@@ -1516,6 +1516,13 @@ static int ax_tx_poll_qx(struct ax_device *axdev, struct napi_struct *tx_napi,
+ 			!list_empty(&axdev->tx_free[queue_index]))
+ 			napi_schedule(tx_napi);
+ 	}
++	/*
++	 * One completed USB TX descriptor can account for several skbs and
++	 * therefore make work_done jump past budget.  NAPI poll callbacks must
++	 * never report more work than the weight supplied by the core.
++	 */
++	if (unlikely(work_done > budget))
++		work_done = budget;
+ 	return work_done;
+ }
+ #endif
+@@ -1548,5 +1548,8 @@ static void ax_tx_timeout(struct net_device *netdev)
+ #endif
+ {
+ 	struct ax_device *axdev = netdev_priv(netdev);
++#if KERNEL_VERSION(5, 6, 0) > LINUX_VERSION_CODE
++	unsigned int txqueue = 0;
++#endif
+ 
+ 	netif_warn(axdev, tx_err, netdev, "Tx timeout\n");
+@@ -1561,9 +1564,11 @@ static void ax_tx_timeout(struct net_device *netdev)
+ }
+ 
+ static u16 ax_select_queue(struct net_device *netdev, struct sk_buff *skb,
+-			   struct net_device *sb_dev)
++			   void *accel_priv, select_queue_fallback_t fallback)
+ {
+ 	struct ax_device *axdev = netdev_priv(netdev);
++	(void)accel_priv;
++	(void)fallback;
+ 	
+ #ifdef ENABLE_QUEUE_PRIORITY
+ 	struct ax_link_info *link_info = &axdev->link_info;
+@@ -1602,7 +1606,7 @@ static unsigned char *get_raw_buff_data(struct ax_device *axdev,
+ 		page = skb_frag_page(frag);
+ 		mapped_page = kmap_atomic(page);
+ 
+-		buff = (unsigned char *)(mapped_page + skb_frag_off(frag));
++		buff = (unsigned char *)(mapped_page + frag->page_offset);
+ 
+ 		switch (ntohs(skb->protocol)) {
+ 		case 0x0800:
+@@ -2700,2 +2705,4 @@ static int ax_pre_reset(struct usb_interface *intf)
+ #endif
++	/* A USB reset invalidates every outstanding endpoint request. */
++	ax_disable(axdev);
+ 	return 0;
+@@ -2721,13 +2728,6 @@ static int ax_post_reset(struct usb_interface *intf)
+ 		mutex_unlock(&axdev->control);
+ 	}
+ 	
+-	for (i = 0; i < axdev->driver_info->tx_num; i++)
+-#ifdef ENABLE_TX_TASKLET
+-		tasklet_disable(&axdev->tx_tl[i]);
+-#else
+-		napi_enable(&axdev->tx_napi[i]);
+-#endif
+-
+ #ifdef ENABLE_RX_TASKLET
+ 	tasklet_enable(&axdev->rx_tl);
+ #else

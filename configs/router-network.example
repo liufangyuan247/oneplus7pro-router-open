@@ -1,0 +1,26 @@
+# Copy to /data/adb/router-network/config and chmod 600.
+# Never commit the populated copy.
+
+# Identify the permanent WAN in this order: MAC, physical USB path, VID/PID.
+# Prefer WAN_USB_PORT for a fixed hub and use WAN_MAC only in the private file.
+WAN_MAC=''
+WAN_USB_PORT='2-1.4'
+WAN_VIDPID='bda/8153'
+
+# LAN is selected dynamically from the remaining USB Ethernet interfaces.
+LAN_MAC=''
+LAN_MODE='auto'
+
+PPPOE_USER='<replace-me>'
+PPPOE_PASS='<replace-me>'
+
+LAN_ADDRESS='192.168.2.1/24'
+LAN_SUBNET='192.168.2.0/24'
+MODEM_ADDRESS='192.168.1.2/24'
+MODEM_SUBNET='192.168.1.0/24'
+DNSMASQ_HOSTS_FILE='/data/adb/router-network/dnsmasq-hosts.conf'
+
+PROXY_ENABLED='0'
+DISABLE_WIFI_ON_ACTIVE='1'
+PPP_TXQUEUELEN='1024'
+PPP_QDISC='auto'

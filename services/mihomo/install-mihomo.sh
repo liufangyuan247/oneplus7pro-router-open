@@ -1,0 +1,199 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -eu
+
+PREFIX=/data/data/com.termux/files/usr
+HOME=/data/data/com.termux/files/home
+STACK="$HOME/router-stack"
+DATA="$HOME/router-data/mihomo"
+SERVICE="$STACK/services/mihomo"
+UPDATER_SERVICE="$STACK/services/mihomo-updater"
+STAGE="$HOME/.stage"
+BACKUPS="$HOME/router-data/backups/mihomo"
+
+for file in mihomo mihomo-config.base.yaml mihomo-update-subscription mihomo-updater-run mihomo-run-root metacubexd-ui.tar.gz metacubexd-config.js; do
+    [ -s "$STAGE/$file" ] || { echo "missing staged $file" >&2; exit 1; }
+done
+
+STAMP=$(date '+%Y%m%d-%H%M%S')
+BACKUP="$BACKUPS/$STAMP"
+mkdir -p "$BACKUP" "$DATA" "$SERVICE/log/main" "$UPDATER_SERVICE/log/main"
+chmod 700 "$DATA" "$BACKUP"
+
+[ -f "$PREFIX/bin/mihomo" ] && cp -p "$PREFIX/bin/mihomo" "$BACKUP/mihomo"
+[ -f "$DATA/config.yaml" ] && cp -p "$DATA/config.yaml" "$BACKUP/config.yaml"
+[ -f "$DATA/runtime-settings.yaml" ] && cp -p "$DATA/runtime-settings.yaml" "$BACKUP/runtime-settings.yaml"
+[ -f "$DATA/runtime-mode" ] && cp -p "$DATA/runtime-mode" "$BACKUP/runtime-mode"
+[ -f "$DATA/subscription.url" ] && cp -p "$DATA/subscription.url" "$BACKUP/subscription.url"
+[ -f "$HOME/router-data/cpa/config.yaml" ] && cp -p "$HOME/router-data/cpa/config.yaml" "$BACKUP/cpa-config.yaml"
+
+cp "$STAGE/mihomo" "$PREFIX/bin/mihomo.new"
+chmod 700 "$PREFIX/bin/mihomo.new"
+mv "$PREFIX/bin/mihomo.new" "$PREFIX/bin/mihomo"
+
+if [ ! -s "$DATA/config.yaml" ]; then
+    cp "$STAGE/mihomo-config.base.yaml" "$DATA/config.yaml"
+fi
+if [ ! -s "$DATA/runtime-settings.yaml" ]; then
+    cat > "$DATA/runtime-settings.yaml" <<'EOF'
+mixed-port: 17890
+port: 0
+socks-port: 0
+redir-port: 0
+tproxy-port: 0
+allow-lan: false
+bind-address: 127.0.0.1
+EOF
+fi
+# Keep the generic listener on MATCH,DIRECT. CPA uses the dedicated
+# codex-cpa listener, whose outbound is pinned to the Codex-日本 group.
+printf 'rule\n' > "$DATA/runtime-mode"
+if [ -s "$STAGE/mihomo-subscription.url" ] && [ ! -s "$DATA/subscription.url" ]; then
+    cp "$STAGE/mihomo-subscription.url" "$DATA/subscription.url"
+fi
+
+for file in GeoSite.dat geoip.metadb; do
+    if [ -s "$STAGE/$file" ] && [ ! -s "$DATA/$file" ]; then
+        cp "$STAGE/$file" "$DATA/$file"
+    fi
+done
+
+UI_NEW="$DATA/ui.new"
+case "$UI_NEW" in "$DATA"/*) ;; *) echo 'unsafe UI path' >&2; exit 1 ;; esac
+rm -rf "$UI_NEW"
+mkdir -p "$UI_NEW"
+tar -xzf "$STAGE/metacubexd-ui.tar.gz" -C "$UI_NEW"
+[ -s "$UI_NEW/index.html" ] || { echo 'invalid MetaCubeXD archive' >&2; exit 1; }
+cp "$STAGE/metacubexd-config.js" "$UI_NEW/config.js"
+rm -rf "$DATA/ui.prev"
+[ -d "$DATA/ui" ] && mv "$DATA/ui" "$DATA/ui.prev"
+mv "$UI_NEW" "$DATA/ui"
+
+cp "$STAGE/mihomo-update-subscription" "$STACK/bin/mihomo-update-subscription.new"
+chmod 700 "$STACK/bin/mihomo-update-subscription.new"
+mv "$STACK/bin/mihomo-update-subscription.new" "$STACK/bin/mihomo-update-subscription"
+
+cp "$STAGE/mihomo-run-root" "$SERVICE/run"
+
+cat > "$SERVICE/log/run" <<EOF
+#!/data/data/com.termux/files/usr/bin/sh
+exec '$PREFIX/bin/svlogd' -tt '$SERVICE/log/main'
+EOF
+
+cat > "$SERVICE/log/main/config" <<'EOF'
+s1048576
+n5
+EOF
+
+cat > "$SERVICE/finish" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/sh
+sleep 3
+EOF
+
+cp "$STAGE/mihomo-updater-run" "$UPDATER_SERVICE/run"
+cat > "$UPDATER_SERVICE/log/run" <<EOF
+#!/data/data/com.termux/files/usr/bin/sh
+exec '$PREFIX/bin/svlogd' -tt '$UPDATER_SERVICE/log/main'
+EOF
+cat > "$UPDATER_SERVICE/log/main/config" <<'EOF'
+s1048576
+n3
+EOF
+cat > "$UPDATER_SERVICE/finish" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/sh
+sleep 10
+EOF
+
+chmod 600 "$DATA/config.yaml" "$DATA/runtime-settings.yaml" "$DATA/runtime-mode"
+[ ! -f "$DATA/subscription.url" ] || chmod 600 "$DATA/subscription.url"
+chmod 700 "$SERVICE/run" "$SERVICE/finish" "$SERVICE/log/run"
+chmod 700 "$UPDATER_SERVICE/run" "$UPDATER_SERVICE/finish" "$UPDATER_SERVICE/log/run"
+rm -f "$SERVICE/down" "$UPDATER_SERVICE/down"
+
+"$PREFIX/bin/mihomo" -t -d "$DATA" -f "$DATA/config.yaml"
+if [ -s "$DATA/subscription.url" ]; then
+    "$STACK/bin/mihomo-update-subscription"
+else
+    "$PREFIX/bin/sv" up "$SERVICE"
+fi
+"$PREFIX/bin/sv" up "$UPDATER_SERVICE"
+
+ready=0
+attempt=0
+while [ "$attempt" -lt 20 ]; do
+    if "$PREFIX/bin/curl" -fsS --max-time 2 http://127.0.0.1:9091/version >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
+[ "$ready" -eq 1 ] || { echo 'Mihomo failed its local health check' >&2; exit 1; }
+
+HEALTHD="$STACK/bin/healthd"
+if [ -f "$HEALTHD" ] && ! grep -q 'probe mihomo ' "$HEALTHD"; then
+    cp -p "$HEALTHD" "$BACKUP/healthd"
+    "$PREFIX/bin/awk" '
+    /^  sleep 60$/ && !done {
+        print "  if [ -d \"$SERVICES/mihomo\" ] && [ ! -f \"/data/data/com.termux/files/home/router-data/mihomo/disabled\" ]; then"
+        print "    probe mihomo curl -fsS --max-time 5 http://127.0.0.1:9091/version"
+        print "  fi"
+        done=1
+    }
+    { print }
+    ' "$HEALTHD" > "$HEALTHD.new"
+    "$PREFIX/bin/sh" -n "$HEALTHD.new"
+    chmod 700 "$HEALTHD.new"
+    mv "$HEALTHD.new" "$HEALTHD"
+    "$PREFIX/bin/sv" restart "$STACK/services/healthd" >/dev/null 2>&1 || true
+fi
+
+CPA_CONFIG="$HOME/router-data/cpa/config.yaml"
+EGRESS_CODE=$("$PREFIX/bin/curl" -sS --connect-timeout 8 --max-time 20 \
+    --proxy socks5h://127.0.0.1:17891 \
+    --output /dev/null --write-out '%{http_code}' \
+    https://api.openai.com/v1/models 2>/dev/null || true)
+case "$EGRESS_CODE" in
+    2??|3??|4??) EGRESS_READY=1 ;;
+    *) EGRESS_READY=0 ;;
+esac
+
+if [ -s "$CPA_CONFIG" ] && [ "$EGRESS_READY" -eq 1 ]; then
+    "$PREFIX/bin/awk" '
+    /^usage-statistics-enabled:[[:space:]]*/ { print "usage-statistics-enabled: true"; usage=1; next }
+    /^proxy-url:[[:space:]]*/ { print "proxy-url: \"socks5://127.0.0.1:17891\""; proxy=1; next }
+    { print }
+    END {
+        if (!usage) print "usage-statistics-enabled: true"
+        if (!proxy) print "proxy-url: \"socks5://127.0.0.1:17891\""
+    }
+    ' "$CPA_CONFIG" > "$CPA_CONFIG.new"
+    chmod 600 "$CPA_CONFIG.new"
+    mv "$CPA_CONFIG.new" "$CPA_CONFIG"
+    "$PREFIX/bin/sv" restart "$STACK/services/cpa" >/dev/null 2>&1 || true
+    cpa_ready=0
+    attempt=0
+    while [ "$attempt" -lt 15 ]; do
+        if "$PREFIX/bin/curl" -fsS --max-time 2 http://127.0.0.1:8317/ >/dev/null 2>&1; then
+            cpa_ready=1
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    if [ "$cpa_ready" -ne 1 ]; then
+        cp -p "$BACKUP/cpa-config.yaml" "$CPA_CONFIG"
+        "$PREFIX/bin/sv" restart "$STACK/services/cpa" >/dev/null 2>&1 || true
+        echo 'CPA rejected the proxy configuration; restored previous config' >&2
+        exit 1
+    fi
+elif [ -s "$CPA_CONFIG" ]; then
+    echo 'Mihomo is running but its OpenAI egress is not ready; CPA configuration was left unchanged' >&2
+fi
+
+rm -f "$STAGE/mihomo" "$STAGE/mihomo-config.base.yaml" \
+    "$STAGE/mihomo-update-subscription" "$STAGE/mihomo-updater-run" \
+    "$STAGE/metacubexd-ui.tar.gz" "$STAGE/metacubexd-config.js" \
+    "$STAGE/mihomo-subscription.url" "$STAGE/GeoSite.dat" "$STAGE/geoip.metadb"
+
+printf '%s\n' "$BACKUP" > "$DATA/last-install-backup"
+echo MIHOMO_INSTALLED

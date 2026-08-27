@@ -1,0 +1,15 @@
+source_commit=5c3a4299de5522b86304ae2daaeb1eedd63c6c24
+kernel_release=4.14.190-perf+
+module_vermagic=4.14.190-perf+ SMP preempt mod_unload modversions aarch64
+compiler=Android (6305083 based on r377782c) clang version 10.0.5 (https://android.googlesource.com/toolchain/llvm-project 0cb1afdb060d6619a9837ab6866cf4adf2336416)
+config_asix=CONFIG_ASIX_AX_USB_NIC=y
+config_fq_codel=CONFIG_NET_SCH_FQ_CODEL=m
+stability_fix=clamp AX TX NAPI poll return to budget
+filename:       /work/build/ax88179b/net/sched/sch_fq_codel.ko
+author:         Eric Dumazet
+license:        GPL
+vermagic:       4.14.190-perf+ SMP preempt mod_unload modversions aarch64
+name:           sch_fq_codel
+depends:
+/work/build/ax88179b/arch/arm64/boot/Image:     data
+/work/build/ax88179b/net/sched/sch_fq_codel.ko: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV), BuildID[sha1]=b1cbe825bb2a7c9e2c1bb9e46262552a55ecc852, with debug_info, not stripped

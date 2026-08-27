@@ -1,0 +1,27 @@
+services:
+  kernel-builder:
+    build:
+      context: build-env
+      dockerfile: Dockerfile
+    image: oneplus7pro-kernel-builder:ubuntu18.04-v1
+    working_dir: /project
+    environment:
+      OP7P_PROJECT_ROOT: /project
+      OP7P_WORK_ROOT: /work
+      OP7P_ARTIFACTS: /artifacts
+      OP7P_BUILD_JOBS: ${OP7P_BUILD_JOBS:-8}
+    volumes:
+      - type: bind
+        source: .
+        target: /project
+        read_only: true
+      - type: volume
+        source: kernel-work
+        target: /work
+      - type: bind
+        source: ./06-artifacts
+        target: /artifacts
+
+volumes:
+  kernel-work:
+    name: oneplus7pro-oos11-ax88179b-work

@@ -1,0 +1,58 @@
+mixed-port: 17890
+allow-lan: false
+bind-address: 127.0.0.1
+port: 0
+socks-port: 0
+redir-port: 0
+tproxy-port: 0
+mode: rule
+log-level: info
+ipv6: false
+unified-delay: true
+tcp-concurrent: true
+find-process-mode: off
+geodata-loader: memconservative
+
+external-controller: 127.0.0.1:9091
+secret: ""
+external-ui: ui
+
+profile:
+  store-selected: true
+  store-fake-ip: false
+
+sniffer:
+  enable: true
+  force-dns-mapping: true
+  parse-pure-ip: true
+  sniff:
+    HTTP:
+      ports: [80, 8080-8880]
+      override-destination: true
+    TLS:
+      ports: [443, 8443]
+    QUIC:
+      ports: [443, 8443]
+
+dns:
+  enable: false
+
+tun:
+  enable: false
+
+listeners:
+  - name: codex-cpa
+    type: mixed
+    listen: 127.0.0.1
+    port: 17891
+    proxy: Codex-日本
+    udp: true
+
+proxy-groups:
+  - name: Codex-日本
+    type: select
+    include-all-proxies: true
+    filter: "(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)"
+
+rules:
+  - MATCH,DIRECT

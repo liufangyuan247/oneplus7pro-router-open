@@ -1,0 +1,61 @@
+#!/data/data/com.termux/files/usr/bin/sh
+exec 2>&1
+export HOME='/data/data/com.termux/files/home'
+export PREFIX='/data/data/com.termux/files/usr'
+export PATH='/data/data/com.termux/files/usr/bin:/system/bin'
+export TMPDIR='/data/data/com.termux/files/usr/tmp'
+
+DATA="$HOME/router-data/mihomo"
+CORE="$PREFIX/bin/mihomo"
+CONFIG="$DATA/config.yaml"
+PIDFILE="$DATA/supervised-core.pid"
+SU="$PREFIX/bin/su"
+SU_PID=''
+
+core_matches() {
+  pid="$1"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  "$SU" -c "test -r /proc/$pid/cmdline && tr '\\000' ' ' < /proc/$pid/cmdline" 2>/dev/null |
+    grep -Fq "$CONFIG"
+}
+
+stop_core() {
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if core_matches "$pid"; then
+    "$SU" -c "kill -TERM $pid" >/dev/null 2>&1 || true
+    attempt=0
+    while core_matches "$pid" && [ "$attempt" -lt 20 ]; do
+      sleep 1
+      attempt=$((attempt + 1))
+    done
+    core_matches "$pid" && "$SU" -c "kill -KILL $pid" >/dev/null 2>&1 || true
+  fi
+  rm -f "$PIDFILE"
+}
+
+shutdown() {
+  trap - INT TERM HUP EXIT
+  stop_core
+  [ -z "$SU_PID" ] || kill "$SU_PID" >/dev/null 2>&1 || true
+  exit 0
+}
+trap shutdown INT TERM HUP
+trap stop_core EXIT
+
+# Never adopt or kill an unverified process from a stale PID file.
+old_pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+if core_matches "$old_pid"; then
+  echo "refusing to start beside existing supervised Mihomo pid=$old_pid"
+  exit 1
+fi
+rm -f "$PIDFILE"
+
+# Magisk su reparents its root command to the daemon, so runit cannot signal
+# the core directly. The root shell records the PID it will retain across
+# exec; this wrapper traps runit shutdown and explicitly terminates that PID.
+"$SU" -c "umask 077; echo \$\$ > '$PIDFILE'; chown 10207:10207 '$PIDFILE'; chmod 600 '$PIDFILE'; exec '$CORE' -d '$DATA' -f '$CONFIG'" &
+SU_PID=$!
+wait "$SU_PID"
+status=$?
+SU_PID=''
+exit "$status"

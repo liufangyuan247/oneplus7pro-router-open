@@ -1,0 +1,30 @@
+#!/data/data/com.termux/files/usr/bin/sh
+exec 2>&1
+export HOME='/data/data/com.termux/files/home'
+export PREFIX='/data/data/com.termux/files/usr'
+export PATH='/data/data/com.termux/files/usr/bin'
+export TMPDIR='/data/data/com.termux/files/usr/tmp'
+export SSL_CERT_FILE='/data/data/com.termux/files/usr/etc/tls/cert.pem'
+
+# OpenList probes offline-download backends only during startup. Wait briefly
+# for aria2 so parallel runit startup cannot leave the Aria2 tool unavailable
+# for the entire OpenList process lifetime.
+aria_conf="$HOME/router-data/aria2/aria2.conf"
+attempt=0
+while [ "$attempt" -lt 15 ]; do
+  aria_secret=$(sed -n 's/^rpc-secret=//p' "$aria_conf" 2>/dev/null | head -n 1)
+  if [ -n "$aria_secret" ] && curl -fsS --max-time 2 \
+    -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"openlist-start\",\"method\":\"aria2.getVersion\",\"params\":[\"token:$aria_secret\"]}" \
+    http://127.0.0.1:6800/jsonrpc >/dev/null 2>&1; then
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 2
+done
+
+if [ "$attempt" -ge 15 ]; then
+  echo 'OpenList startup: aria2 was not ready after 30 seconds; continuing without it'
+fi
+
+exec '/data/data/com.termux/files/usr/bin/openlist' server --data '/data/data/com.termux/files/home/router-data/openlist' --log-std
