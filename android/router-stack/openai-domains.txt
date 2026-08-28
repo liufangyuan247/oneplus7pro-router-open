@@ -1,0 +1,26 @@
+# Exact hostnames used to build trusted DNS answers and IPv4 policy routes.
+# Keep parent domains too: Mihomo uses this same file for DOMAIN-SUFFIX rules.
+openai.com
+api.openai.com
+auth.openai.com
+auth0.openai.com
+platform.openai.com
+files.openai.com
+chat.openai.com
+ios.chat.openai.com
+android.chat.openai.com
+chatgpt.com
+ab.chatgpt.com
+cdn.oaistatic.com
+persistent.oaistatic.com
+oaistatic.com
+files.oaiusercontent.com
+oaiusercontent.com
+
+# CPA Antigravity: model/control plane, OAuth refresh and identity lookup.
+cloudcode-pa.googleapis.com
+daily-cloudcode-pa.googleapis.com
+daily-cloudcode-pa.sandbox.googleapis.com
+oauth2.googleapis.com
+www.googleapis.com
+antigravity-hub-auto-updater-974169037036.us-central1.run.app

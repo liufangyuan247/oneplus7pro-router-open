@@ -15,6 +15,7 @@ LOCK="$DATA/.subscription-update.lock"
 WORK="$DATA/.subscription-update.$$"
 SOCAT="$PREFIX/bin/socat"
 CORE_PIDFILE="$DATA/supervised-core.pid"
+OPENAI_DOMAINS=/data/adb/router-network/openai-domains
 
 [ -s "$URL_FILE" ] || { echo 'subscription URL is not configured' >&2; exit 1; }
 if ! mkdir "$LOCK" 2>/dev/null; then
@@ -23,6 +24,12 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 mkdir -p "$WORK"
 trap 'rm -rf "$WORK" "$LOCK"' EXIT INT TERM
+DOMAIN_SNAPSHOT="$WORK/openai-domains"
+"$PREFIX/bin/su" -c "cat $OPENAI_DOMAINS" > "$DOMAIN_SNAPSHOT" 2>/dev/null || {
+    echo 'shared OpenAI domain list is missing or unreadable' >&2
+    exit 1
+}
+[ -s "$DOMAIN_SNAPSHOT" ] || { echo 'shared OpenAI domain list is empty' >&2; exit 1; }
 
 MODE=rule
 if [ -s "$MODE_FILE" ]; then
@@ -49,14 +56,26 @@ ADAPTED="$WORK/adapted.yaml"
 function top_level(line) { return line ~ /^[A-Za-z0-9_-]+:[[:space:]]*/ }
 function emit_codex_groups(indent, child) {
     child=indent "  "
+    print indent "- name: \"Codex-日本自动\""
+    print child "type: url-test"
+    print child "include-all-proxies: true"
+    print child "filter: \"(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)\""
+    print child "exclude-filter: \"(?i)日本.*04\""
+    print child "url: https://chatgpt.com/cdn-cgi/trace"
+    print child "interval: 30"
+    print child "tolerance: 1000"
+    print child "lazy: false"
+    print child "timeout: 5000"
+    print child "max-failed-times: 2"
     print indent "- name: \"Codex-日本\""
     print child "type: select"
+    print child "proxies: [\"Codex-日本自动\"]"
     print child "include-all-proxies: true"
     print child "filter: \"(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)\""
 }
 function emit_codex_listener() {
     print "listeners:"
-    print "  - name: codex-cpa"
+    print "  - name: openai-selective"
     print "    type: mixed"
     print "    listen: 127.0.0.1"
     print "    port: 17891"
@@ -162,6 +181,57 @@ END {
     if (!profile) { print "profile:"; print "  store-selected: true"; print "  store-fake-ip: false" }
 }
 ' "$RAW" > "$ADAPTED"
+
+# Prepend the shared OpenAI rules ahead of subscription-provided rules. The
+# 17891 listener is used by the selective TUN, while these rules keep the
+# generic 17890/full-house path on the exact same Codex-日本 policy group.
+WITH_OPENAI_RULES="$WORK/with-openai-rules.yaml"
+"$PREFIX/bin/awk" '
+function emit_openai_rules(indent) {
+    for (i=1; i<=domain_count; i++)
+        print indent "- DOMAIN-SUFFIX," domains[i] ",Codex-日本"
+}
+NR == FNR {
+    line=$0
+    sub(/[[:space:]]*#.*/, "", line)
+    gsub(/\r/, "", line)
+    if (line != "" && !(line in seen_domain)) {
+        domains[++domain_count]=line
+        seen_domain[line]=1
+    }
+    next
+}
+!saw_rules && /^rules:[[:space:]]*$/ {
+    print
+    saw_rules=1
+    rules_pending=1
+    next
+}
+rules_pending {
+    if ($0 ~ /^[[:space:]]*-/) {
+        indent=$0
+        sub(/[^[:space:]].*$/, "", indent)
+        emit_openai_rules(indent)
+        rules_pending=0
+        inserted=1
+    } else if ($0 ~ /^[A-Za-z0-9_-]+:[[:space:]]*/) {
+        emit_openai_rules("  ")
+        rules_pending=0
+        inserted=1
+    }
+}
+{ print }
+END {
+    if (rules_pending) {
+        emit_openai_rules("  ")
+    } else if (!saw_rules) {
+        print "rules:"
+        emit_openai_rules("  ")
+        print "  - MATCH,DIRECT"
+    }
+}
+' "$DOMAIN_SNAPSHOT" "$ADAPTED" > "$WITH_OPENAI_RULES"
+mv "$WITH_OPENAI_RULES" "$ADAPTED"
 
 if [ -s "$SETTINGS" ]; then
     WITH_SETTINGS="$WORK/with-settings.yaml"
@@ -282,10 +352,13 @@ if ! activate_target; then
     exit 1
 fi
 
-# Refresh the direct endpoint set only when transparent routing is enabled.
-# This keeps LAN clients running their own Clash from being nested after a
-# subscription changes, while leaving the normal direct state untouched.
+# Refresh the shared OpenAI target set after node or rule changes. This is
+# independent of the optional whole-home proxy.
 MANAGER=/data/adb/router-network/router-network
+if "$PREFIX/bin/su" -c "$MANAGER status" 2>/dev/null | grep -q '^codex_selective_proxy=enabled$'; then
+    "$PREFIX/bin/su" -c "$MANAGER codex-refresh" >/dev/null 2>&1 || \
+        echo 'warning: OpenAI selective route refresh will be retried by the network manager' >&2
+fi
 if "$PREFIX/bin/su" -c "$MANAGER status" 2>/dev/null | grep -q '^whole_home_proxy=enabled$'; then
     "$PREFIX/bin/su" -c "$MANAGER proxy-refresh" >/dev/null 2>&1 || \
         echo 'warning: whole-home endpoint bypass refresh will be retried by the network manager' >&2

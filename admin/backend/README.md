@@ -54,6 +54,14 @@ The screen toolbar can explicitly wake and dismiss an unsecured swipe lock, or
 put the display back to sleep. A configured PIN, pattern, or password is never
 bypassed.
 
+Text clipboard sharing is bidirectional. With the screen focused, `Ctrl+V`
+copies the browser clipboard to Android and pastes it into the focused field.
+Android clipboard changes are returned to the dashboard; HTTPS pages try to
+write them to the browser clipboard automatically, while the LAN HTTP page
+offers a **复制手机剪切板** button because browsers forbid silent clipboard
+access in an insecure context. Clipboard payloads sent by the browser are
+limited to 240 KiB so they remain below the screen WebSocket read limit.
+
 Every dashboard deployment stores the previous binary, static site and scrcpy
 server under `router-data/backups/router-admin/<timestamp>`. The installer
 checks both the health API and the static home page after restarting; if either

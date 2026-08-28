@@ -81,6 +81,12 @@ full_health() {
   ppp="$(sed -n 's/^ppp=//p' "$BASE/runtime/supervisor-status.$$" | head -n 1)"
   [ -n "$ppp" ] && [ "$ppp" != down ] || return 1
   /system/bin/ip -4 route show table 100 2>/dev/null | grep -q "^default dev $ppp" || return 1
+  if grep -q '^codex_selective_proxy=enabled$' "$BASE/runtime/supervisor-status.$$"; then
+    grep -q '^codex_tun=up$' "$BASE/runtime/supervisor-status.$$" || return 1
+    grep -q '^codex_policy=active$' "$BASE/runtime/supervisor-status.$$" || return 1
+    targets="$(sed -n 's/^codex_targets=//p' "$BASE/runtime/supervisor-status.$$" | head -n 1)"
+    case "$targets" in ''|*[!0-9]*|0) return 1 ;; esac
+  fi
   return 0
 }
 

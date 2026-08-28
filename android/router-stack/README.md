@@ -152,6 +152,37 @@ adapter as LAN. At the 2026-08-26 snapshot this resolves to `eth0` WAN,
 AX88179B `eth1` LAN, `ppp0` Internet and `192.168.2.1/24` management LAN. The
 policy does not rely on the replaceable LAN adapter's `ethX` name.
 
+## OpenAI and Antigravity selective routing
+
+OpenAI and CPA Antigravity traffic is handled independently from the optional
+whole-home proxy. With `PROXY_ENABLED=0` and `CODEX_PROXY_ENABLED=1`, the
+manager resolves the hostnames in `openai-domains.txt` through the router's
+Japanese Mihomo egress, publishes those trusted answers through dnsmasq, and
+installs only their IPv4 routes in table 102 via `op7codex`. Both forwarded LAN
+traffic and router-local CPA traffic use this table. Root-owned Mihomo sockets
+bypass it through table 100 to prevent a proxy loop.
+
+The main dnsmasq forwards this namespace to a dedicated instance on
+`127.0.0.1:5354`. Its trusted Cloudflare DNS upstreams use priority-8018 rules
+through `op7codex`, ahead of the root-process bypass. The dedicated instance
+filters AAAA because the router's selective path is IPv4-only; other DNS
+namespaces are unaffected.
+
+Useful checks:
+
+```sh
+/data/adb/router-network/router-network status
+/data/adb/router-network/router-network codex-refresh
+ip -4 route show table 102
+ip rule show priority 8018
+drill -p 5354 @127.0.0.1 chatgpt.com AAAA
+```
+
+The expected state is `whole_home_proxy=disabled`,
+`codex_selective_proxy=enabled`, `codex_tun=up`, `codex_dns=up`, and
+`codex_policy=active`. Trusted DNS addresses are retained as last-known-good
+values during a temporary resolver or node outage.
+
 ## Current stability state
 
 - The phone is temporarily running the v3 custom kernel through `fastboot

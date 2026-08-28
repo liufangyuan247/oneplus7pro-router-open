@@ -1,0 +1,30 @@
+# Profile Enhancement Rules Template for Clash Verge
+# OpenAI and CPA Antigravity -> one router-owned group, DIRECT by default.
+
+prepend:
+  - DOMAIN-SUFFIX,openai.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,api.openai.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,auth.openai.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,auth0.openai.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,platform.openai.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,files.openai.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,chat.openai.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,ios.chat.openai.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,android.chat.openai.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,chatgpt.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,ab.chatgpt.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,cdn.oaistatic.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,persistent.oaistatic.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,oaistatic.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,files.oaiusercontent.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,oaiusercontent.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,cloudcode-pa.googleapis.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,daily-cloudcode-pa.googleapis.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,daily-cloudcode-pa.sandbox.googleapis.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,oauth2.googleapis.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,www.googleapis.com,AI-OpenAI-Antigravity
+  - DOMAIN-SUFFIX,antigravity-hub-auto-updater-974169037036.us-central1.run.app,AI-OpenAI-Antigravity
+
+append: []
+
+delete: []

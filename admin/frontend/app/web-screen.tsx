@@ -3,6 +3,7 @@
 import {
   AndroidKeyCode,
   AndroidKeyEventAction,
+  AndroidKeyEventMeta,
   AndroidMotionEventAction,
   AndroidMotionEventButton,
   ScrcpyControlMessageSerializer,
@@ -15,6 +16,7 @@ import {
 } from "@yume-chan/scrcpy-decoder-webcodecs";
 import { TinyH264Decoder } from "@yume-chan/scrcpy-decoder-tinyh264";
 import {
+  BufferedReadableStream,
   PushReadableStream,
   type PushReadableStreamController,
 } from "@yume-chan/stream-extra";
@@ -29,29 +31,58 @@ import {
 } from "react";
 
 type ScreenState = "starting" | "connected" | "closed" | "error";
+const MAX_CLIPBOARD_BYTES = 240 * 1024;
 
-const options = new ScrcpyOptions3_3_1({
-  video: true,
-  audio: false,
-  control: true,
-  maxSize: 1280,
-  maxFps: 30,
-  videoBitRate: 3_000_000,
-  tunnelForward: true,
-  powerOn: false,
-  sendDummyByte: true,
-  stayAwake: false,
-  powerOffOnClose: false,
-  clipboardAutosync: false,
-  cleanup: false,
-  logLevel: "info",
-});
+function createScrcpyOptions() {
+  return new ScrcpyOptions3_3_1({
+    video: true,
+    audio: false,
+    control: true,
+    maxSize: 1280,
+    maxFps: 30,
+    videoBitRate: 3_000_000,
+    tunnelForward: true,
+    powerOn: false,
+    sendDummyByte: true,
+    stayAwake: false,
+    powerOffOnClose: false,
+    clipboardAutosync: true,
+    cleanup: false,
+    logLevel: "info",
+  });
+}
+
+async function writeBrowserClipboard(text: string) {
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // The click-triggered legacy path also works on the LAN HTTP dashboard.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("浏览器拒绝写入剪切板");
+}
 
 export function BrowserScreenControl() {
   const panelRef = useRef<HTMLElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const serializerRef = useRef(new ScrcpyControlMessageSerializer(options));
+  const serializerRef = useRef(
+    new ScrcpyControlMessageSerializer(createScrcpyOptions()),
+  );
+  const clipboardSequenceRef = useRef(BigInt(1));
   const videoSizeRef = useRef({ width: 1440, height: 3120 });
   const activePointers = useRef(new Set<number>());
   const [state, setState] = useState<ScreenState>("starting");
@@ -60,6 +91,10 @@ export function BrowserScreenControl() {
   const [generation, setGeneration] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
   const [powerPending, setPowerPending] = useState<"unlock" | "lock" | null>(null);
+  const [deviceClipboard, setDeviceClipboard] = useState<string | null>(null);
+  const [clipboardStatus, setClipboardStatus] = useState(
+    "剪切板已启用 · 在画面中按 Ctrl+V 可粘贴到手机",
+  );
 
   useEffect(() => {
     document.body.classList.add("screen-control-active");
@@ -75,34 +110,195 @@ export function BrowserScreenControl() {
 
   const sendControl = useCallback((payload: Uint8Array | undefined) => {
     const socket = socketRef.current;
-    if (!payload || !socket || socket.readyState !== WebSocket.OPEN) return;
+    if (!payload || !socket || socket.readyState !== WebSocket.OPEN) return false;
     const framed = new Uint8Array(payload.byteLength + 1);
     framed[0] = 1;
     framed.set(payload, 1);
     socket.send(framed);
+    return true;
   }, []);
+
+  const sendClipboardToDevice = useCallback(
+    async (text: string, paste: boolean) => {
+      const byteLength = new TextEncoder().encode(text).byteLength;
+      if (byteLength > MAX_CLIPBOARD_BYTES) {
+        setClipboardStatus("剪切板内容超过 240 KiB，未发送到手机");
+        return false;
+      }
+      try {
+        const sequence = clipboardSequenceRef.current;
+        clipboardSequenceRef.current += BigInt(1);
+        // OxygenOS may update the clipboard but ignore scrcpy's immediate
+        // paste flag. Request an acknowledgement first, then inject Ctrl+V
+        // into the focused Android field after the clipboard is committed.
+        const serialized = serializerRef.current.setClipboard({
+          sequence,
+          paste: false,
+          content: text,
+        });
+        let payload: Uint8Array;
+        let acknowledgement: Promise<void> | undefined;
+        if (Array.isArray(serialized)) {
+          [payload, acknowledgement] = serialized;
+        } else {
+          payload = serialized;
+        }
+        if (!sendControl(payload)) {
+          setClipboardStatus("屏幕尚未连接，剪切板内容未发送");
+          return false;
+        }
+
+        if (acknowledgement) {
+          await Promise.race([
+            acknowledgement,
+            new Promise<void>((resolve) => window.setTimeout(resolve, 1000)),
+          ]);
+        }
+
+        if (paste) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+          const serializer = serializerRef.current;
+          const metaState = AndroidKeyEventMeta.Ctrl;
+          sendControl(
+            serializer.injectKeyCode({
+              action: AndroidKeyEventAction.Down,
+              keyCode: AndroidKeyCode.KeyV,
+              repeat: 0,
+              metaState,
+            }),
+          );
+          sendControl(
+            serializer.injectKeyCode({
+              action: AndroidKeyEventAction.Up,
+              keyCode: AndroidKeyCode.KeyV,
+              repeat: 0,
+              metaState,
+            }),
+          );
+        }
+
+        setClipboardStatus(
+          paste
+            ? `已发送并粘贴到手机（${text.length} 个字符）`
+            : `已同步到手机（${text.length} 个字符）`,
+        );
+        return true;
+      } catch {
+        setClipboardStatus("手机剪切板写入或粘贴失败");
+        return false;
+      }
+    },
+    [sendControl],
+  );
+
+  useEffect(() => {
+    const onPaste = (event: globalThis.ClipboardEvent) => {
+      const target = event.target;
+      if (!panelRef.current || !(target instanceof Node) || !panelRef.current.contains(target)) {
+        return;
+      }
+      const text = event.clipboardData?.getData("text/plain");
+      if (text === undefined) return;
+      event.preventDefault();
+      void sendClipboardToDevice(text, true);
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [sendClipboardToDevice]);
 
   useEffect(() => {
     if (!enabled || !canvasRef.current) return;
     let disposed = false;
     let videoController: PushReadableStreamController<Uint8Array> | undefined;
+    let deviceMessageController:
+      | PushReadableStreamController<Uint8Array>
+      | undefined;
     let disposeDecoder: (() => void) | undefined;
     let removeSizeListener: (() => void) | undefined;
     let frameWatchdog: number | undefined;
+    let deviceMessagesEnded = false;
     let enqueueChain = Promise.resolve();
+    let deviceMessageChain = Promise.resolve();
     const pointers = activePointers.current;
+    const sessionOptions = createScrcpyOptions();
+    let deviceParsersClosed = false;
+    const closeDeviceMessageParsers = () => {
+      if (deviceParsersClosed) return;
+      deviceParsersClosed = true;
+      sessionOptions.deviceMessageParsers.close();
+    };
+    serializerRef.current = new ScrcpyControlMessageSerializer(sessionOptions);
     const video = new PushReadableStream<Uint8Array>((controller) => {
       videoController = controller;
     });
+    const deviceMessages = new PushReadableStream<Uint8Array>((controller) => {
+      deviceMessageController = controller;
+    });
+    const bufferedDeviceMessages = new BufferedReadableStream(deviceMessages);
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${scheme}://${location.host}/api/screen`);
     socket.binaryType = "arraybuffer";
     socketRef.current = socket;
     setState("starting");
     setDetail("正在启动手机端视频编码器");
+    setClipboardStatus("剪切板通道正在连接");
+
+    const parseDeviceMessages = async () => {
+      while (!disposed) {
+        const id = (await bufferedDeviceMessages.readExactly(1))[0];
+        await sessionOptions.deviceMessageParsers.parse(id, bufferedDeviceMessages);
+      }
+    };
+
+    const receiveClipboard = async () => {
+      const clipboard = sessionOptions.clipboard;
+      if (!clipboard) return;
+      const reader = clipboard.getReader();
+      try {
+        while (!disposed) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          setDeviceClipboard(value);
+          if (
+            window.isSecureContext &&
+            navigator.clipboard?.writeText &&
+            document.hasFocus()
+          ) {
+            try {
+              await navigator.clipboard.writeText(value);
+              if (!disposed) {
+                setClipboardStatus(
+                  `手机剪切板已自动同步到电脑（${value.length} 个字符）`,
+                );
+              }
+              continue;
+            } catch {
+              // Fall back to the explicit copy button below.
+            }
+          }
+          if (!disposed) {
+            setClipboardStatus(
+              `收到手机剪切板（${value.length} 个字符），点击“复制手机剪切板”`,
+            );
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    };
+
+    parseDeviceMessages().catch((error) => {
+      if (!disposed && !deviceMessagesEnded) {
+        sessionOptions.deviceMessageParsers.error(error);
+        setClipboardStatus("手机剪切板通道解析失败");
+      }
+    });
+    receiveClipboard().catch(() => {
+      if (!disposed) setClipboardStatus("手机剪切板通道已关闭");
+    });
 
     const decode = async () => {
-      const stream = await options.parseVideoStreamMetadata(video);
+      const stream = await sessionOptions.parseVideoStreamMetadata(video);
       if (disposed || !canvasRef.current) return;
       if (stream.metadata.width && stream.metadata.height) {
         videoSizeRef.current = {
@@ -111,7 +307,7 @@ export function BrowserScreenControl() {
         };
       }
       const packets = stream.stream.pipeThrough(
-        options.createMediaStreamTransformer(),
+        sessionOptions.createMediaStreamTransformer(),
       );
       const canvas = canvasRef.current;
       const watchFirstFrame = (
@@ -179,6 +375,8 @@ export function BrowserScreenControl() {
           if (message.type === "error") {
             setState("error");
             setDetail(message.message || "手机端屏幕服务启动失败");
+          } else if (message.type === "ready") {
+            setClipboardStatus("剪切板已连接 · 在画面中按 Ctrl+V 可粘贴到手机");
           }
         } catch {
           // Ignore unknown status messages; video always arrives as binary.
@@ -187,12 +385,19 @@ export function BrowserScreenControl() {
       }
       if (!(event.data instanceof ArrayBuffer)) return;
       const payload = new Uint8Array(event.data);
-      if (payload.length < 2 || payload[0] !== 0 || !videoController) return;
+      if (payload.length < 2) return;
       const chunk = payload.slice(1);
-      enqueueChain = enqueueChain
-        .then(() => videoController?.enqueue(chunk))
-        .then(() => undefined)
-        .catch(() => undefined);
+      if (payload[0] === 0 && videoController) {
+        enqueueChain = enqueueChain
+          .then(() => videoController?.enqueue(chunk))
+          .then(() => undefined)
+          .catch(() => undefined);
+      } else if (payload[0] === 2 && deviceMessageController) {
+        deviceMessageChain = deviceMessageChain
+          .then(() => deviceMessageController?.enqueue(chunk))
+          .then(() => undefined)
+          .catch(() => undefined);
+      }
     };
     socket.onerror = () => {
       if (!disposed) {
@@ -201,12 +406,21 @@ export function BrowserScreenControl() {
       }
     };
     socket.onclose = () => {
+      deviceMessagesEnded = true;
       enqueueChain.finally(() => {
         try {
           videoController?.close();
         } catch {
           // Decoder may already have closed the stream.
         }
+      });
+      deviceMessageChain.finally(() => {
+        try {
+          deviceMessageController?.close();
+        } catch {
+          // Device message parser may already have closed the stream.
+        }
+        closeDeviceMessageParsers();
       });
       if (!disposed) {
         setState((current) => (current === "error" ? current : "closed"));
@@ -218,6 +432,7 @@ export function BrowserScreenControl() {
 
     return () => {
       disposed = true;
+      deviceMessagesEnded = true;
       pointers.clear();
       socketRef.current = null;
       socket.close(1000, "page closed");
@@ -228,6 +443,14 @@ export function BrowserScreenControl() {
           // Stream already closed.
         }
       });
+      deviceMessageChain.finally(() => {
+        try {
+          deviceMessageController?.close();
+        } catch {
+          // Stream already closed.
+        }
+      });
+      closeDeviceMessageParsers();
       removeSizeListener?.();
       if (frameWatchdog !== undefined) window.clearInterval(frameWatchdog);
       disposeDecoder?.();
@@ -362,6 +585,34 @@ export function BrowserScreenControl() {
     setGeneration((value) => value + 1);
   };
 
+  const pasteBrowserClipboard = async () => {
+    stageRef.current?.focus();
+    if (!window.isSecureContext || !navigator.clipboard?.readText) {
+      setClipboardStatus("浏览器当前不允许直接读取，请在画面中按 Ctrl+V");
+      return;
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      await sendClipboardToDevice(text, true);
+    } catch {
+      setClipboardStatus("读取电脑剪切板失败，请在画面中按 Ctrl+V");
+    }
+  };
+
+  const copyDeviceClipboard = async () => {
+    if (deviceClipboard === null) return;
+    try {
+      await writeBrowserClipboard(deviceClipboard);
+      setClipboardStatus(
+        `手机剪切板已复制到电脑（${deviceClipboard.length} 个字符）`,
+      );
+    } catch (error) {
+      setClipboardStatus(
+        error instanceof Error ? error.message : "复制手机剪切板失败",
+      );
+    }
+  };
+
   const devicePower = async (action: "unlock" | "lock") => {
     if (powerPending) return;
     setPowerPending(action);
@@ -412,6 +663,21 @@ export function BrowserScreenControl() {
         <div className="screen-actions">
           <button
             type="button"
+            disabled={state !== "connected"}
+            onClick={pasteBrowserClipboard}
+            title="安全连接可直接读取；普通 HTTP 下请在画面中按 Ctrl+V"
+          >
+            粘贴到手机
+          </button>
+          <button
+            type="button"
+            disabled={deviceClipboard === null}
+            onClick={copyDeviceClipboard}
+          >
+            复制手机剪切板
+          </button>
+          <button
+            type="button"
             disabled={powerPending !== null}
             onClick={() => devicePower("unlock")}
           >
@@ -448,6 +714,7 @@ export function BrowserScreenControl() {
         </div>
       </header>
       <div
+        ref={stageRef}
         className="screen-stage"
         tabIndex={0}
         onKeyDown={keyboard}
@@ -483,8 +750,9 @@ export function BrowserScreenControl() {
           </div>
         )}
       </div>
-      <footer className="terminal-help">
-        点击或触摸画面可直接操作手机；画面区域获得焦点后支持键盘输入。离开本页会自动停止编码。
+      <footer className="terminal-help screen-help">
+        <span role="status" aria-live="polite">{clipboardStatus}</span>
+        <span>画面获得焦点后支持键盘输入；离开本页会自动停止编码。</span>
       </footer>
     </article>
   );

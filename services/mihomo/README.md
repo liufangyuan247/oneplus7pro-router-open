@@ -6,12 +6,12 @@ This directory contains the standalone Mihomo service used by the OnePlus 7 Pro 
 
 - Core: Mihomo `v1.19.30`
 - Generic local listener: `127.0.0.1:17890` (`MATCH,DIRECT` in rule mode)
-- Codex/CPA dedicated listener: `127.0.0.1:17891` -> `Codex-日本`
+- OpenAI selective listener: `127.0.0.1:17891` -> `Codex-日本`
 - Controller: `127.0.0.1:9091`
 - Mode: `rule`
 - Android system proxy: disabled by default
 - LAN listener, TUN, redir and TProxy: disabled by default
-- CPA outbound: `socks5://127.0.0.1:17891`
+- CPA outbound: direct (`proxy-url: ""`), captured by router table 102
 - Subscription refresh: every six hours
 
 FlClash is no longer installed and port `7890` is intentionally unused. The
@@ -19,10 +19,17 @@ standalone core remains isolated on `17890` and `17891`.
 
 `Codex-日本` is regenerated on every subscription refresh. It contains a
 selectable Japanese-node group and a `Codex-日本自动` latency-tested subgroup.
-The dedicated listener pins every CPA request to that group at the inbound
-layer, while the ordinary local listener and all unmatched traffic stay
-direct. LAN listening, TUN and transparent routing remain disabled, so home
-clients are not captured.
+The automatic subgroup probes `chatgpt.com` every 30 seconds, excludes the
+known-bad `日本 | 04` node, requires two failed checks before declaring a node
+unhealthy, and uses a 1000 ms tolerance to suppress latency-jitter switching.
+Probes do not change the egress IP by themselves. `Codex-日本自动` is the first
+choice in the parent group, while every Japanese node remains available for
+manual selection in `Codex-日本`.
+The OpenAI-only `op7codex` TUN uses the dedicated listener and pins every
+selected OpenAI connection to that group. CPA has no private proxy setting;
+its normal OpenAI sockets and LAN client sockets are selected by the same
+trusted DNS and table-102 policy. The independent whole-home TUN remains off,
+so unrelated household traffic stays direct.
 
 When Android system proxy is explicitly enabled from Router Admin, it points
 to the same isolated Japanese listener on `127.0.0.1:17891`. Stopping Mihomo

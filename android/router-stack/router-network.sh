@@ -7,13 +7,23 @@ ARMED="$BASE/armed"
 ACTIVE="$BASE/active"
 PIDFILE="$BASE/manager.pid"
 DNSMASQ_PID="$BASE/dnsmasq.pid"
+CODEX_DNSMASQ_PID="$BASE/codex-dnsmasq.pid"
 PPPD_PID="$BASE/pppd.pid"
 SINGBOX_PID="$BASE/sing-box.pid"
+CODEX_SINGBOX_PID="$BASE/codex-sing-box.pid"
 PROXY_LOCK="$BASE/proxy.lock"
+CODEX_PROXY_LOCK="$BASE/codex-proxy.lock"
 LOG="$BASE/router-network.log"
 PPPD_LOG="$BASE/pppd.log"
 DNSMASQ_LOG="$BASE/dnsmasq.log"
+CODEX_DNSMASQ_LOG="$BASE/codex-dnsmasq.log"
 RUNTIME="$BASE/runtime"
+DNSMASQ_OPENAI_SCHEMA="$RUNTIME/dnsmasq-openai-dns-v2"
+CODEX_DOMAINS="$BASE/openai-domains"
+CODEX_CACHE="$RUNTIME/openai-addresses"
+CODEX_TARGETS="$RUNTIME/openai-targets"
+CODEX_HOSTS="$RUNTIME/openai-hosts"
+CODEX_REFRESH_AT="$RUNTIME/openai-refresh-at"
 ADMIN_INTERFACES=/data/data/com.termux/files/home/router-data/admin/active-interfaces
 
 PREFIX=/data/data/com.termux/files/usr
@@ -24,15 +34,20 @@ DNSMASQ="$PREFIX/bin/dnsmasq"
 PPPOE="$PREFIX/bin/pppoe"
 SINGBOX="$PREFIX/bin/sing-box"
 DRILL="$PREFIX/bin/drill"
+CURL="$PREFIX/bin/curl"
 GAWK="$PREFIX/bin/awk"
 PPPD=/system/bin/pppd
 
 TABLE_WAN=100
 TABLE_TPROXY=101
+TABLE_CODEX=102
 RULE_TPROXY=8000
 RULE_TPROXY_UDP=8001
 RULE_TPROXY_LOCAL=8010
 RULE_TPROXY_LOCAL_UDP=8011
+RULE_CODEX_DNS=8018
+RULE_CODEX_ROOT=8019
+RULE_CODEX=8020
 RULE_WAN=9000
 ANDROID_UID_MIN=10000
 ANDROID_UID_MAX=99999
@@ -41,6 +56,9 @@ LAN_SUBNET=192.168.2.0/24
 MODEM_ADDRESS=192.168.1.2/24
 MODEM_SUBNET=192.168.1.0/24
 NET_CLASS=/sys/class/net
+CODEX_REFRESH_SECONDS=45
+CODEX_DNS_PORT=5354
+CODEX_DNS_UPSTREAMS="1.1.1.1 1.0.0.1"
 
 log() {
   printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"
@@ -51,6 +69,7 @@ load_config() {
   # shellcheck disable=SC1090
   . "$CONFIG"
   LAN_MODE="${LAN_MODE:-auto}"
+  CODEX_PROXY_ENABLED="${CODEX_PROXY_ENABLED:-1}"
   PPP_TXQUEUELEN="${PPP_TXQUEUELEN:-1024}"
   PPP_QDISC="${PPP_QDISC:-auto}"
   case "$PPP_TXQUEUELEN" in
@@ -64,6 +83,10 @@ load_config() {
   case "$PPP_QDISC" in
     auto|fq_codel|keep) ;;
     *) log "invalid PPP_QDISC=$PPP_QDISC"; return 1 ;;
+  esac
+  case "$CODEX_PROXY_ENABLED" in
+    0|1) ;;
+    *) log "invalid CODEX_PROXY_ENABLED=$CODEX_PROXY_ENABLED"; return 1 ;;
   esac
   { [ -n "${WAN_MAC:-}" ] || [ -n "${WAN_USB_PORT:-}" ] || [ -n "${WAN_VIDPID:-}" ]; } && \
     [ -n "${PPPOE_USER:-}" ] && [ -n "${PPPOE_PASS:-}" ]
@@ -266,8 +289,11 @@ write_dnsmasq_config() {
   lease_dir=/data/data/com.termux/files/home/router-data/dnsmasq
   mkdir -p "$lease_dir"
   touch "$lease_dir/dnsmasq.leases"
+  touch "$CODEX_HOSTS"
+  chmod 600 "$CODEX_HOSTS"
   chown 10207:10207 "$lease_dir" "$lease_dir/dnsmasq.leases" 2>/dev/null || true
-  cat > "$RUNTIME/dnsmasq.conf" <<EOF
+  {
+    cat <<EOF
 interface=$lan
 interface=lo
 bind-dynamic
@@ -278,6 +304,15 @@ no-resolv
 server=223.5.5.5
 server=119.29.29.29
 cache-size=10000
+addn-hosts=$CODEX_HOSTS
+EOF
+    # OpenAI DNS never goes to the ordinary LAN resolvers. The dedicated
+    # loopback resolver reaches a trusted upstream through op7codex and
+    # suppresses AAAA only for this IPv4-only namespace.
+    for domain in $(codex_domains); do
+      printf 'server=/%s/127.0.0.1#%s\n' "$domain" "$CODEX_DNS_PORT"
+    done
+    cat <<EOF
 dhcp-authoritative
 dhcp-range=192.168.2.100,192.168.2.249,255.255.255.0,12h
 dhcp-option=option:router,192.168.2.1
@@ -286,9 +321,51 @@ dhcp-leasefile=$lease_dir/dnsmasq.leases
 log-facility=$DNSMASQ_LOG
 user=root
 EOF
-  if [ -n "${DNSMASQ_HOSTS_FILE:-}" ] && [ -r "$DNSMASQ_HOSTS_FILE" ]; then
-    cat "$DNSMASQ_HOSTS_FILE" >> "$RUNTIME/dnsmasq.conf"
+    if [ -n "${DNSMASQ_HOSTS_FILE:-}" ] && [ -r "$DNSMASQ_HOSTS_FILE" ]; then
+      cat "$DNSMASQ_HOSTS_FILE"
+    fi
+  } > "$RUNTIME/dnsmasq.conf"
+}
+
+write_codex_dnsmasq_config() {
+  cat > "$RUNTIME/codex-dnsmasq.conf" <<EOF
+listen-address=127.0.0.1
+bind-interfaces
+port=$CODEX_DNS_PORT
+no-resolv
+no-hosts
+domain-needed
+bogus-priv
+strict-order
+server=1.1.1.1
+server=1.0.0.1
+cache-size=2000
+filter-AAAA
+log-facility=$CODEX_DNSMASQ_LOG
+user=root
+EOF
+}
+
+start_codex_dnsmasq() {
+  pid_alive "$CODEX_DNSMASQ_PID" && return 0
+  write_codex_dnsmasq_config
+  "$DNSMASQ" --test --conf-file="$RUNTIME/codex-dnsmasq.conf" >> "$CODEX_DNSMASQ_LOG" 2>&1
+  log "starting trusted OpenAI DNS on 127.0.0.1:$CODEX_DNS_PORT"
+  "$DNSMASQ" --keep-in-foreground --conf-file="$RUNTIME/codex-dnsmasq.conf" >> "$CODEX_DNSMASQ_LOG" 2>&1 &
+  echo $! > "$CODEX_DNSMASQ_PID"
+}
+
+stop_codex_dnsmasq() {
+  if pid_alive "$CODEX_DNSMASQ_PID"; then
+    kill "$(cat "$CODEX_DNSMASQ_PID")" 2>/dev/null || true
+    sleep 1
   fi
+  rm -f "$CODEX_DNSMASQ_PID"
+}
+
+codex_dnsmasq_ready() {
+  pid_alive "$CODEX_DNSMASQ_PID" &&
+    ss -lntu 2>/dev/null | grep -q "127\.0\.0\.1:$CODEX_DNS_PORT "
 }
 
 start_dnsmasq() {
@@ -299,6 +376,7 @@ start_dnsmasq() {
   log "starting DHCP/DNS on $lan"
   "$DNSMASQ" --keep-in-foreground --conf-file="$RUNTIME/dnsmasq.conf" >> "$DNSMASQ_LOG" 2>&1 &
   echo $! > "$DNSMASQ_PID"
+  touch "$DNSMASQ_OPENAI_SCHEMA"
 }
 
 stop_dnsmasq() {
@@ -397,6 +475,10 @@ apply_firewall() {
   # packet is discarded before sing-box or Mihomo can see it.
   "$IPTABLES" -A OP7_FORWARD -i "$lan" -o op7proxy -j ACCEPT
   "$IPTABLES" -A OP7_FORWARD -i op7proxy -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  # OpenAI-only routing has an independent TUN and remains active while the
+  # whole-home proxy is disabled. The same path serves LAN clients and CPA.
+  "$IPTABLES" -A OP7_FORWARD -i "$lan" -o op7codex -j ACCEPT
+  "$IPTABLES" -A OP7_FORWARD -i op7codex -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   "$IPTABLES" -A OP7_FORWARD -i "$lan" -o "$wan" -d 192.168.1.1/32 -j ACCEPT
   "$IPTABLES" -A OP7_FORWARD -i "$ppp" -o "$lan" -j DROP
   "$IPTABLES" -A OP7_FORWARD -i tailscale0 -o "$lan" -j ACCEPT 2>/dev/null || true
@@ -530,6 +612,349 @@ EOF
   "$SINGBOX" check -c "$singbox_candidate"
   chmod 600 "$singbox_candidate"
   mv "$singbox_candidate" "$RUNTIME/sing-box.json"
+}
+
+codex_proxy_requested() {
+  [ "${CODEX_PROXY_ENABLED:-1}" = 1 ]
+}
+
+codex_proxy_lock_acquire() {
+  attempt=0
+  while ! mkdir "$CODEX_PROXY_LOCK" 2>/dev/null; do
+    owner="$(cat "$CODEX_PROXY_LOCK/owner" 2>/dev/null || true)"
+    if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
+      rm -f "$CODEX_PROXY_LOCK/owner" 2>/dev/null || true
+      rmdir "$CODEX_PROXY_LOCK" 2>/dev/null || true
+      continue
+    fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 10 ] || return 1
+    sleep 1
+  done
+  echo $$ > "$CODEX_PROXY_LOCK/owner"
+}
+
+codex_proxy_lock_release() {
+  [ "$(cat "$CODEX_PROXY_LOCK/owner" 2>/dev/null || true)" = "$$" ] || return 0
+  rm -f "$CODEX_PROXY_LOCK/owner" 2>/dev/null || true
+  rmdir "$CODEX_PROXY_LOCK" 2>/dev/null || true
+}
+
+validate_codex_domains() {
+  [ -s "$CODEX_DOMAINS" ] || { echo "missing $CODEX_DOMAINS" >&2; return 1; }
+  invalid="$RUNTIME/openai-domains.invalid.$$"
+  : > "$invalid"
+  while IFS= read -r line || [ -n "$line" ]; do
+    host="$(printf '%s' "$line" | sed 's/[[:space:]]*#.*$//' | tr 'A-Z' 'a-z' | tr -d '\r')"
+    [ -z "$host" ] && continue
+    case "$host" in
+      *[!a-z0-9.-]*|.*|*..*|*.) printf '%s\n' "$host" >> "$invalid" ;;
+    esac
+  done < "$CODEX_DOMAINS"
+  if [ -s "$invalid" ]; then
+    echo "invalid OpenAI domain list" >&2
+    rm -f "$invalid"
+    return 1
+  fi
+  rm -f "$invalid"
+}
+
+codex_domains() {
+  sed 's/[[:space:]]*#.*$//' "$CODEX_DOMAINS" |
+    tr 'A-Z' 'a-z' |
+    tr -d '\r' |
+    sed '/^[[:space:]]*$/d' |
+    sort -u
+}
+
+resolve_codex_host() {
+  host="$1"
+  response="$($CURL -fsS --connect-timeout 5 --max-time 15 \
+    --proxy socks5h://127.0.0.1:17891 \
+    -H 'accept: application/dns-json' \
+    "https://1.1.1.1/dns-query?name=$host&type=A" 2>/dev/null)" || return 1
+  printf '%s\n' "$response" | "$GAWK" '
+  {
+    line=$0
+    while (match(line, /\{[^{}]*"type":[[:space:]]*1[^{}]*"data":[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)"[^{}]*\}/, item)) {
+      ip=item[1]
+      count=split(ip, octet, ".")
+      valid=(count == 4)
+      for (i=1; i<=count; i++) if (octet[i] < 0 || octet[i] > 255) valid=0
+      if (valid) print ip
+      line=substr(line, RSTART+RLENGTH)
+    }
+  }
+  ' | sort -u
+}
+
+refresh_codex_targets() {
+  force="${1:-0}"
+  now="$(date +%s)"
+  refresh_at="$(cat "$CODEX_REFRESH_AT" 2>/dev/null || echo 0)"
+  case "$refresh_at" in ''|*[!0-9]*) refresh_at=0 ;; esac
+  if [ "$force" != 1 ] && [ "$now" -lt "$refresh_at" ]; then
+    return 0
+  fi
+
+  validate_codex_domains || return 1
+  candidate="$CODEX_CACHE.new.$$"
+  sorted="$CODEX_CACHE.sorted.$$"
+  : > "$candidate"
+  for host in $(codex_domains); do
+    addresses="$(resolve_codex_host "$host" 2>/dev/null || true)"
+    if [ -n "$addresses" ]; then
+      for address in $addresses; do
+        printf '%s %s\n' "$host" "$address" >> "$candidate"
+      done
+    else
+      # Keep this hostname's last-known-good addresses through a transient
+      # resolver or proxy outage. Never replace working routes with poison.
+      "$GAWK" -v host="$host" '$1 == host { print }' "$CODEX_CACHE" 2>/dev/null >> "$candidate" || true
+    fi
+  done
+  sort -u "$candidate" > "$sorted"
+  rm -f "$candidate"
+  if [ ! -s "$sorted" ]; then
+    rm -f "$sorted"
+    [ -s "$CODEX_CACHE" ] && return 0
+    return 1
+  fi
+
+  hosts_candidate="$CODEX_HOSTS.new.$$"
+  targets_candidate="$CODEX_TARGETS.new.$$"
+  "$GAWK" '{ print $2, $1 }' "$sorted" > "$hosts_candidate"
+  "$GAWK" '{ print $2 }' "$sorted" | sort -u > "$targets_candidate"
+  hosts_changed=0
+  if ! cmp -s "$hosts_candidate" "$CODEX_HOSTS" 2>/dev/null; then
+    chmod 600 "$hosts_candidate"
+    mv "$hosts_candidate" "$CODEX_HOSTS"
+    hosts_changed=1
+  else
+    rm -f "$hosts_candidate"
+  fi
+  chmod 600 "$sorted" "$targets_candidate"
+  mv "$sorted" "$CODEX_CACHE"
+  mv "$targets_candidate" "$CODEX_TARGETS"
+  echo $((now + CODEX_REFRESH_SECONDS)) > "$CODEX_REFRESH_AT"
+
+  if [ "$hosts_changed" = 1 ] && pid_alive "$DNSMASQ_PID"; then
+    kill -HUP "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
+  fi
+}
+
+write_codex_singbox_config() {
+  candidate="$RUNTIME/codex-sing-box.json.new.$$"
+  cat > "$candidate" <<'EOF'
+{
+  "log": { "level": "warn", "timestamp": true },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "openai-tun",
+      "interface_name": "op7codex",
+      "address": ["172.31.254.1/30"],
+      "mtu": 1500,
+      "auto_route": false,
+      "strict_route": false,
+      "stack": "gvisor"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "socks",
+      "tag": "openai-egress",
+      "server": "127.0.0.1",
+      "server_port": 17891,
+      "version": "5"
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      { "network": "icmp", "action": "route", "outbound": "direct" }
+    ],
+    "final": "openai-egress",
+    "auto_detect_interface": false
+  }
+}
+EOF
+  "$SINGBOX" check -c "$candidate"
+  chmod 600 "$candidate"
+  mv "$candidate" "$RUNTIME/codex-sing-box.json"
+}
+
+install_codex_routes() {
+  [ -s "$CODEX_TARGETS" ] || return 1
+  # Mihomo runs as root. Its outbound sockets must bypass table 102 or they
+  # would be captured again; CPA runs as UID 10207 and deliberately does not
+  # match this exception, so CPA and LAN clients share the same TUN path.
+  while "$IP" rule del priority "$RULE_CODEX_DNS" 2>/dev/null; do :; done
+  "$IP" rule del priority "$RULE_CODEX_ROOT" 2>/dev/null || true
+  "$IP" rule del priority "$RULE_CODEX" 2>/dev/null || true
+  "$IP" route flush table "$TABLE_CODEX" 2>/dev/null || true
+  while IFS= read -r address; do
+    [ -n "$address" ] || continue
+    "$IP" route replace "$address/32" dev op7codex table "$TABLE_CODEX" || return 1
+  done < "$CODEX_TARGETS"
+  for address in $CODEX_DNS_UPSTREAMS; do
+    "$IP" route replace "$address/32" dev op7codex table "$TABLE_CODEX" || return 1
+    "$IP" rule add priority "$RULE_CODEX_DNS" to "$address/32" lookup "$TABLE_CODEX" || return 1
+  done
+  "$IP" rule add priority "$RULE_CODEX_ROOT" iif lo uidrange 0-0 lookup "$TABLE_WAN" || return 1
+  "$IP" rule add priority "$RULE_CODEX" lookup "$TABLE_CODEX" || return 1
+}
+
+codex_routes_match() {
+  [ -s "$CODEX_TARGETS" ] || return 1
+  "$IP" rule show priority "$RULE_CODEX_ROOT" 2>/dev/null | grep -q "iif lo.*uidrange 0-0.*lookup $TABLE_WAN" || return 1
+  "$IP" rule show priority "$RULE_CODEX" 2>/dev/null | grep -Eq "^${RULE_CODEX}:.*lookup ${TABLE_CODEX}([[:space:]]|$)" || return 1
+  for address in $CODEX_DNS_UPSTREAMS; do
+    "$IP" rule show priority "$RULE_CODEX_DNS" 2>/dev/null | grep -q "to $address.*lookup $TABLE_CODEX" || return 1
+  done
+  expected="$({ cat "$CODEX_TARGETS"; for address in $CODEX_DNS_UPSTREAMS; do echo "$address"; done; } | sort -u | wc -l | tr -d ' ')"
+  actual="$($IP route show table "$TABLE_CODEX" 2>/dev/null | grep -c ' dev op7codex' || true)"
+  [ "$expected" = "$actual" ] || return 1
+  while IFS= read -r address; do
+    [ -n "$address" ] || continue
+    "$IP" route show table "$TABLE_CODEX" "$address/32" 2>/dev/null | grep -q "^$address dev op7codex" || return 1
+  done < "$CODEX_TARGETS"
+  for address in $CODEX_DNS_UPSTREAMS; do
+    "$IP" route show table "$TABLE_CODEX" "$address/32" 2>/dev/null | grep -q "^$address dev op7codex" || return 1
+  done
+}
+
+stop_codex_proxy_unlocked() {
+  stop_codex_dnsmasq
+  while "$IP" rule del priority "$RULE_CODEX_DNS" 2>/dev/null; do :; done
+  "$IP" rule del priority "$RULE_CODEX_ROOT" 2>/dev/null || true
+  "$IP" rule del priority "$RULE_CODEX" 2>/dev/null || true
+  "$IP" route flush table "$TABLE_CODEX" 2>/dev/null || true
+  if pid_alive "$CODEX_SINGBOX_PID"; then
+    kill "$(cat "$CODEX_SINGBOX_PID")" 2>/dev/null || true
+    sleep 1
+  fi
+  pkill -f "sing-box run -c $RUNTIME/codex-sing-box.json" 2>/dev/null || true
+  rm -f "$CODEX_SINGBOX_PID"
+  count=0
+  while [ -e /sys/class/net/op7codex ] && [ "$count" -lt 5 ]; do
+    sleep 1
+    count=$((count + 1))
+  done
+  if [ -e /sys/class/net/op7codex ]; then
+    pkill -9 -f "sing-box run -c $RUNTIME/codex-sing-box.json" 2>/dev/null || true
+    sleep 1
+  fi
+}
+
+stop_codex_proxy() {
+  if ! codex_proxy_lock_acquire; then
+    log "OpenAI proxy lock timeout while stopping; selective routes removed"
+    "$IP" rule del priority "$RULE_CODEX_ROOT" 2>/dev/null || true
+    "$IP" rule del priority "$RULE_CODEX" 2>/dev/null || true
+    "$IP" route flush table "$TABLE_CODEX" 2>/dev/null || true
+    return 0
+  fi
+  stop_codex_proxy_unlocked
+  codex_proxy_lock_release
+}
+
+codex_proxy_ready() {
+  lan="$1"
+  [ -e /sys/class/net/op7codex ] &&
+    pid_alive "$CODEX_SINGBOX_PID" &&
+    codex_dnsmasq_ready &&
+    [ -s "$CODEX_TARGETS" ] &&
+    codex_routes_match &&
+    "$IPTABLES" -C OP7_FORWARD -i "$lan" -o op7codex -j ACCEPT 2>/dev/null &&
+    "$IPTABLES" -C OP7_FORWARD -i op7codex -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+}
+
+apply_codex_proxy_unlocked() {
+  wan="$1" lan="$2" ppp="$3"
+  codex_proxy_requested || { stop_codex_proxy_unlocked; return 0; }
+  if ! "$IPTABLES" -C OP7_FORWARD -i "$lan" -o op7codex -j ACCEPT 2>/dev/null ||
+     ! "$IPTABLES" -C OP7_FORWARD -i op7codex -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; then
+    apply_firewall "$wan" "$lan" "$ppp"
+  fi
+  ss -lntup 2>/dev/null | grep -q ':17891 ' || {
+    log "Mihomo OpenAI listener 17891 is unavailable; selective proxy not installed"
+    stop_codex_proxy_unlocked
+    return 0
+  }
+  mihomo_router_isolated || {
+    log "Mihomo is not root-isolated; selective proxy not installed"
+    stop_codex_proxy_unlocked
+    return 0
+  }
+  if ! pid_alive "$CODEX_SINGBOX_PID"; then
+    stop_codex_proxy_unlocked
+    write_codex_singbox_config || return 0
+    "$SINGBOX" run -c "$RUNTIME/codex-sing-box.json" >> "$LOG" 2>&1 &
+    echo $! > "$CODEX_SINGBOX_PID"
+    count=0
+    while [ ! -e /sys/class/net/op7codex ] && [ "$count" -lt 10 ]; do
+      sleep 1
+      count=$((count + 1))
+    done
+  fi
+  [ -e /sys/class/net/op7codex ] || {
+    log "OpenAI TUN did not appear; selective proxy not installed"
+    stop_codex_proxy_unlocked
+    return 0
+  }
+  refresh_codex_targets 0 || {
+    log "trusted OpenAI DNS resolution failed with no cached targets"
+    stop_codex_proxy_unlocked
+    return 0
+  }
+  if ! codex_routes_match && ! install_codex_routes; then
+    log "OpenAI selective policy route installation failed"
+    stop_codex_proxy_unlocked
+    return 0
+  fi
+  start_codex_dnsmasq || {
+    log "trusted OpenAI DNS failed to start; selective routes removed"
+    stop_codex_proxy_unlocked
+    return 0
+  }
+  if ! codex_proxy_ready "$lan"; then
+    log "OpenAI selective route failed readiness; routes removed"
+    stop_codex_proxy_unlocked
+    return 0
+  fi
+}
+
+apply_codex_proxy() {
+  if ! codex_proxy_lock_acquire; then
+    log "OpenAI proxy lock timeout while applying"
+    return 0
+  fi
+  apply_codex_proxy_unlocked "$@"
+  codex_proxy_lock_release
+}
+
+refresh_codex_proxy() {
+  load_config
+  codex_proxy_requested || { echo CODEX_SELECTIVE_PROXY_DISABLED; return 0; }
+  [ -s "$RUNTIME/interfaces" ] || { echo CODEX_SELECTIVE_PROXY_QUEUED; return 0; }
+  set -- $(cat "$RUNTIME/interfaces")
+  wan="${1:-}" lan="${2:-}" ppp="${3:-}"
+  [ -n "$wan" ] && [ -n "$lan" ] && [ -n "$ppp" ] || return 1
+  codex_proxy_lock_acquire || { echo 'OpenAI proxy refresh lock timeout' >&2; return 1; }
+  rm -f "$CODEX_REFRESH_AT"
+  apply_codex_proxy_unlocked "$wan" "$lan" "$ppp"
+  if codex_proxy_ready "$lan"; then
+    codex_proxy_lock_release
+    echo CODEX_SELECTIVE_PROXY_REFRESHED
+    return 0
+  fi
+  codex_proxy_lock_release
+  echo 'OpenAI selective proxy refresh failed; daemon will retry' >&2
+  return 1
 }
 
 proxy_lock_acquire() {
@@ -805,6 +1230,7 @@ activate_router() {
   apply_ppp_queue "$ppp"
   apply_routes "$wan" "$lan" "$ppp"
   apply_firewall "$wan" "$lan" "$ppp"
+  apply_codex_proxy "$wan" "$lan" "$ppp"
   apply_proxy "$wan" "$lan" "$ppp"
   if [ "${DISABLE_WIFI_ON_ACTIVE:-0}" = "1" ]; then
     # The phone must not associate with the downstream AP while routing it.
@@ -820,6 +1246,7 @@ activate_router() {
 cleanup_runtime() {
   stop_dnsmasq
   stop_ppp
+  stop_codex_proxy
   stop_proxy
   remove_jump filter INPUT OP7_INPUT
   remove_jump filter FORWARD OP7_FORWARD
@@ -838,7 +1265,7 @@ cleanup_runtime() {
 
 validate() {
   load_config
-  for binary in "$IP" "$IPTABLES" "$TC" "$DNSMASQ" "$PPPOE" "$PPPD" "$SINGBOX"; do
+  for binary in "$IP" "$IPTABLES" "$TC" "$DNSMASQ" "$PPPOE" "$PPPD" "$SINGBOX" "$CURL" "$GAWK"; do
     [ -x "$binary" ] || { echo "missing $binary" >&2; exit 1; }
   done
   wan="$(resolve_wan_iface)"
@@ -849,7 +1276,12 @@ validate() {
   write_ppp_options "$wan"
   write_singbox_config
   "$SINGBOX" check -c "$RUNTIME/sing-box.json"
-  echo "VALID WAN=$wan LAN=$lan PROXY=${PROXY_ENABLED:-0}"
+  validate_codex_domains
+  write_codex_singbox_config
+  "$SINGBOX" check -c "$RUNTIME/codex-sing-box.json"
+  write_codex_dnsmasq_config
+  "$DNSMASQ" --test --conf-file="$RUNTIME/codex-dnsmasq.conf"
+  echo "VALID WAN=$wan LAN=$lan PROXY=${PROXY_ENABLED:-0} CODEX=${CODEX_PROXY_ENABLED:-1}"
 }
 
 status() {
@@ -876,6 +1308,11 @@ status() {
   echo "mihomo_isolated=$(mihomo_router_isolated && echo yes || echo no)"
   echo "proxy_tun=$([ -e /sys/class/net/op7proxy ] && echo up || echo down)"
   echo "local_app_proxy=$([ -e /sys/class/net/op7proxy ] && "$IP" rule show priority "$RULE_TPROXY_LOCAL" 2>/dev/null | grep -q "lookup $TABLE_TPROXY" && echo active || echo inactive)"
+  echo "codex_selective_proxy=$([ "${CODEX_PROXY_ENABLED:-1}" = 1 ] && echo enabled || echo disabled)"
+  echo "codex_tun=$([ -e /sys/class/net/op7codex ] && echo up || echo down)"
+  echo "codex_dns=$(codex_dnsmasq_ready && echo up || echo down)"
+  echo "codex_targets=$([ -s "$CODEX_TARGETS" ] && wc -l < "$CODEX_TARGETS" | tr -d ' ' || echo 0)"
+  echo "codex_policy=$(codex_routes_match 2>/dev/null && echo active || echo inactive)"
 }
 
 daemon() {
@@ -886,6 +1323,13 @@ daemon() {
   trap 'rm -f "$PIDFILE"' EXIT
   trap 'exit 0' INT TERM
   log "network manager started"
+  if pid_alive "$DNSMASQ_PID" && [ ! -f "$DNSMASQ_OPENAI_SCHEMA" ]; then
+    # A live upgrade may inherit dnsmasq from the previous manager. Restart it
+    # once so the OpenAI domain forwarding rules are loaded; SIGHUP alone does
+    # not reread the main dnsmasq configuration file.
+    stop_dnsmasq
+    log "restarting dnsmasq for trusted OpenAI DNS forwarding"
+  fi
   while :; do
     if [ ! -f "$ARMED" ]; then
       sleep 5
@@ -941,6 +1385,7 @@ daemon() {
         pid_alive "$DNSMASQ_PID" || start_dnsmasq "$lan"
         apply_ppp_queue "$ppp"
         apply_routes "$wan" "$lan" "$ppp"
+        apply_codex_proxy "$wan" "$lan" "$ppp"
         apply_proxy "$wan" "$lan" "$ppp"
         publish_interfaces "$wan" "$lan" "$ppp"
         if [ "${DISABLE_WIFI_ON_ACTIVE:-0}" = "1" ]; then
@@ -951,6 +1396,7 @@ daemon() {
       # Keep LAN management alive during a WAN redial; only withdraw the WAN
       # policy route so traffic cannot leak into an unintended Android path.
       remove_routes
+      stop_codex_proxy
       stop_proxy
       if has_carrier "$lan"; then
         pid_alive "$DNSMASQ_PID" || start_dnsmasq "$lan"
@@ -971,9 +1417,10 @@ case "${1:-status}" in
   proxy-on) set_proxy_state 1 ;;
   proxy-off) set_proxy_state 0 ;;
   proxy-refresh) refresh_proxy_state ;;
+  codex-refresh) refresh_codex_proxy ;;
   daemon) daemon ;;
   arm) touch "$ARMED"; echo ARMED ;;
   disarm) rm -f "$ARMED"; cleanup_runtime; echo DISARMED ;;
   cleanup) cleanup_runtime; echo CLEANED ;;
-  *) echo "usage: $0 {validate|status|proxy-on|proxy-off|proxy-refresh|daemon|arm|disarm|cleanup}" >&2; exit 2 ;;
+  *) echo "usage: $0 {validate|status|proxy-on|proxy-off|proxy-refresh|codex-refresh|daemon|arm|disarm|cleanup}" >&2; exit 2 ;;
 esac

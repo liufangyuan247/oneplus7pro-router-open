@@ -87,8 +87,13 @@ type Server struct {
 	screenSessions                     atomic.Int32
 }
 
-const maxTerminalSessions = 2
-const scrcpyServerVersion = "3.3.1"
+const (
+	maxTerminalSessions       = 2
+	scrcpyServerVersion       = "3.3.1"
+	scrcpyVideoChannel   byte = 0
+	scrcpyControlChannel byte = 1
+	scrcpyDeviceChannel  byte = 2
+)
 
 var terminalUpgrader = websocket.Upgrader{
 	HandshakeTimeout: 5 * time.Second,
@@ -105,12 +110,13 @@ type terminalMessage struct {
 }
 
 type scrcpySession struct {
-	cmd        *exec.Cmd
-	video      *net.UnixConn
-	control    *net.UnixConn
-	scid       string
-	su         string
-	serverPath string
+	cmd       *exec.Cmd
+	video     *net.UnixConn
+	control   *net.UnixConn
+	output    *bytes.Buffer
+	scid      string
+	su        string
+	shellPath string
 }
 
 type cpuCounters struct{ total, idle uint64 }
@@ -659,13 +665,15 @@ func (s *Server) screen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	videoDone := make(chan error, 1)
+	var writeMu sync.Mutex
+	streamDone := make(chan error, 2)
 	go func() {
-		videoDone <- relayScrcpyVideo(conn, session.video)
+		streamDone <- relayScrcpyStream(conn, session.video, scrcpyVideoChannel, &writeMu)
 		_ = conn.Close()
 	}()
 	go func() {
-		_, _ = io.Copy(io.Discard, session.control)
+		streamDone <- relayScrcpyStream(conn, session.control, scrcpyDeviceChannel, &writeMu)
+		_ = conn.Close()
 	}()
 
 	for {
@@ -673,7 +681,7 @@ func (s *Server) screen(w http.ResponseWriter, r *http.Request) {
 		if readErr != nil {
 			break
 		}
-		if messageType != websocket.BinaryMessage || len(payload) < 2 || payload[0] != 1 {
+		if messageType != websocket.BinaryMessage || len(payload) < 2 || payload[0] != scrcpyControlChannel {
 			continue
 		}
 		if _, writeErr := session.control.Write(payload[1:]); writeErr != nil {
@@ -681,7 +689,10 @@ func (s *Server) screen(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	select {
-	case <-videoDone:
+	case streamErr := <-streamDone:
+		if streamErr != nil {
+			log.Printf("scrcpy relay ended: %v", streamErr)
+		}
 	default:
 	}
 }
@@ -750,7 +761,7 @@ func (s *Server) startScrcpySession() (*scrcpySession, error) {
 		"max_fps=30",
 		"tunnel_forward=true",
 		"power_on=false",
-		"clipboard_autosync=false",
+		"clipboard_autosync=true",
 		"cleanup=false",
 		"video_bit_rate=3000000",
 		// The dashboard is normally opened over plain HTTP on a LAN address.
@@ -761,17 +772,30 @@ func (s *Server) startScrcpySession() (*scrcpySession, error) {
 		"scid=" + scid,
 	}
 	su := filepath.Join(s.prefix, "bin", "su")
-	command := "exec env CLASSPATH=" + shellQuote(serverPath) + " " + shellJoin(serverArgs)
+	// scrcpy identifies itself to Android services as com.android.shell. It
+	// must therefore run as UID 2000; running it as root makes OxygenOS 11's
+	// clipboard service reject the package/UID pair and terminate control.
+	shellPath := "/data/local/tmp/router-admin-scrcpy-server-" + scid
+	prepare := "/system/bin/cp " + shellQuote(serverPath) + " " + shellQuote(shellPath) +
+		" && /system/bin/chown 2000:2000 " + shellQuote(shellPath) +
+		" && /system/bin/chmod 600 " + shellQuote(shellPath)
+	if prepareOutput, err := exec.Command(su, "-c", prepare).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("prepare scrcpy for shell UID: %w: %s", err, strings.TrimSpace(string(prepareOutput)))
+	}
+	innerCommand := "exec env HOME=/data/local/tmp TMPDIR=/data/local/tmp CLASSPATH=" +
+		shellQuote(shellPath) + " " + shellJoin(serverArgs)
+	command := "exec " + shellQuote(su) + " 2000 -c " + shellQuote(innerCommand)
 	cmd := exec.Command(su, "-c", command)
-	cmd.Dir = s.home
+	cmd.Dir = "/data/local/tmp"
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	if err := cmd.Start(); err != nil {
+		_ = exec.Command(su, "-c", "/system/bin/rm -f "+shellQuote(shellPath)).Run()
 		return nil, fmt.Errorf("start scrcpy: %w", err)
 	}
 
-	session := &scrcpySession{cmd: cmd, scid: scid, su: su, serverPath: serverPath}
+	session := &scrcpySession{cmd: cmd, output: &output, scid: scid, su: su, shellPath: shellPath}
 	video, err := dialAbstractUnix(socketName, 8*time.Second)
 	if err != nil {
 		session.close()
@@ -812,13 +836,16 @@ func dialAbstractUnix(name string, timeout time.Duration) (*net.UnixConn, error)
 	return nil, last
 }
 
-func relayScrcpyVideo(ws *websocket.Conn, video *net.UnixConn) error {
-	buf := make([]byte, 64<<10+1)
-	buf[0] = 0
+func relayScrcpyStream(ws *websocket.Conn, stream *net.UnixConn, channel byte, writeMu *sync.Mutex) error {
+	buf := make([]byte, (64<<10)+1)
+	buf[0] = channel
 	for {
-		n, err := video.Read(buf[1:])
+		n, err := stream.Read(buf[1:])
 		if n > 0 {
-			if writeErr := ws.WriteMessage(websocket.BinaryMessage, buf[:n+1]); writeErr != nil {
+			writeMu.Lock()
+			writeErr := ws.WriteMessage(websocket.BinaryMessage, buf[:n+1])
+			writeMu.Unlock()
+			if writeErr != nil {
 				return writeErr
 			}
 		}
@@ -839,9 +866,17 @@ func (s *scrcpySession) close() {
 		_ = s.cmd.Process.Kill()
 		_ = s.cmd.Wait()
 	}
+	if s.output != nil {
+		if message := strings.TrimSpace(s.output.String()); message != "" {
+			log.Printf("scrcpy server output: %s", tailLines(message, 30))
+		}
+	}
 	if s.su != "" && s.scid != "" {
 		pattern := "com.genymobile.scrcpy.Server " + scrcpyServerVersion + ".*scid=" + s.scid
 		_ = exec.Command(s.su, "-c", "pkill -f "+shellQuote(pattern)).Run()
+	}
+	if s.su != "" && s.shellPath != "" {
+		_ = exec.Command(s.su, "-c", "/system/bin/rm -f "+shellQuote(s.shellPath)).Run()
 	}
 }
 

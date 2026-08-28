@@ -27,6 +27,12 @@ health_check() {
   kill -0 "$dnsmasq_pid" 2>/dev/null || return 1
   /system/bin/ip -4 addr show dev "$lan" | grep -q 'inet 192\.168\.2\.1/24' || return 1
   /system/bin/ip -4 route show table 100 | grep -q "^default dev $ppp" || return 1
+  if grep -q '^codex_selective_proxy=enabled$' "$status"; then
+    grep -q '^codex_tun=up$' "$status" || return 1
+    grep -q '^codex_policy=active$' "$status" || return 1
+    targets="$(sed -n 's/^codex_targets=//p' "$status" | head -n 1)"
+    case "$targets" in ''|*[!0-9]*|0) return 1 ;; esac
+  fi
 }
 
 status() {
