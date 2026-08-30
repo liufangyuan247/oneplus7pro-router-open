@@ -12,6 +12,7 @@ SU="$PREFIX/bin/su"
 STATUS="$STATE/mihomo-data-plane.status"
 LAST_PID="$STATE/mihomo-data-plane.last-pid"
 LAST_RESTART="$STATE/mihomo-data-plane.last-restart"
+BYPASS="$HOME_DIR/router-stack/bin/mihomo-client-bypass"
 COOLDOWN_SECONDS=300
 
 mkdir -p "$STATE"
@@ -72,6 +73,13 @@ case "$cmdline" in
     *"$CONFIG"*) ;;
     *) fail core_identity_mismatch "pid=$pid" ;;
 esac
+
+# Reconcile the reserved priority-4990 source rules after boot, WAN recovery,
+# or any external policy-rule flush. This is intentionally checked before the
+# TUN invariant so configured clients never silently fall back into op7tun.
+if [ -x "$BYPASS" ]; then
+    "$SU" -c "'$BYPASS' apply" >/dev/null 2>&1 || fail client_bypass_unhealthy
+fi
 
 # Android denies the Termux app UID access to the inet_diag netlink socket.
 # Read listener state through the already-authorized Magisk root bridge.

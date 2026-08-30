@@ -10,7 +10,7 @@ UPDATER_SERVICE="$STACK/services/mihomo-updater"
 STAGE="$HOME/.stage"
 BACKUPS="$HOME/router-data/backups/mihomo"
 
-for file in mihomo mihomo-config.base.yaml mihomo-update-subscription mihomo-updater-run mihomo-run-root mihomo-health-probe ai-proxy-domains.txt selective-proxy-domains.txt metacubexd-ui.tar.gz metacubexd-config.js; do
+for file in mihomo mihomo-config.base.yaml mihomo-update-subscription mihomo-updater-run mihomo-run-root mihomo-health-probe mihomo-client-bypass ai-proxy-domains.txt selective-proxy-domains.txt metacubexd-ui.tar.gz metacubexd-config.js; do
     [ -s "$STAGE/$file" ] || { echo "missing staged $file" >&2; exit 1; }
 done
 
@@ -28,6 +28,9 @@ chmod 700 "$DATA" "$BACKUP"
 [ -f "$DATA/custom-ai-proxy-domains.txt" ] && cp -p "$DATA/custom-ai-proxy-domains.txt" "$BACKUP/custom-ai-proxy-domains.txt"
 [ -f "$DATA/selective-proxy-domains.txt" ] && cp -p "$DATA/selective-proxy-domains.txt" "$BACKUP/selective-proxy-domains.txt"
 [ -f "$DATA/custom-proxy-domains.txt" ] && cp -p "$DATA/custom-proxy-domains.txt" "$BACKUP/custom-proxy-domains.txt"
+[ -f "$DATA/client-bypass-ipv4.txt" ] && cp -p "$DATA/client-bypass-ipv4.txt" "$BACKUP/client-bypass-ipv4.txt"
+[ -f "$DATA/client-bypass-lan-iface" ] && cp -p "$DATA/client-bypass-lan-iface" "$BACKUP/client-bypass-lan-iface"
+[ -f "$STACK/bin/mihomo-client-bypass" ] && cp -p "$STACK/bin/mihomo-client-bypass" "$BACKUP/mihomo-client-bypass"
 [ -f "$HOME/router-data/cpa/config.yaml" ] && cp -p "$HOME/router-data/cpa/config.yaml" "$BACKUP/cpa-config.yaml"
 
 cp "$STAGE/mihomo" "$PREFIX/bin/mihomo.new"
@@ -55,6 +58,8 @@ cp "$STAGE/ai-proxy-domains.txt" "$DATA/ai-proxy-domains.txt"
 cp "$STAGE/selective-proxy-domains.txt" "$DATA/selective-proxy-domains.txt"
 [ -f "$DATA/custom-ai-proxy-domains.txt" ] || : > "$DATA/custom-ai-proxy-domains.txt"
 [ -f "$DATA/custom-proxy-domains.txt" ] || : > "$DATA/custom-proxy-domains.txt"
+[ -f "$DATA/client-bypass-ipv4.txt" ] || : > "$DATA/client-bypass-ipv4.txt"
+[ -f "$DATA/client-bypass-lan-iface" ] || : > "$DATA/client-bypass-lan-iface"
 if [ -s "$STAGE/mihomo-subscription.url" ] && [ ! -s "$DATA/subscription.url" ]; then
     cp "$STAGE/mihomo-subscription.url" "$DATA/subscription.url"
 fi
@@ -83,6 +88,10 @@ mv "$STACK/bin/mihomo-update-subscription.new" "$STACK/bin/mihomo-update-subscri
 cp "$STAGE/mihomo-health-probe" "$STACK/bin/mihomo-health-probe.new"
 chmod 700 "$STACK/bin/mihomo-health-probe.new"
 mv "$STACK/bin/mihomo-health-probe.new" "$STACK/bin/mihomo-health-probe"
+
+cp "$STAGE/mihomo-client-bypass" "$STACK/bin/mihomo-client-bypass.new"
+chmod 700 "$STACK/bin/mihomo-client-bypass.new"
+mv "$STACK/bin/mihomo-client-bypass.new" "$STACK/bin/mihomo-client-bypass"
 
 cp "$STAGE/mihomo-run-root" "$SERVICE/run"
 
@@ -118,6 +127,8 @@ EOF
 chmod 600 "$DATA/config.yaml" "$DATA/runtime-settings.yaml" "$DATA/runtime-mode" \
     "$DATA/ai-proxy-domains.txt" "$DATA/custom-ai-proxy-domains.txt" \
     "$DATA/selective-proxy-domains.txt" "$DATA/custom-proxy-domains.txt"
+chmod 600 "$DATA/client-bypass-ipv4.txt"
+chmod 600 "$DATA/client-bypass-lan-iface"
 [ ! -f "$DATA/subscription.url" ] || chmod 600 "$DATA/subscription.url"
 chmod 700 "$SERVICE/run" "$SERVICE/finish" "$SERVICE/log/run"
 chmod 700 "$UPDATER_SERVICE/run" "$UPDATER_SERVICE/finish" "$UPDATER_SERVICE/log/run"
@@ -211,7 +222,7 @@ fi
 
 rm -f "$STAGE/mihomo" "$STAGE/mihomo-config.base.yaml" \
     "$STAGE/mihomo-update-subscription" "$STAGE/mihomo-updater-run" \
-    "$STAGE/mihomo-health-probe" \
+    "$STAGE/mihomo-health-probe" "$STAGE/mihomo-client-bypass" \
     "$STAGE/ai-proxy-domains.txt" "$STAGE/selective-proxy-domains.txt" \
     "$STAGE/metacubexd-ui.tar.gz" "$STAGE/metacubexd-config.js" \
     "$STAGE/mihomo-subscription.url" "$STAGE/GeoSite.dat" "$STAGE/geoip.metadb"

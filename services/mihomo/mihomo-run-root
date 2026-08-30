@@ -10,6 +10,7 @@ CORE="$PREFIX/bin/mihomo"
 CONFIG="$DATA/config.yaml"
 PIDFILE="$DATA/supervised-core.pid"
 SU="$PREFIX/bin/su"
+BYPASS="$HOME/router-stack/bin/mihomo-client-bypass"
 SU_PID=''
 
 core_matches() {
@@ -49,6 +50,16 @@ if core_matches "$old_pid"; then
   exit 1
 fi
 rm -f "$PIDFILE"
+
+# Restore device-specific source-IP bypasses before op7tun is created. If a
+# configured bypass cannot safely reach physical table 100, do not start a TUN
+# that would silently capture that client instead.
+if [ -x "$BYPASS" ]; then
+  "$SU" -c "'$BYPASS' apply" || {
+    echo 'client bypass validation/apply failed; refusing to start Mihomo'
+    exit 1
+  }
+fi
 
 # Magisk su reparents its root command to the daemon, so runit cannot signal
 # the core directly. The root shell records the PID it will retain across

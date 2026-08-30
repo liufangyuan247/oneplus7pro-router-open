@@ -69,6 +69,40 @@ invariants remain immediately actionable.
 - Update service: `~/router-stack/services/mihomo-updater`
 - Data-plane probe: `~/router-stack/bin/mihomo-health-probe`
 - Last probe state: `~/router-data/health/mihomo-data-plane.status`
+- Client TUN bypass list: `~/router-data/mihomo/client-bypass-ipv4.txt`
+- Active LAN input interface: `~/router-data/mihomo/client-bypass-lan-iface`
+- Client TUN bypass control: `~/router-stack/bin/mihomo-client-bypass`
+
+## Per-client native TUN bypass
+
+Some cameras and other peer-to-peer appliances rely on stable kernel NAT and
+STUN endpoint mappings. A Mihomo `DIRECT` decision still crosses `op7tun` and
+the gVisor userspace stack, so such a device can be assigned a source-IP policy
+bypass without changing proxy policy for the rest of the home.
+
+Put the current LAN interface name in `client-bypass-lan-iface`, and one IPv4
+address per line in `client-bypass-ipv4.txt`; blank lines, comments, and
+duplicates are ignored. Both values come from runtime/private deployment data:
+real interfaces and client addresses never belong in this repository. Then run
+through Magisk root:
+
+```sh
+su -c '/data/data/com.termux/files/home/router-stack/bin/mihomo-client-bypass apply'
+su -c '/data/data/com.termux/files/home/router-stack/bin/mihomo-client-bypass status'
+su -c '/data/data/com.termux/files/home/router-stack/bin/mihomo-client-bypass clear'
+```
+
+The script reserves priority `4990` and routes only packets matching the active
+LAN input interface and a configured source `/32` through physical WAN table
+`100`. This is strictly ahead of the live priority `5000` path and cannot
+select Mihomo table `2022`. Apply is idempotent;
+an unavailable WAN table, invalid input, partial update, or verification error
+leaves or restores the previous rule set. Mihomo startup restores configured
+rules before creating `op7tun`, and the data-plane health probe repairs policy
+rule drift after boot or an external flush. `clear` removes runtime rules but
+does not erase the persistent list. Priority `4990` is reserved exclusively for
+this helper: any foreign rule at that priority makes apply, clear, and status
+fail without modifying policy state.
 
 Subscription updates are downloaded to a temporary directory, adapted,
 validated with `mihomo -t`, and atomically activated. Set
@@ -98,6 +132,7 @@ Useful checks on the phone:
 /data/adb/router-network/router-network status
 ip rule show
 ip route show table 2022
+su -c '~/router-stack/bin/mihomo-client-bypass status'
 pidof mihomo
 pidof sing-box
 ~/router-stack/bin/mihomo-update-subscription
@@ -106,7 +141,8 @@ pidof sing-box
 Local source verification:
 
 ```sh
-bash -n mihomo/*.sh router-stack/router-network.sh
+sh -n services/mihomo/*.sh services/mihomo/*-run
+sh services/mihomo/test-client-bypass.sh
 cd router-admin && go test ./...
 cd ../router-admin-ui && npm run export
 ```

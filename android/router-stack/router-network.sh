@@ -19,6 +19,12 @@ DNSMASQ_LOG="$BASE/dnsmasq.log"
 CODEX_DNSMASQ_LOG="$BASE/codex-dnsmasq.log"
 RUNTIME="$BASE/runtime"
 DNSMASQ_OPENAI_SCHEMA="$RUNTIME/dnsmasq-openai-dns-v2"
+DNSMASQ_UNIFIED_SCHEMA="$RUNTIME/dnsmasq-unified-mihomo-v1"
+DNSMASQ_POLICY="$RUNTIME/dnsmasq-policy"
+DNSMASQ_STATIC_HOSTS="$RUNTIME/dnsmasq-static-hosts"
+DNSMASQ_STATIC_SCHEMA_PID="$RUNTIME/dnsmasq-static-hosts-v1.pid"
+DNSMASQ_LEASE_FILES="${ROUTER_DNSMASQ_LEASE_FILES:-/data/data/com.termux/files/home/router-data/dnsmasq/dnsmasq.leases /data/misc/dhcp/dnsmasq.leases}"
+DATA_PLANE_STATE="$RUNTIME/lan-data-plane"
 CODEX_DOMAINS="$BASE/openai-domains"
 CODEX_CACHE="$RUNTIME/openai-addresses"
 CODEX_TARGETS="$RUNTIME/openai-targets"
@@ -36,11 +42,18 @@ SINGBOX="$PREFIX/bin/sing-box"
 DRILL="$PREFIX/bin/drill"
 CURL="$PREFIX/bin/curl"
 GAWK="$PREFIX/bin/awk"
+SS="$PREFIX/bin/ss"
+MIHOMO_DATA=/data/data/com.termux/files/home/router-data/mihomo
+MIHOMO_MODE_FILE="$MIHOMO_DATA/runtime-mode"
+MIHOMO_CONTROLLER=http://127.0.0.1:9091
+MIHOMO_TUN=op7tun
 PPPD=/system/bin/pppd
 
 TABLE_WAN=100
 TABLE_TPROXY=101
 TABLE_CODEX=102
+TABLE_MIHOMO=2022
+RULE_MIHOMO_LAN=5000
 RULE_TPROXY=8000
 RULE_TPROXY_UDP=8001
 RULE_TPROXY_LOCAL=8010
@@ -284,14 +297,174 @@ apply_ppp_queue() {
   fi
 }
 
+render_static_hosts() {
+  source_file="$1"
+  output="$2"
+  "$GAWK" '
+    /^[[:space:]]*dhcp-host[[:space:]]*=/ {
+      sub(/^[[:space:]]*dhcp-host[[:space:]]*=[[:space:]]*/, "")
+      print
+    }
+  ' "$source_file" > "$output"
+}
+
+write_static_hosts_runtime() {
+  candidate="$DNSMASQ_STATIC_HOSTS.new.$$"
+  if [ -n "${DNSMASQ_HOSTS_FILE:-}" ] && [ -r "$DNSMASQ_HOSTS_FILE" ]; then
+    render_static_hosts "$DNSMASQ_HOSTS_FILE" "$candidate"
+  else
+    : > "$candidate"
+  fi
+  chmod 600 "$candidate"
+  mv -f "$candidate" "$DNSMASQ_STATIC_HOSTS"
+}
+
+static_lease_list() {
+  load_config
+  [ -n "${DNSMASQ_HOSTS_FILE:-}" ] && [ -r "$DNSMASQ_HOSTS_FILE" ] || return 0
+  "$GAWK" '
+    /^[[:space:]]*dhcp-host[[:space:]]*=/ {
+      sub(/^[[:space:]]*dhcp-host[[:space:]]*=[[:space:]]*/, "")
+      count=split($0, item, ",")
+      mac=tolower(item[1]); ip=item[2]; name=(count >= 3 ? item[3] : "")
+      gsub(/[[:space:]]/, "", mac); gsub(/[[:space:]]/, "", ip)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      if (mac ~ /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/ && ip ~ /^[0-9.]+$/) {
+        printf "%s\t%s\t%s\n", mac, ip, name
+      }
+    }
+  ' "$DNSMASQ_HOSTS_FILE"
+}
+
+validate_static_lease() {
+  mac="$1" ip="$2" hostname="${3:-}"
+  echo "$mac" | "$GAWK" '/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/ { ok=1 } END { exit !ok }' || {
+    echo "invalid MAC address" >&2; return 1
+  }
+  case "$hostname" in
+    '') ;;
+    [A-Za-z0-9]* )
+      echo "$hostname" | "$GAWK" 'length <= 63 && /^[A-Za-z0-9][A-Za-z0-9._-]*$/ { ok=1 } END { exit !ok }' || {
+        echo "invalid hostname" >&2; return 1
+      }
+      ;;
+    *) echo "invalid hostname" >&2; return 1 ;;
+  esac
+  "$GAWK" -v candidate="$ip" -v lan="$LAN_ADDRESS" '
+    function ipnum(value, part, n) {
+      n=split(value, part, "."); if (n != 4) return -1
+      for (n=1; n<=4; n++) if (part[n] !~ /^[0-9]+$/ || part[n] > 255) return -1
+      return (((part[1]*256)+part[2])*256+part[3])*256+part[4]
+    }
+    BEGIN {
+      split(lan, cidr, "/"); router=ipnum(cidr[1]); address=ipnum(candidate); prefix=cidr[2]+0
+      if (router < 0 || address < 0 || prefix < 1 || prefix > 30) exit 1
+      block=2^(32-prefix); network=int(router/block)*block; broadcast=network+block-1
+      if (int(address/block) != int(router/block) || address == router || address == network || address == broadcast) exit 1
+    }
+  ' || { echo "IPv4 address must be a usable host in the LAN subnet and not the router address" >&2; return 1; }
+}
+
+update_static_lease() {
+  action="$1"
+  mac="$(printf '%s' "$2" | tr 'A-F' 'a-f')"
+  ip="${3:-}"
+  hostname="${4:-}"
+  load_config
+  [ -n "${DNSMASQ_HOSTS_FILE:-}" ] || { echo "DNSMASQ_HOSTS_FILE is not configured" >&2; return 1; }
+  case "$DNSMASQ_HOSTS_FILE" in /*) ;; *) echo "DNSMASQ_HOSTS_FILE must be absolute" >&2; return 1 ;; esac
+  case "$action" in
+    set) validate_static_lease "$mac" "$ip" "$hostname" || return 1 ;;
+    clear)
+      echo "$mac" | "$GAWK" '/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/ { ok=1 } END { exit !ok }' || {
+        echo "invalid MAC address" >&2; return 1
+      }
+      ;;
+    *) return 2 ;;
+  esac
+
+  mkdir -p "$(dirname "$DNSMASQ_HOSTS_FILE")"
+  [ -e "$DNSMASQ_HOSTS_FILE" ] || : > "$DNSMASQ_HOSTS_FILE"
+  chmod 600 "$DNSMASQ_HOSTS_FILE"
+  if [ "$action" = set ]; then
+    for lease_file in $DNSMASQ_LEASE_FILES; do
+      [ -r "$lease_file" ] || continue
+      if "$GAWK" -v wanted_ip="$ip" -v wanted_mac="$mac" '
+        $3 == wanted_ip && tolower($2) != wanted_mac { conflict=1 }
+        END { exit !conflict }
+      ' "$lease_file"; then
+        echo "IPv4 address is currently leased to another client" >&2; return 1
+      fi
+    done
+    if static_lease_list | "$GAWK" -F '\t' -v wanted_ip="$ip" -v wanted_mac="$mac" '
+      $2 == wanted_ip && $1 != wanted_mac { conflict=1 } END { exit !conflict }
+    '; then
+      echo "IPv4 address conflicts with another static lease" >&2; return 1
+    fi
+  fi
+
+  source_candidate="$DNSMASQ_HOSTS_FILE.new.$$"
+  runtime_candidate="$DNSMASQ_STATIC_HOSTS.new.$$"
+  validate_conf="$RUNTIME/dnsmasq-static-validate.conf.$$"
+  backup="$DNSMASQ_HOSTS_FILE.rollback.$$"
+  trap 'rm -f "$source_candidate" "$runtime_candidate" "$validate_conf" "$backup"' EXIT INT TERM
+  cp -p "$DNSMASQ_HOSTS_FILE" "$backup"
+  "$GAWK" -v action="$action" -v wanted_mac="$mac" -v wanted_ip="$ip" -v wanted_name="$hostname" '
+    function emit() {
+      printf "dhcp-host=%s,%s", wanted_mac, wanted_ip
+      if (wanted_name != "") printf ",%s", wanted_name
+      printf "\n"
+    }
+    /^[[:space:]]*dhcp-host[[:space:]]*=/ {
+      line=$0; sub(/^[[:space:]]*dhcp-host[[:space:]]*=[[:space:]]*/, "", line)
+      split(line, item, ","); entry_mac=tolower(item[1]); gsub(/[[:space:]]/, "", entry_mac)
+      if (entry_mac == wanted_mac) {
+        if (action == "set" && !written) { emit(); written=1 }
+        next
+      }
+    }
+    { print }
+    END { if (action == "set" && !written) emit() }
+  ' "$DNSMASQ_HOSTS_FILE" > "$source_candidate"
+  chmod 600 "$source_candidate"
+  render_static_hosts "$source_candidate" "$runtime_candidate"
+  chmod 600 "$runtime_candidate"
+  {
+    echo 'port=0'
+    echo 'no-resolv'
+    echo "dhcp-hostsfile=$runtime_candidate"
+  } > "$validate_conf"
+  "$DNSMASQ" --test --conf-file="$validate_conf" >/dev/null 2>&1 || {
+    echo "dnsmasq rejected the static lease candidate" >&2; return 1
+  }
+
+  if ! mv -f "$source_candidate" "$DNSMASQ_HOSTS_FILE" || ! mv -f "$runtime_candidate" "$DNSMASQ_STATIC_HOSTS"; then
+    cp -p "$backup" "$DNSMASQ_HOSTS_FILE" 2>/dev/null || true
+    write_static_hosts_runtime 2>/dev/null || true
+    echo "failed to publish static leases; previous configuration restored" >&2
+    return 1
+  fi
+  if pid_alive "$DNSMASQ_PID" && { ! kill -HUP "$(cat "$DNSMASQ_PID")" 2>/dev/null || ! kill -0 "$(cat "$DNSMASQ_PID")" 2>/dev/null; }; then
+    cp -p "$backup" "$DNSMASQ_HOSTS_FILE"
+    write_static_hosts_runtime
+    kill -HUP "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
+    echo "dnsmasq refresh failed; previous static leases restored" >&2
+    return 1
+  fi
+  rm -f "$backup" "$validate_conf"
+  trap - EXIT INT TERM
+  [ "$action" = set ] && printf 'STATIC_LEASE_SET\t%s\t%s\n' "$mac" "$ip" || printf 'STATIC_LEASE_CLEARED\t%s\n' "$mac"
+}
+
 write_dnsmasq_config() {
   lan="$1"
+  policy="${2:-direct}"
+  case "$policy" in mihomo|direct) ;; *) return 2 ;; esac
   lease_dir=/data/data/com.termux/files/home/router-data/dnsmasq
   mkdir -p "$lease_dir"
   touch "$lease_dir/dnsmasq.leases"
-  touch "$CODEX_HOSTS"
-  chmod 600 "$CODEX_HOSTS"
   chown 10207:10207 "$lease_dir" "$lease_dir/dnsmasq.leases" 2>/dev/null || true
+  write_static_hosts_runtime
   {
     cat <<EOF
 interface=$lan
@@ -301,28 +474,26 @@ port=53
 domain-needed
 bogus-priv
 no-resolv
-server=223.5.5.5
-server=119.29.29.29
 cache-size=10000
-addn-hosts=$CODEX_HOSTS
 EOF
-    # OpenAI DNS never goes to the ordinary LAN resolvers. The dedicated
-    # loopback resolver reaches a trusted upstream through op7codex and
-    # suppresses AAAA only for this IPv4-only namespace.
-    for domain in $(codex_domains); do
-      printf 'server=/%s/127.0.0.1#%s\n' "$domain" "$CODEX_DNS_PORT"
-    done
+    if [ "$policy" = mihomo ]; then
+      echo 'server=127.0.0.1#1053'
+    else
+      echo 'server=223.5.5.5'
+      echo 'server=119.29.29.29'
+    fi
     cat <<EOF
 dhcp-authoritative
 dhcp-range=192.168.2.100,192.168.2.249,255.255.255.0,12h
 dhcp-option=option:router,192.168.2.1
 dhcp-option=option:dns-server,192.168.2.1
 dhcp-leasefile=$lease_dir/dnsmasq.leases
+dhcp-hostsfile=$DNSMASQ_STATIC_HOSTS
 log-facility=$DNSMASQ_LOG
 user=root
 EOF
     if [ -n "${DNSMASQ_HOSTS_FILE:-}" ] && [ -r "$DNSMASQ_HOSTS_FILE" ]; then
-      cat "$DNSMASQ_HOSTS_FILE"
+      "$GAWK" '!/^[[:space:]]*dhcp-host[[:space:]]*=/' "$DNSMASQ_HOSTS_FILE"
     fi
   } > "$RUNTIME/dnsmasq.conf"
 }
@@ -370,13 +541,17 @@ codex_dnsmasq_ready() {
 
 start_dnsmasq() {
   lan="$1"
+  policy="$2"
+  case "$policy" in mihomo|direct) ;; *) return 2 ;; esac
   pid_alive "$DNSMASQ_PID" && return 0
-  write_dnsmasq_config "$lan"
+  write_dnsmasq_config "$lan" "$policy"
   "$DNSMASQ" --test --conf-file="$RUNTIME/dnsmasq.conf" >> "$DNSMASQ_LOG" 2>&1
-  log "starting DHCP/DNS on $lan"
+  log "starting DHCP/DNS on $lan policy=$policy"
   "$DNSMASQ" --keep-in-foreground --conf-file="$RUNTIME/dnsmasq.conf" >> "$DNSMASQ_LOG" 2>&1 &
   echo $! > "$DNSMASQ_PID"
-  touch "$DNSMASQ_OPENAI_SCHEMA"
+  echo $! > "$DNSMASQ_STATIC_SCHEMA_PID"
+  printf '%s\n' "$policy" > "$DNSMASQ_POLICY"
+  touch "$DNSMASQ_UNIFIED_SCHEMA"
 }
 
 stop_dnsmasq() {
@@ -384,7 +559,22 @@ stop_dnsmasq() {
     kill "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
     sleep 1
   fi
-  rm -f "$DNSMASQ_PID"
+  rm -f "$DNSMASQ_PID" "$DNSMASQ_POLICY" "$DNSMASQ_STATIC_SCHEMA_PID"
+}
+
+ensure_dnsmasq() {
+  lan="$1"
+  policy="$2"
+  case "$policy" in mihomo|direct) ;; *) return 2 ;; esac
+  current="$(cat "$DNSMASQ_POLICY" 2>/dev/null || true)"
+  if pid_alive "$DNSMASQ_PID" && [ "$current" = "$policy" ]; then
+    return 0
+  fi
+  if pid_alive "$DNSMASQ_PID"; then
+    log "switching DHCP/DNS policy: ${current:-unknown} -> $policy"
+    stop_dnsmasq
+  fi
+  start_dnsmasq "$lan" "$policy"
 }
 
 ensure_jump() {
@@ -468,17 +658,12 @@ apply_firewall() {
   "$IPTABLES" -A OP7_FORWARD -i "$lan" -o "$ppp" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
   "$IPTABLES" -A OP7_FORWARD -i "$lan" -o "$ppp" -j ACCEPT
   "$IPTABLES" -A OP7_FORWARD -i "$ppp" -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  # Whole-home proxy traffic leaves the kernel through the userspace TUN
-  # instead of ppp0. Android's tetherctrl_FORWARD chain ends in DROP, so the
-  # TUN path must be accepted here just like the direct PPP path. Without
-  # these two rules the policy route is installed successfully but every LAN
-  # packet is discarded before sing-box or Mihomo can see it.
-  "$IPTABLES" -A OP7_FORWARD -i "$lan" -o op7proxy -j ACCEPT
-  "$IPTABLES" -A OP7_FORWARD -i op7proxy -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  # OpenAI-only routing has an independent TUN and remains active while the
-  # whole-home proxy is disabled. The same path serves LAN clients and CPA.
-  "$IPTABLES" -A OP7_FORWARD -i "$lan" -o op7codex -j ACCEPT
-  "$IPTABLES" -A OP7_FORWARD -i op7codex -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  # Mihomo owns the only transparent TUN. Android's tetherctrl_FORWARD chain
+  # ends in DROP, so forwarded LAN packets need an explicit path in both
+  # directions. If Mihomo is stopped its auto-route disappears and the normal
+  # ppp0 rules above provide physical fail-open routing immediately.
+  "$IPTABLES" -A OP7_FORWARD -i "$lan" -o "$MIHOMO_TUN" -j ACCEPT
+  "$IPTABLES" -A OP7_FORWARD -i "$MIHOMO_TUN" -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   "$IPTABLES" -A OP7_FORWARD -i "$lan" -o "$wan" -d 192.168.1.1/32 -j ACCEPT
   "$IPTABLES" -A OP7_FORWARD -i "$ppp" -o "$lan" -j DROP
   "$IPTABLES" -A OP7_FORWARD -i tailscale0 -o "$lan" -j ACCEPT 2>/dev/null || true
@@ -516,6 +701,86 @@ mihomo_router_isolated() {
 
 mihomo_router_available() {
   mihomo_router_listening && mihomo_router_isolated
+}
+
+mihomo_tun_ready() {
+  [ -e "/sys/class/net/$MIHOMO_TUN" ] &&
+    "$IP" rule show 2>/dev/null | grep -q 'lookup 2022' &&
+    "$IP" route show table 2022 2>/dev/null | grep -q "dev $MIHOMO_TUN"
+}
+
+mihomo_mode() {
+  body="$($CURL -fsS --max-time 2 "$MIHOMO_CONTROLLER/configs" 2>/dev/null || true)"
+  mode="$(printf '%s' "$body" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')"
+  case "$mode" in rule|global|direct) echo "$mode" ;; *) echo stopped ;; esac
+}
+
+mihomo_policy_ready() {
+  mode="$(mihomo_mode)"
+  case "$mode" in rule|global) ;; *) return 1 ;; esac
+  mihomo_router_available && mihomo_tun_ready
+}
+
+mihomo_dns_ready() {
+  "$SS" -lntu 2>/dev/null | grep -q '127\.0\.0\.1:1053 '
+}
+
+desired_data_plane_state() {
+  if mihomo_policy_ready && mihomo_dns_ready; then
+    echo mihomo
+  else
+    echo direct
+  fi
+}
+
+remove_mihomo_lan_policy() {
+  "$IP" rule del priority "$RULE_MIHOMO_LAN" 2>/dev/null || true
+}
+
+sync_mihomo_lan_policy() {
+  lan="$1"
+  policy="$2"
+  if [ "$policy" = mihomo ]; then
+    if ! "$IP" rule show priority "$RULE_MIHOMO_LAN" 2>/dev/null | \
+         grep -Eq "^${RULE_MIHOMO_LAN}:.*from ${LAN_SUBNET} iif ${lan} lookup ${TABLE_MIHOMO}([[:space:]]|$)"; then
+      remove_mihomo_lan_policy
+      "$IP" rule add priority "$RULE_MIHOMO_LAN" from "$LAN_SUBNET" iif "$lan" lookup "$TABLE_MIHOMO"
+      log "enabled LAN Mihomo policy: $LAN_SUBNET iif $lan lookup $TABLE_MIHOMO"
+    fi
+  else
+    if "$IP" rule show priority "$RULE_MIHOMO_LAN" 2>/dev/null | grep -q "^${RULE_MIHOMO_LAN}:"; then
+      remove_mihomo_lan_policy
+      log "disabled LAN Mihomo policy; traffic falls back to table $TABLE_WAN"
+    fi
+  fi
+}
+
+reconcile_lan_data_plane() {
+  lan="$1"
+  desired="$(desired_data_plane_state)"
+
+  # Route and DNS are one state machine. Enabling installs the TUN route before
+  # clients receive proxy-aware DNS. Disabling withdraws the TUN route first,
+  # then restores direct DNS, so a Mihomo failure always fails open to PPPoE.
+  sync_mihomo_lan_policy "$lan" "$desired"
+  ensure_dnsmasq "$lan" "$desired"
+  printf '%s\n' "$desired" > "$DATA_PLANE_STATE"
+}
+
+write_mihomo_mode() {
+  mode="$1"
+  printf '%s\n' "$mode" > "$MIHOMO_MODE_FILE.new"
+  chmod 600 "$MIHOMO_MODE_FILE.new"
+  chown 10207:10207 "$MIHOMO_MODE_FILE.new" 2>/dev/null || true
+  mv "$MIHOMO_MODE_FILE.new" "$MIHOMO_MODE_FILE"
+}
+
+patch_mihomo_mode() {
+  mode="$1"
+  case "$mode" in rule|global|direct) ;; *) return 2 ;; esac
+  "$CURL" -fsS --max-time 5 -X PATCH -H 'Content-Type: application/json' \
+    --data-binary "{\"mode\":\"$mode\"}" "$MIHOMO_CONTROLLER/configs" >/dev/null
+  write_mihomo_mode "$mode"
 }
 
 write_mihomo_endpoint_cidrs() {
@@ -1118,43 +1383,23 @@ set_proxy_state() {
     0)
       write_proxy_flag 0
       PROXY_ENABLED=0
-      stop_proxy
-      echo WHOLE_HOME_PROXY_DISABLED
+      if mihomo_router_listening; then
+        patch_mihomo_mode direct
+      else
+        write_mihomo_mode direct
+      fi
+      echo MIHOMO_MODE_DIRECT
       ;;
     1)
       load_config
       mihomo_router_available || {
-        echo 'Mihomo mixed port 17890 is unavailable; full-house proxy remains disabled' >&2
+        echo 'Mihomo is unavailable; rule mode was not enabled' >&2
         return 1
       }
-      write_singbox_config
-      "$SINGBOX" check -c "$RUNTIME/sing-box.json" >/dev/null
+      patch_mihomo_mode rule
       write_proxy_flag 1
       PROXY_ENABLED=1
-      if [ ! -f "$ACTIVE" ]; then
-        echo WHOLE_HOME_PROXY_QUEUED
-        return 0
-      fi
-      attempt=0
-      while [ "$attempt" -lt 15 ]; do
-        if [ -s "$RUNTIME/interfaces" ]; then
-          set -- $(cat "$RUNTIME/interfaces")
-          lan="${2:-}"
-        else
-          lan=""
-        fi
-        [ -n "$lan" ] && proxy_ready "$lan" && {
-          echo WHOLE_HOME_PROXY_ENABLED
-          return 0
-        }
-        attempt=$((attempt + 1))
-        sleep 1
-      done
-      write_proxy_flag 0
-      PROXY_ENABLED=0
-      stop_proxy
-      echo 'full-house proxy failed to become ready; direct routing restored' >&2
-      return 1
+      echo MIHOMO_MODE_RULE
       ;;
     *)
       echo 'proxy state must be 0 or 1' >&2
@@ -1165,23 +1410,13 @@ set_proxy_state() {
 
 refresh_proxy_state() {
   load_config
-  proxy_requested || { echo WHOLE_HOME_PROXY_DISABLED; return 0; }
-  write_singbox_config
-  [ -s "$RUNTIME/interfaces" ] || { echo WHOLE_HOME_PROXY_QUEUED; return 0; }
-  set -- $(cat "$RUNTIME/interfaces")
-  wan="${1:-}" lan="${2:-}" ppp="${3:-}"
-  [ -n "$wan" ] && [ -n "$lan" ] && [ -n "$ppp" ] || return 1
-  proxy_lock_acquire || { echo 'proxy refresh lock timeout' >&2; return 1; }
-  stop_proxy_unlocked
-  apply_proxy_unlocked "$wan" "$lan" "$ppp"
-  if proxy_ready "$lan"; then
-    proxy_lock_release
-    echo WHOLE_HOME_PROXY_REFRESHED
-    return 0
+  if [ "${PROXY_ENABLED:-0}" = 1 ]; then
+    patch_mihomo_mode rule
+    echo MIHOMO_MODE_RULE
+  else
+    if mihomo_router_listening; then patch_mihomo_mode direct; else write_mihomo_mode direct; fi
+    echo MIHOMO_MODE_DIRECT
   fi
-  proxy_lock_release
-  echo 'full-house proxy refresh failed; daemon will retry safely' >&2
-  return 1
 }
 
 apply_routes() {
@@ -1202,6 +1437,7 @@ apply_routes() {
 }
 
 remove_routes() {
+  remove_mihomo_lan_policy
   "$IP" rule del priority "$RULE_WAN" 2>/dev/null || true
   "$IP" route flush table "$TABLE_WAN" 2>/dev/null || true
   "$IP" route del default dev ppp0 table main 2>/dev/null || true
@@ -1226,12 +1462,12 @@ activate_router() {
   sysctl -w "net.ipv4.conf.$lan.rp_filter=0" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.conf.$wan.rp_filter=0" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.conf.$ppp.rp_filter=0" >/dev/null 2>&1 || true
-  start_dnsmasq "$lan"
   apply_ppp_queue "$ppp"
   apply_routes "$wan" "$lan" "$ppp"
+  reconcile_lan_data_plane "$lan"
+  stop_codex_proxy
+  stop_proxy
   apply_firewall "$wan" "$lan" "$ppp"
-  apply_codex_proxy "$wan" "$lan" "$ppp"
-  apply_proxy "$wan" "$lan" "$ppp"
   if [ "${DISABLE_WIFI_ON_ACTIVE:-0}" = "1" ]; then
     # The phone must not associate with the downstream AP while routing it.
     # Doing so creates a layer-2 loop and lets Android's Wi-Fi route compete
@@ -1259,29 +1495,22 @@ cleanup_runtime() {
     [ -n "${1:-}" ] && "$IP" addr del "$MODEM_ADDRESS" dev "$1" 2>/dev/null || true
     [ -n "${2:-}" ] && "$IP" addr del "$LAN_ADDRESS" dev "$2" 2>/dev/null || true
   fi
-  rm -f "$ACTIVE" "$RUNTIME/interfaces"
+  rm -f "$ACTIVE" "$RUNTIME/interfaces" "$DATA_PLANE_STATE"
   rm -f "$ADMIN_INTERFACES"
 }
 
 validate() {
   load_config
-  for binary in "$IP" "$IPTABLES" "$TC" "$DNSMASQ" "$PPPOE" "$PPPD" "$SINGBOX" "$CURL" "$GAWK"; do
+  for binary in "$IP" "$IPTABLES" "$TC" "$DNSMASQ" "$PPPOE" "$PPPD" "$CURL" "$GAWK" "$SS"; do
     [ -x "$binary" ] || { echo "missing $binary" >&2; exit 1; }
   done
   wan="$(resolve_wan_iface)"
   lan="$(resolve_lan_iface "$wan")"
   [ "$wan" != "$lan" ]
-  write_dnsmasq_config "$lan"
+  write_dnsmasq_config "$lan" direct
   "$DNSMASQ" --test --conf-file="$RUNTIME/dnsmasq.conf"
   write_ppp_options "$wan"
-  write_singbox_config
-  "$SINGBOX" check -c "$RUNTIME/sing-box.json"
-  validate_codex_domains
-  write_codex_singbox_config
-  "$SINGBOX" check -c "$RUNTIME/codex-sing-box.json"
-  write_codex_dnsmasq_config
-  "$DNSMASQ" --test --conf-file="$RUNTIME/codex-dnsmasq.conf"
-  echo "VALID WAN=$wan LAN=$lan PROXY=${PROXY_ENABLED:-0} CODEX=${CODEX_PROXY_ENABLED:-1}"
+  echo "VALID WAN=$wan LAN=$lan ENGINE=mihomo MODE=$(mihomo_mode)"
 }
 
 status() {
@@ -1303,16 +1532,23 @@ status() {
     echo "ppp_qdisc=unavailable"
   fi
   echo "dnsmasq=$([ -s "$DNSMASQ_PID" ] && cat "$DNSMASQ_PID" || echo down)"
-  echo "whole_home_proxy=$([ "${PROXY_ENABLED:-0}" = 1 ] && echo enabled || echo disabled)"
+  echo "dns_policy=$(cat "$DNSMASQ_POLICY" 2>/dev/null || echo unknown)"
+  echo "lan_data_plane=$(cat "$DATA_PLANE_STATE" 2>/dev/null || echo direct)"
+  mode="$(mihomo_mode)"
+  echo "traffic_engine=mihomo"
+  echo "mihomo_mode=$mode"
+  echo "whole_home_proxy=$([ "$mode" = rule ] || [ "$mode" = global ] && echo enabled || echo disabled)"
   echo "mihomo_router=$(mihomo_router_listening && echo available || echo missing)"
   echo "mihomo_isolated=$(mihomo_router_isolated && echo yes || echo no)"
-  echo "proxy_tun=$([ -e /sys/class/net/op7proxy ] && echo up || echo down)"
-  echo "local_app_proxy=$([ -e /sys/class/net/op7proxy ] && "$IP" rule show priority "$RULE_TPROXY_LOCAL" 2>/dev/null | grep -q "lookup $TABLE_TPROXY" && echo active || echo inactive)"
-  echo "codex_selective_proxy=$([ "${CODEX_PROXY_ENABLED:-1}" = 1 ] && echo enabled || echo disabled)"
-  echo "codex_tun=$([ -e /sys/class/net/op7codex ] && echo up || echo down)"
-  echo "codex_dns=$(codex_dnsmasq_ready && echo up || echo down)"
-  echo "codex_targets=$([ -s "$CODEX_TARGETS" ] && wc -l < "$CODEX_TARGETS" | tr -d ' ' || echo 0)"
-  echo "codex_policy=$(codex_routes_match 2>/dev/null && echo active || echo inactive)"
+  echo "mihomo_tun=$(mihomo_tun_ready && echo up || echo down)"
+  echo "lan_tun_policy=$([ "$(cat "$DATA_PLANE_STATE" 2>/dev/null || echo direct)" = mihomo ] && "$IP" rule show priority "$RULE_MIHOMO_LAN" 2>/dev/null | grep -q "lookup $TABLE_MIHOMO" && echo active || echo inactive)"
+  echo "proxy_tun=$(mihomo_tun_ready && echo up || echo down)"
+  echo "local_app_proxy=$(mihomo_tun_ready && echo active || echo inactive)"
+  echo "codex_selective_proxy=unified"
+  echo "codex_tun=$(mihomo_tun_ready && echo up || echo down)"
+  echo "codex_dns=integrated"
+  echo "codex_targets=geosite"
+  echo "codex_policy=$(mihomo_tun_ready && [ "$mode" = rule ] && echo active || echo inactive)"
 }
 
 daemon() {
@@ -1323,12 +1559,15 @@ daemon() {
   trap 'rm -f "$PIDFILE"' EXIT
   trap 'exit 0' INT TERM
   log "network manager started"
-  if pid_alive "$DNSMASQ_PID" && [ ! -f "$DNSMASQ_OPENAI_SCHEMA" ]; then
-    # A live upgrade may inherit dnsmasq from the previous manager. Restart it
-    # once so the OpenAI domain forwarding rules are loaded; SIGHUP alone does
-    # not reread the main dnsmasq configuration file.
+  if pid_alive "$DNSMASQ_PID" && {
+       [ ! -s "$DNSMASQ_POLICY" ] ||
+       [ "$(cat "$DNSMASQ_STATIC_SCHEMA_PID" 2>/dev/null || true)" != "$(cat "$DNSMASQ_PID")" ];
+     }; then
+    # A live upgrade has no policy marker or the running dnsmasq predates the
+    # hot-reloadable static-hosts schema. Restart once so the process actually
+    # opens dhcp-hostsfile; rewriting dnsmasq.conf alone does not reload it.
     stop_dnsmasq
-    log "restarting dnsmasq for trusted OpenAI DNS forwarding"
+    log "restarting dnsmasq for current DNS/static-hosts schema"
   fi
   while :; do
     if [ ! -f "$ARMED" ]; then
@@ -1362,7 +1601,6 @@ daemon() {
     # from the downstream AP during recovery.
     if has_carrier "$lan"; then
       "$IP" addr replace "$LAN_ADDRESS" dev "$lan"
-      pid_alive "$DNSMASQ_PID" || start_dnsmasq "$lan"
     else
       stop_dnsmasq
     fi
@@ -1382,11 +1620,11 @@ daemon() {
       else
         "$IP" addr replace "$LAN_ADDRESS" dev "$lan"
         "$IP" addr replace "$MODEM_ADDRESS" dev "$wan"
-        pid_alive "$DNSMASQ_PID" || start_dnsmasq "$lan"
         apply_ppp_queue "$ppp"
         apply_routes "$wan" "$lan" "$ppp"
-        apply_codex_proxy "$wan" "$lan" "$ppp"
-        apply_proxy "$wan" "$lan" "$ppp"
+        reconcile_lan_data_plane "$lan"
+        stop_codex_proxy
+        stop_proxy
         publish_interfaces "$wan" "$lan" "$ppp"
         if [ "${DISABLE_WIFI_ON_ACTIVE:-0}" = "1" ]; then
           svc wifi disable >/dev/null 2>&1 || true
@@ -1399,28 +1637,40 @@ daemon() {
       stop_codex_proxy
       stop_proxy
       if has_carrier "$lan"; then
-        pid_alive "$DNSMASQ_PID" || start_dnsmasq "$lan"
+        ensure_dnsmasq "$lan" direct
+        printf '%s\n' direct > "$DATA_PLANE_STATE"
       fi
       rm -f "$ACTIVE"
       log "router inactive: PPPoE is down; LAN management retained"
+    elif has_carrier "$lan"; then
+      # The LAN management plane remains available before the first successful
+      # PPPoE session, but without an active WAN it must use the direct state.
+      remove_mihomo_lan_policy
+      ensure_dnsmasq "$lan" direct
+      printf '%s\n' direct > "$DATA_PLANE_STATE"
     fi
     sleep 5
   done
 }
 
-mkdir -p "$BASE" "$RUNTIME"
-chmod 700 "$BASE" "$RUNTIME"
+if [ "${ROUTER_NETWORK_SOURCE_ONLY:-0}" != 1 ]; then
+  mkdir -p "$BASE" "$RUNTIME"
+  chmod 700 "$BASE" "$RUNTIME"
 
-case "${1:-status}" in
+  case "${1:-status}" in
   validate) validate ;;
   status) status ;;
   proxy-on) set_proxy_state 1 ;;
   proxy-off) set_proxy_state 0 ;;
   proxy-refresh) refresh_proxy_state ;;
-  codex-refresh) refresh_codex_proxy ;;
+  codex-refresh) echo CODEX_POLICY_MANAGED_BY_MIHOMO ;;
+  list-static) static_lease_list ;;
+  set-static) [ "$#" -ge 3 ] || { echo "usage: $0 set-static MAC IPv4 [hostname]" >&2; exit 2; }; update_static_lease set "$2" "$3" "${4:-}" ;;
+  clear-static) [ "$#" -eq 2 ] || { echo "usage: $0 clear-static MAC" >&2; exit 2; }; update_static_lease clear "$2" ;;
   daemon) daemon ;;
   arm) touch "$ARMED"; echo ARMED ;;
   disarm) rm -f "$ARMED"; cleanup_runtime; echo DISARMED ;;
   cleanup) cleanup_runtime; echo CLEANED ;;
-  *) echo "usage: $0 {validate|status|proxy-on|proxy-off|proxy-refresh|codex-refresh|daemon|arm|disarm|cleanup}" >&2; exit 2 ;;
-esac
+    *) echo "usage: $0 {validate|status|proxy-on|proxy-off|proxy-refresh|codex-refresh|list-static|set-static|clear-static|daemon|arm|disarm|cleanup}" >&2; exit 2 ;;
+  esac
+fi

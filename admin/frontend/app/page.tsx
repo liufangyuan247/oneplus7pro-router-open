@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  FormEvent,
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { BrowserScreenControl } from "./web-screen";
 
 type Tab =
@@ -107,6 +114,8 @@ type Snapshot = {
     State: string;
     Source: string;
     Expires: number;
+    StaticLease: boolean;
+    StaticIP: string;
   }[];
   services: {
     Name: string;
@@ -400,22 +409,26 @@ const demo: Snapshot = {
   ],
   clients: [
     {
-      IP: "192.168.2.152",
-      MAC: "88:66:5a:3f:72:7f",
-      Hostname: "未知设备",
+      IP: "192.168.2.151",
+      MAC: "02:00:00:00:00:01",
+      Hostname: "演示手机",
       Interface: "wlan0",
       State: "已发现",
       Source: "邻居缓存",
       Expires: 0,
+      StaticLease: false,
+      StaticIP: "",
     },
     {
-      IP: "192.168.2.203",
-      MAC: "8e:3e:4c:de:29:16",
-      Hostname: "未知设备",
+      IP: "192.168.2.200",
+      MAC: "02:00:00:00:00:02",
+      Hostname: "演示摄像头",
       Interface: "wlan0",
       State: "已发现",
       Source: "邻居缓存",
       Expires: 0,
+      StaticLease: true,
+      StaticIP: "192.168.2.200",
     },
   ],
   services: [
@@ -753,7 +766,9 @@ export default function Home() {
         {active === "network" && (
           <Network data={data} history={history} onNotice={setNotice} />
         )}
-        {active === "clients" && <Clients data={data} />}
+        {active === "clients" && (
+          <Clients data={data} refresh={refresh} setNotice={setNotice} />
+        )}
         {active === "services" && (
           <Services
             data={data}
@@ -1598,7 +1613,102 @@ function Network({
   );
 }
 
-function Clients({ data }: { data: Snapshot }) {
+function Clients({
+  data,
+  refresh,
+  setNotice,
+}: {
+  data: Snapshot;
+  refresh: (quiet?: boolean) => Promise<void>;
+  setNotice: (value: string) => void;
+}) {
+  const [editingMac, setEditingMac] = useState("");
+  const [staticIP, setStaticIP] = useState("");
+  const [pendingMac, setPendingMac] = useState("");
+  const [error, setError] = useState("");
+
+  const beginEdit = (client: Snapshot["clients"][number]) => {
+    setEditingMac(client.MAC);
+    setStaticIP(client.StaticIP || client.IP);
+    setError("");
+  };
+
+  const readError = async (response: Response, fallback: string) => {
+    try {
+      const body = (await response.json()) as { error?: string };
+      return body.error || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const saveStaticLease = async (mac: string) => {
+    const ip = staticIP.trim();
+    const octets = ip.split(".");
+    if (
+      octets.length !== 4 ||
+      octets.some(
+        (octet) =>
+          !/^\d{1,3}$/.test(octet) ||
+          Number(octet) > 255 ||
+          (octet.length > 1 && octet.startsWith("0")),
+      )
+    ) {
+      setError("请输入有效的 IPv4 地址，例如 192.168.2.200");
+      return;
+    }
+
+    setPendingMac(mac);
+    setError("");
+    try {
+      const response = await fetch("/api/clients/static-lease", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mac, ip }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "设置静态租约失败"));
+      }
+      setEditingMac("");
+      setNotice(`已将 ${mac} 固定为 ${ip}`);
+      await refresh(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "设置静态租约失败");
+    } finally {
+      setPendingMac("");
+    }
+  };
+
+  const clearStaticLease = async (client: Snapshot["clients"][number]) => {
+    if (
+      !window.confirm(
+        `清除 ${client.Hostname || client.MAC} 的静态租约？设备下次续租时可能获得其他地址。`,
+      )
+    ) {
+      return;
+    }
+
+    setPendingMac(client.MAC);
+    setError("");
+    try {
+      const response = await fetch("/api/clients/static-lease", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mac: client.MAC }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "清除静态租约失败"));
+      }
+      setEditingMac("");
+      setNotice(`已清除 ${client.Hostname || client.MAC} 的静态租约`);
+      await refresh(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "清除静态租约失败");
+    } finally {
+      setPendingMac("");
+    }
+  };
+
   return (
     <div className="view">
       <div className="section-heading">
@@ -1608,9 +1718,14 @@ function Clients({ data }: { data: Snapshot }) {
         </div>
         <strong className="count-badge">{data.clients.length} 台</strong>
       </div>
-      <article className="panel">
+      <article className="panel clients-panel">
+        {error && !editingMac && (
+          <p className="static-lease-page-error" role="alert">
+            {error}
+          </p>
+        )}
         <div className="table-wrap">
-          <table>
+          <table className="clients-table">
             <thead>
               <tr>
                 <th>设备</th>
@@ -1619,34 +1734,140 @@ function Clients({ data }: { data: Snapshot }) {
                 <th>接口</th>
                 <th>来源</th>
                 <th>状态</th>
+                <th>地址分配</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              {data.clients.map((client) => (
-                <tr key={`${client.MAC}-${client.IP}`}>
-                  <td>
-                    <div className="device-cell">
-                      <span>
-                        {(client.Hostname || "?").slice(0, 2).toUpperCase()}
-                      </span>
-                      <strong>{client.Hostname || "未知设备"}</strong>
-                    </div>
-                  </td>
-                  <td>{client.IP}</td>
-                  <td className="mono">{client.MAC}</td>
-                  <td>{client.Interface || "LAN"}</td>
-                  <td>{client.Source}</td>
-                  <td>
-                    <span
-                      className={
-                        client.State === "在线" ? "state-good" : "state-muted"
-                      }
-                    >
-                      {client.State || "租约"}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+              {data.clients.map((client) => {
+                const busy = pendingMac === client.MAC;
+                const editing = editingMac === client.MAC;
+                return (
+                  <Fragment key={`${client.MAC}-${client.IP}`}>
+                    <tr className={editing ? "client-row editing" : "client-row"}>
+                      <td data-label="设备">
+                        <div className="device-cell">
+                          <span>
+                            {(client.Hostname || "?").slice(0, 2).toUpperCase()}
+                          </span>
+                          <strong>{client.Hostname || "未知设备"}</strong>
+                        </div>
+                      </td>
+                      <td data-label="当前 IP">{client.IP}</td>
+                      <td data-label="MAC 地址" className="mono">
+                        {client.MAC}
+                      </td>
+                      <td data-label="接口">{client.Interface || "LAN"}</td>
+                      <td data-label="来源">{client.Source}</td>
+                      <td data-label="状态">
+                        <span
+                          className={
+                            client.State === "在线"
+                              ? "state-good"
+                              : "state-muted"
+                          }
+                        >
+                          {client.State || "租约"}
+                        </span>
+                      </td>
+                      <td data-label="地址分配">
+                        <div className="lease-state">
+                          <span
+                            className={
+                              client.StaticLease
+                                ? "lease-badge static"
+                                : "lease-badge dynamic"
+                            }
+                          >
+                            {client.StaticLease ? "静态租约" : "动态租约"}
+                          </span>
+                          {client.StaticLease && (
+                            <small>{client.StaticIP || client.IP}</small>
+                          )}
+                        </div>
+                      </td>
+                      <td data-label="操作">
+                        <div className="client-actions">
+                          <button
+                            type="button"
+                            onClick={() => beginEdit(client)}
+                            disabled={busy}
+                          >
+                            {client.StaticLease ? "修改" : "设置固定"}
+                          </button>
+                          {client.StaticLease && (
+                            <button
+                              className="danger-quiet"
+                              type="button"
+                              onClick={() => void clearStaticLease(client)}
+                              disabled={busy}
+                            >
+                              {busy ? "处理中…" : "清除"}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {editing && (
+                      <tr className="client-editor-row">
+                        <td colSpan={8}>
+                          <form
+                            className="static-lease-editor"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              void saveStaticLease(client.MAC);
+                            }}
+                          >
+                            <div>
+                              <strong>固定设备地址</strong>
+                              <small>
+                                为 {client.Hostname || client.MAC} 保留一个 LAN
+                                地址
+                              </small>
+                            </div>
+                            <label>
+                              <span>固定 IP</span>
+                              <input
+                                value={staticIP}
+                                onChange={(event) => {
+                                  setStaticIP(event.target.value);
+                                  setError("");
+                                }}
+                                inputMode="decimal"
+                                autoComplete="off"
+                                spellCheck={false}
+                                aria-invalid={Boolean(error)}
+                                disabled={busy}
+                                autoFocus
+                              />
+                            </label>
+                            <div className="static-lease-actions">
+                              <button type="submit" disabled={busy}>
+                                {busy ? "正在应用…" : "应用"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingMac("");
+                                  setError("");
+                                }}
+                                disabled={busy}
+                              >
+                                取消
+                              </button>
+                            </div>
+                            {error && (
+                              <p className="static-lease-error" role="alert">
+                                {error}
+                              </p>
+                            )}
+                          </form>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1658,7 +1879,7 @@ function Clients({ data }: { data: Snapshot }) {
       </article>
       <p className="safe-note">
         列表现在只统计 LAN 网口 eth1 /
-        192.168.2.0/24，已排除光猫上联、路由器自身地址和过期租约。“在线”来自当前邻居表，“租约”表示设备曾获取地址但此刻未必活跃。
+        192.168.2.0/24，已排除光猫上联、路由器自身地址和过期租约。“在线”来自当前邻居表，“租约”表示设备曾获取地址但此刻未必活跃。设置固定地址后，设备可能需要重新连接网络或续租才会切换到新地址。
       </p>
     </div>
   );

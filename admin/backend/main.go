@@ -44,6 +44,7 @@ const (
 	mihomoCodexGroup       = "Codex-日本"
 	mihomoCodexAutoGroup   = "Codex-日本自动"
 	routerNetworkManager   = "/data/adb/router-network/router-network"
+	clientPolicyManager    = routerNetworkManager
 	tailscaleControl       = "/data/adb/tailscale/bin/tailscale-control"
 )
 
@@ -71,6 +72,7 @@ type Server struct {
 	started                            time.Time
 	mu                                 sync.Mutex
 	subscriptionMu                     sync.Mutex
+	clientPolicyMu                     sync.Mutex
 	sessions                           map[string]time.Time
 	lastCPU                            cpuCounters
 	lastCoreCPU                        map[int]cpuCounters
@@ -200,6 +202,14 @@ type InterfaceInfo struct {
 type ClientInfo struct {
 	IP, MAC, Hostname, Interface, State, Source string
 	Expires                                     int64
+	StaticLease                                 bool
+	StaticIP                                    string
+}
+
+type StaticLease struct {
+	MAC      string `json:"mac"`
+	IP       string `json:"ip"`
+	Hostname string `json:"hostname,omitempty"`
 }
 type ServiceInfo struct {
 	Name, Label, State   string
@@ -341,6 +351,7 @@ func main() {
 	mux.HandleFunc("/api/login", s.login)
 	mux.HandleFunc("/api/logout", s.auth(s.logout))
 	mux.HandleFunc("/api/snapshot", s.auth(s.snapshot))
+	mux.HandleFunc("/api/clients/static-lease", s.auth(s.staticLeaseAPI))
 	mux.HandleFunc("/api/services/action", s.auth(s.serviceAction))
 	mux.HandleFunc("/api/logs", s.auth(s.logs))
 	mux.HandleFunc("/api/tailscale", s.auth(s.tailscaleAPI))
@@ -1400,8 +1411,167 @@ func readNetDev() map[string]netCounter {
 	return out
 }
 
+func normalizeClientMAC(value string) (string, error) {
+	mac, err := net.ParseMAC(strings.TrimSpace(value))
+	if err != nil || len(mac) != 6 {
+		return "", errors.New("MAC 地址格式无效")
+	}
+	allZero := true
+	for _, octet := range mac {
+		if octet != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero || mac[0]&1 != 0 {
+		return "", errors.New("MAC 地址必须是有效的单播地址")
+	}
+	return strings.ToLower(mac.String()), nil
+}
+
+func validateStaticIPv4(value, lanAddress string) (string, error) {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil || ip.To4() == nil || strings.Contains(value, ":") {
+		return "", errors.New("固定 IP 必须是 IPv4 地址")
+	}
+	ip = ip.To4()
+	routerIP, lanNet, err := net.ParseCIDR(lanAddress)
+	if err != nil || routerIP.To4() == nil || !lanNet.Contains(ip) {
+		return "", errors.New("固定 IP 必须属于当前 LAN 子网")
+	}
+	networkIP := routerIP.Mask(lanNet.Mask).To4()
+	broadcast := make(net.IP, net.IPv4len)
+	for i := range broadcast {
+		broadcast[i] = networkIP[i] | ^lanNet.Mask[i]
+	}
+	if ip.Equal(routerIP) || ip.Equal(networkIP) || ip.Equal(broadcast) {
+		return "", errors.New("固定 IP 不能使用路由器、网络或广播地址")
+	}
+	return ip.String(), nil
+}
+
+func validStaticHostname(value string) bool {
+	if value == "" {
+		return true
+	}
+	return len(value) <= 63 && regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`).MatchString(value)
+}
+
+func parseStaticLeases(text string) map[string]StaticLease {
+	out := make(map[string]StaticLease)
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Split(strings.TrimRight(line, "\r"), "\t")
+		if len(fields) < 2 {
+			continue
+		}
+		mac, err := normalizeClientMAC(fields[0])
+		ip := net.ParseIP(strings.TrimSpace(fields[1]))
+		if err != nil || ip == nil || ip.To4() == nil {
+			continue
+		}
+		lease := StaticLease{MAC: mac, IP: ip.To4().String()}
+		if len(fields) >= 3 && validStaticHostname(strings.TrimSpace(fields[2])) {
+			lease.Hostname = strings.TrimSpace(fields[2])
+		}
+		out[mac] = lease
+	}
+	return out
+}
+
+func (s *Server) readStaticLeases() map[string]StaticLease {
+	output, err := s.execSu(shellJoin([]string{clientPolicyManager, "list-static"}))
+	if err != nil {
+		return map[string]StaticLease{}
+	}
+	return parseStaticLeases(string(output))
+}
+
+func policyCommandError(output []byte, fallback string) string {
+	message := strings.TrimSpace(tailLines(string(output), 1))
+	if message == "" || len(message) > 240 {
+		return fallback
+	}
+	return message
+}
+
+func (s *Server) staticLeaseAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		leases := s.readStaticLeases()
+		out := make([]StaticLease, 0, len(leases))
+		for _, lease := range leases {
+			out = append(out, lease)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].IP < out[j].IP })
+		jsonOut(w, http.StatusOK, out)
+		return
+	}
+	if r.Method != http.MethodPut && r.Method != http.MethodDelete {
+		w.Header().Set("Allow", "GET, PUT, DELETE")
+		jsonOut(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	var payload struct {
+		MAC      string `json:"mac"`
+		IP       string `json:"ip"`
+		Hostname string `json:"hostname"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	mac, err := normalizeClientMAC(payload.MAC)
+	if err != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.clientPolicyMu.Lock()
+	defer s.clientPolicyMu.Unlock()
+
+	switch r.Method {
+	case http.MethodPut:
+		ip, err := validateStaticIPv4(payload.IP, s.loadNetworkDraft().LANAddress)
+		if err != nil {
+			jsonOut(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		hostname := strings.TrimSpace(payload.Hostname)
+		for _, client := range s.readClients() {
+			clientMAC, _ := normalizeClientMAC(client.MAC)
+			if client.IP == ip && clientMAC != mac {
+				jsonOut(w, http.StatusConflict, map[string]string{"error": "该 IP 已被其他客户端或静态租约占用"})
+				return
+			}
+			if hostname == "" && clientMAC == mac && validStaticHostname(client.Hostname) {
+				hostname = client.Hostname
+			}
+		}
+		if !validStaticHostname(hostname) {
+			jsonOut(w, http.StatusBadRequest, map[string]string{"error": "主机名格式无效"})
+			return
+		}
+		command := shellJoin([]string{clientPolicyManager, "set-static", mac, ip, hostname})
+		if output, err := s.execSu(command); err != nil {
+			log.Printf("static lease set failed: %s", tailLines(string(output), 10))
+			jsonOut(w, http.StatusInternalServerError, map[string]string{"error": policyCommandError(output, "设置静态租约失败，原配置未改变")})
+			return
+		}
+		jsonOut(w, http.StatusOK, map[string]any{"ok": true, "mac": mac, "ip": ip})
+	case http.MethodDelete:
+		command := shellJoin([]string{clientPolicyManager, "clear-static", mac})
+		if output, err := s.execSu(command); err != nil {
+			log.Printf("static lease clear failed: %s", tailLines(string(output), 10))
+			jsonOut(w, http.StatusInternalServerError, map[string]string{"error": policyCommandError(output, "清除静态租约失败，原配置未改变")})
+			return
+		}
+		jsonOut(w, http.StatusOK, map[string]any{"ok": true, "mac": mac})
+	}
+}
+
 func (s *Server) readClients() []ClientInfo {
 	draft := s.loadNetworkDraft()
+	staticLeases := s.readStaticLeases()
 	_, lanInterface := s.activeNetworkInterfaces(draft)
 	if lanInterface == "" {
 		lanInterface = "eth1"
@@ -1450,7 +1620,12 @@ func (s *Server) readClients() []ClientInfo {
 				if hostname == "*" {
 					hostname = "未知设备"
 				}
-				byIP[f[2]] = ClientInfo{IP: f[2], MAC: mac, Hostname: hostname, Interface: lanInterface, State: "租约", Source: "DHCP", Expires: exp}
+				client := ClientInfo{IP: f[2], MAC: mac, Hostname: hostname, Interface: lanInterface, State: "租约", Source: "DHCP", Expires: exp}
+				if lease, ok := staticLeases[mac]; ok {
+					client.StaticLease = true
+					client.StaticIP = lease.IP
+				}
+				byIP[f[2]] = client
 			}
 		}
 	}
@@ -1481,7 +1656,36 @@ func (s *Server) readClients() []ClientInfo {
 			c.Source = "DHCP + AP 桥接"
 		}
 		c.State = "在线"
+		if lease, ok := staticLeases[c.MAC]; ok {
+			c.StaticLease = true
+			c.StaticIP = lease.IP
+		}
 		byIP[c.IP] = c
+	}
+	for mac, lease := range staticLeases {
+		found := false
+		for ip, client := range byIP {
+			clientMAC, _ := normalizeClientMAC(client.MAC)
+			if clientMAC != mac {
+				continue
+			}
+			client.StaticLease = true
+			client.StaticIP = lease.IP
+			if client.Hostname == "" && lease.Hostname != "" {
+				client.Hostname = lease.Hostname
+			}
+			byIP[ip] = client
+			found = true
+		}
+		if !found {
+			hostname := lease.Hostname
+			if hostname == "" {
+				hostname = "固定 IP 客户端"
+			}
+			if _, occupied := byIP[lease.IP]; !occupied {
+				byIP[lease.IP] = ClientInfo{IP: lease.IP, MAC: mac, Hostname: hostname, Interface: lanInterface, State: "静态租约", Source: "静态 DHCP", StaticLease: true, StaticIP: lease.IP}
+			}
+		}
 	}
 	out := make([]ClientInfo, 0, len(byIP))
 	for _, c := range byIP {

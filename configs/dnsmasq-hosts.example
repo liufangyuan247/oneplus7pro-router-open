@@ -1,4 +1,4 @@
 # Optional lines appended to the generated dnsmasq configuration.
 # Use locally administered example MACs only in this public template.
-dhcp-host=02:00:00:00:00:01,192.168.2.141,example-client-1
-dhcp-host=02:00:00:00:00:02,192.168.2.152,example-client-2
+dhcp-host=02:00:00:00:00:01,192.168.2.201,example-client-1
+dhcp-host=02:00:00:00:00:02,192.168.2.202,example-client-2
