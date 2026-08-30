@@ -112,12 +112,28 @@ validated with `mihomo -t`, and atomically activated. Set
 The subscription is a node transport only. Its `proxy-groups`,
 `rule-providers`, and `rules` sections are discarded. AI policy comes from
 `~/router-data/mihomo/ai-proxy-domains.txt`, with optional additions in
-`custom-ai-proxy-domains.txt`; those domains select `AI`. The general household
-allowlist comes from `selective-proxy-domains.txt`, with optional additions in
-`custom-proxy-domains.txt`; those domains select `家庭RULE`. The generated
-policy also sends Telegram's MTProto IPv4 ranges to `家庭RULE`, because the
-mobile app commonly connects to literal IP addresses instead of hostnames. It
-always ends with `MATCH,DIRECT`.
+`custom-ai-proxy-domains.txt`; those domains select `AI`.
+
+`~/router-data/mihomo/routing-policy` selects one of two locally managed
+policies:
+
+- `allowlist` retains the conservative legacy behavior. Domains from
+  `selective-proxy-domains.txt` and `custom-proxy-domains.txt` select
+  `家庭RULE`, while the final rule is `MATCH,DIRECT`.
+- `cn-direct` keeps those domain files as force-proxy overrides, then applies
+  `GEOSITE,CN,DIRECT`, `GEOIP,CN,DIRECT`, and finally `MATCH,家庭RULE`. This
+  gives mainland services a direct path while unknown overseas services no
+  longer require manual allowlist additions.
+
+Both policies send Telegram's MTProto IPv4 ranges to `家庭RULE`, because the
+mobile app commonly connects to literal IP addresses instead of hostnames.
+`cn-direct` preserves the deployed selective fake-IP behavior: AI and explicit
+force-proxy domains keep fake mappings, while mainland and previously unknown
+overseas domains receive real answers. Mainland domains use domestic resolvers;
+non-mainland/default queries use trusted DoH through `家庭RULE`. Keeping
+unlisted answers real is important for source-IP clients that bypass `op7tun`,
+because a fake `198.18/16` answer cannot be translated after the kernel sends
+that client directly to physical table 100.
 
 ## Management and verification
 

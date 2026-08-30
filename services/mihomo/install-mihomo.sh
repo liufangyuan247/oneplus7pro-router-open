@@ -23,6 +23,7 @@ chmod 700 "$DATA" "$BACKUP"
 [ -f "$DATA/config.yaml" ] && cp -p "$DATA/config.yaml" "$BACKUP/config.yaml"
 [ -f "$DATA/runtime-settings.yaml" ] && cp -p "$DATA/runtime-settings.yaml" "$BACKUP/runtime-settings.yaml"
 [ -f "$DATA/runtime-mode" ] && cp -p "$DATA/runtime-mode" "$BACKUP/runtime-mode"
+[ -f "$DATA/routing-policy" ] && cp -p "$DATA/routing-policy" "$BACKUP/routing-policy"
 [ -f "$DATA/subscription.url" ] && cp -p "$DATA/subscription.url" "$BACKUP/subscription.url"
 [ -f "$DATA/ai-proxy-domains.txt" ] && cp -p "$DATA/ai-proxy-domains.txt" "$BACKUP/ai-proxy-domains.txt"
 [ -f "$DATA/custom-ai-proxy-domains.txt" ] && cp -p "$DATA/custom-ai-proxy-domains.txt" "$BACKUP/custom-ai-proxy-domains.txt"
@@ -54,6 +55,7 @@ fi
 # A fresh install starts fail-open. The user can switch to the locally managed
 # RULE allowlist after the subscription has produced a valid candidate.
 [ -s "$DATA/runtime-mode" ] || printf 'direct\n' > "$DATA/runtime-mode"
+[ -s "$DATA/routing-policy" ] || printf 'allowlist\n' > "$DATA/routing-policy"
 cp "$STAGE/ai-proxy-domains.txt" "$DATA/ai-proxy-domains.txt"
 cp "$STAGE/selective-proxy-domains.txt" "$DATA/selective-proxy-domains.txt"
 [ -f "$DATA/custom-ai-proxy-domains.txt" ] || : > "$DATA/custom-ai-proxy-domains.txt"
@@ -124,7 +126,7 @@ cat > "$UPDATER_SERVICE/finish" <<'EOF'
 sleep 10
 EOF
 
-chmod 600 "$DATA/config.yaml" "$DATA/runtime-settings.yaml" "$DATA/runtime-mode" \
+chmod 600 "$DATA/config.yaml" "$DATA/runtime-settings.yaml" "$DATA/runtime-mode" "$DATA/routing-policy" \
     "$DATA/ai-proxy-domains.txt" "$DATA/custom-ai-proxy-domains.txt" \
     "$DATA/selective-proxy-domains.txt" "$DATA/custom-proxy-domains.txt"
 chmod 600 "$DATA/client-bypass-ipv4.txt"

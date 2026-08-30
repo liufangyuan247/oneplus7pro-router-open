@@ -10,6 +10,7 @@ TARGET="$DATA/config.yaml"
 BACKUP="$DATA/config.last-good.yaml"
 SETTINGS="$DATA/runtime-settings.yaml"
 MODE_FILE="$DATA/runtime-mode"
+ROUTING_POLICY_FILE="$DATA/routing-policy"
 DISABLED="$DATA/disabled"
 LOCK="$DATA/.subscription-update.lock"
 WORK="$DATA/.subscription-update.$$"
@@ -69,6 +70,16 @@ if [ -s "$MODE_FILE" ]; then
     esac
 fi
 
+ROUTING_POLICY="${MIHOMO_ROUTING_POLICY:-}"
+if [ -z "$ROUTING_POLICY" ] && [ -s "$ROUTING_POLICY_FILE" ]; then
+    ROUTING_POLICY=$(tr -d '\r\n' < "$ROUTING_POLICY_FILE")
+fi
+case "$ROUTING_POLICY" in
+    '') ROUTING_POLICY=allowlist ;;
+    allowlist|cn-direct) ;;
+    *) echo "unsupported Mihomo routing policy: $ROUTING_POLICY" >&2; exit 1 ;;
+esac
+
 URL=$(cat "$URL_FILE")
 RAW="$WORK/raw.yaml"
 ADAPTED="$WORK/adapted.yaml"
@@ -89,7 +100,7 @@ download_subscription
 [ "$(wc -c < "$RAW")" -ge 512 ] || { echo 'subscription response is unexpectedly small' >&2; exit 1; }
 
 # Parse raw YAML, inject household RULE and AI proxy groups, TUN, DNS, and Sniffer
-"$PREFIX/bin/awk" -v desired_mode="$MODE" -v domain_policy_file="$DOMAIN_POLICY_SNAPSHOT" '
+"$PREFIX/bin/awk" -v desired_mode="$MODE" -v routing_policy="$ROUTING_POLICY" -v domain_policy_file="$DOMAIN_POLICY_SNAPSHOT" '
 function top_level(line) { return line ~ /^[A-Za-z0-9_-]+:[[:space:]]*/ }
 function emit_proxy_groups(indent, child) {
     child=indent "  "
@@ -178,6 +189,10 @@ function emit_dns() {
     print "  listen: 127.0.0.1:1053"
     print "  ipv6: false"
     print "  cache-algorithm: arc"
+    # Preserve the deployed selective fake-IP behavior in both routing
+    # policies. AI and force-proxy domains keep their stable fake mappings;
+    # mainland and previously unknown overseas domains receive real answers.
+    # The latter is important for source-IP clients that bypass op7tun.
     print "  enhanced-mode: fake-ip"
     print "  fake-ip-range: 198.18.0.1/16"
     print "  fake-ip-filter-mode: whitelist"
@@ -206,9 +221,21 @@ function emit_dns() {
         print "      - https://1.1.1.1/dns-query#家庭RULE"
         print "      - https://8.8.8.8/dns-query#家庭RULE"
     }
-    print "  nameserver:"
-    print "    - 223.5.5.5"
-    print "    - 119.29.29.29"
+    if (routing_policy == "cn-direct") {
+        print "    \"geosite:cn\":"
+        print "      - 223.5.5.5"
+        print "      - 119.29.29.29"
+        print "    \"geosite:geolocation-!cn\":"
+        print "      - https://1.1.1.1/dns-query#家庭RULE"
+        print "      - https://8.8.8.8/dns-query#家庭RULE"
+        print "  nameserver:"
+        print "    - https://1.1.1.1/dns-query#家庭RULE"
+        print "    - https://8.8.8.8/dns-query#家庭RULE"
+    } else {
+        print "  nameserver:"
+        print "    - 223.5.5.5"
+        print "    - 119.29.29.29"
+    }
 }
 BEGIN {
     skip=0
@@ -304,13 +331,17 @@ END {
     if (!tun) emit_tun()
     if (!listeners) emit_ai_listener()
     if (!sniffer) emit_sniffer()
-    if (!profile) { print "profile:"; print "  store-selected: true"; print "  store-fake-ip: true" }
+    if (!profile) {
+        print "profile:"
+        print "  store-selected: true"
+        print "  store-fake-ip: true"
+    }
 }
 ' "$RAW" > "$ADAPTED"
 
 # Append the complete locally managed policy. No subscription rule survives.
 WITH_RULES="$WORK/with-rules.yaml"
-"$PREFIX/bin/awk" '
+"$PREFIX/bin/awk" -v routing_policy="$ROUTING_POLICY" '
 function emit_managed_rules(indent) {
     # Private subnets & Tailscale direct bypass
     print indent "- IP-CIDR,127.0.0.0/8,DIRECT,no-resolve"
@@ -327,13 +358,20 @@ function emit_managed_rules(indent) {
     print indent "- IP-CIDR,95.161.64.0/20,家庭RULE,no-resolve"
     print indent "- IP-CIDR,149.154.160.0/20,家庭RULE,no-resolve"
 
-    # AI services keep a stable Japanese exit; the general household allowlist
-    # can select any subscription node. Everything else remains direct.
+    # AI services keep a stable Japanese exit; the general household group can
+    # select any subscription node. The routing policy decides the fallback.
     for (i=1; i<=ai_domain_count; i++) {
         print indent "- DOMAIN-SUFFIX," ai_domains[i] ",AI"
     }
     for (i=1; i<=rule_domain_count; i++) {
         print indent "- DOMAIN-SUFFIX," rule_domains[i] ",家庭RULE"
+    }
+    if (routing_policy == "cn-direct") {
+        # Keep mainland services direct using both domain and resolved-IP
+        # geodata. The final proxy fallback covers unknown overseas services,
+        # eliminating the need to maintain an exhaustive domain allowlist.
+        print indent "- GEOSITE,CN,DIRECT"
+        print indent "- GEOIP,CN,DIRECT"
     }
 }
 NR == FNR {
@@ -352,7 +390,8 @@ END {
     print ""
     print "rules:"
     emit_managed_rules("  ")
-    print "  - MATCH,DIRECT"
+    if (routing_policy == "cn-direct") print "  - MATCH,家庭RULE"
+    else print "  - MATCH,DIRECT"
 }
 ' "$DOMAIN_POLICY_SNAPSHOT" "$ADAPTED" > "$WITH_RULES"
 mv "$WITH_RULES" "$ADAPTED"
@@ -399,7 +438,7 @@ if [ "${MIHOMO_UPDATE_VALIDATE_ONLY:-0}" = 1 ]; then
     candidate="$DATA/config.unified-candidate.yaml"
     cp "$ADAPTED" "$candidate"
     chmod 600 "$candidate"
-    echo "SUBSCRIPTION_CANDIDATE_READY path=$candidate"
+    echo "SUBSCRIPTION_CANDIDATE_READY path=$candidate policy=$ROUTING_POLICY"
     exit 0
 fi
 
@@ -479,4 +518,4 @@ if ! activate_target; then
     exit 1
 fi
 
-echo SUBSCRIPTION_UPDATED
+echo "SUBSCRIPTION_UPDATED policy=$ROUTING_POLICY"
