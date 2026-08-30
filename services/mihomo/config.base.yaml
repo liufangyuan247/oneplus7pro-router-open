@@ -45,26 +45,40 @@ listeners:
     type: mixed
     listen: 127.0.0.1
     port: 17891
-    proxy: Codex-日本
+    proxy: AI
     udp: true
 
 proxy-groups:
-  - name: Codex-日本自动
+  - name: 家庭RULE自动
+    type: url-test
+    include-all-proxies: true
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 150
+    lazy: true
+    timeout: 5000
+    max-failed-times: 2
+  - name: 家庭RULE
+    type: select
+    proxies: [家庭RULE自动, DIRECT]
+    include-all-proxies: true
+  - name: AI-日本自动
     type: url-test
     include-all-proxies: true
     filter: "(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)"
-    exclude-filter: "(?i)日本.*04"
-    url: https://chatgpt.com/cdn-cgi/trace
-    interval: 30
-    tolerance: 1000
+    exclude-filter: "(?i)日本.*(03|04|05)"
+    url: https://www.gstatic.com/generate_204
+    interval: 60
+    tolerance: 250
     lazy: false
     timeout: 5000
     max-failed-times: 2
-  - name: Codex-日本
+  - name: AI
     type: select
-    proxies: [Codex-日本自动]
+    proxies: [AI-日本自动, DIRECT]
     include-all-proxies: true
     filter: "(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)"
+    exclude-filter: "(?i)日本.*(03|04|05)"
 
 rules:
   - MATCH,DIRECT

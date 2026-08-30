@@ -1,0 +1,29 @@
+# AI services use the dedicated AI group with Japanese-only nodes.
+# One parent domain per line; DOMAIN-SUFFIX also covers subdomains.
+
+# OpenAI / ChatGPT / Codex
+openai.com
+chatgpt.com
+oaistatic.com
+oaiusercontent.com
+
+# Google AI / Antigravity
+cloudcode-pa.googleapis.com
+daily-cloudcode-pa.googleapis.com
+daily-cloudcode-pa.sandbox.googleapis.com
+oauth2.googleapis.com
+generativeai.googleapis.com
+generativelanguage.googleapis.com
+ai.google.dev
+aistudio.google.com
+gemini.google.com
+antigravity-hub-auto-updater-974169037036.us-central1.run.app
+
+# Other AI assistants
+anthropic.com
+claude.ai
+claudeusercontent.com
+perplexity.ai
+pplx.ai
+x.ai
+grok.com

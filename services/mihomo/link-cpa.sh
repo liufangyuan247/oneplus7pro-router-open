@@ -10,13 +10,20 @@ SERVICE="$STACK/services/cpa"
 BACKUPS="$HOME/router-data/backups/cpa"
 
 [ -s "$CONFIG" ] || { echo 'CPA config is missing' >&2; exit 1; }
+MANAGER=/data/adb/router-network/router-network
+STATUS="$DATA/router-policy-status.$$"
+"$PREFIX/bin/su" -c "$MANAGER status" > "$STATUS"
+trap 'rm -f "$STATUS"' EXIT INT TERM
+grep -q '^whole_home_proxy=disabled$' "$STATUS" || { echo 'whole-home proxy must remain disabled for this check' >&2; exit 1; }
+grep -q '^codex_tun=up$' "$STATUS" || { echo 'router OpenAI selective TUN is not ready' >&2; exit 1; }
+grep -q '^codex_policy=active$' "$STATUS" || { echo 'router OpenAI selective policy is not active' >&2; exit 1; }
 CODE=$("$PREFIX/bin/curl" -sS --connect-timeout 8 --max-time 20 \
-    --proxy socks5h://127.0.0.1:17891 \
+    --noproxy '*' \
     --output /dev/null --write-out '%{http_code}' \
     https://api.openai.com/v1/models 2>/dev/null || true)
 case "$CODE" in
     2??|3??|4??) ;;
-    *) echo 'Mihomo OpenAI egress is unavailable; CPA was not changed' >&2; exit 1 ;;
+    *) echo 'router OpenAI selective egress is unavailable; CPA was not changed' >&2; exit 1 ;;
 esac
 
 STAMP=$(date '+%Y%m%d-%H%M%S')
@@ -26,11 +33,11 @@ cp -p "$CONFIG" "$BACKUP"
 
 "$PREFIX/bin/awk" '
 /^usage-statistics-enabled:[[:space:]]*/ { print "usage-statistics-enabled: true"; usage=1; next }
-/^proxy-url:[[:space:]]*/ { print "proxy-url: \"socks5://127.0.0.1:17891\""; proxy=1; next }
+/^proxy-url:[[:space:]]*/ { print "proxy-url: \"\""; proxy=1; next }
 { print }
 END {
     if (!usage) print "usage-statistics-enabled: true"
-    if (!proxy) print "proxy-url: \"socks5://127.0.0.1:17891\""
+    if (!proxy) print "proxy-url: \"\""
 }
 ' "$CONFIG" > "$CONFIG.new"
 chmod 600 "$CONFIG.new"
@@ -56,4 +63,4 @@ if [ "$ready" -ne 1 ]; then
 fi
 
 printf '%s\n' "$BACKUP" > "$DATA/last-proxy-link-backup"
-echo CPA_LINKED_TO_MIHOMO
+echo CPA_USES_ROUTER_OPENAI_POLICY

@@ -25,15 +25,16 @@ KEY=$(tr -d '\r\n' < "$HOME/router-data/cpa/api-key")
 echo AUTH_COUNT
 find "$HOME/router-data/cpa/auth" -maxdepth 1 -type f 2>/dev/null | wc -l
 
-echo PROXY
+echo OPENAI_EGRESS
 "$PREFIX/bin/curl" -fsS http://127.0.0.1:9091/proxies/Codex-%E6%97%A5%E6%9C%AC | "$PREFIX/bin/jq" -r .now
 "$PREFIX/bin/curl" -sS --max-time 20 \
-    --proxy socks5h://127.0.0.1:17891 \
+    --noproxy '*' \
     --output /dev/null --write-out '%{http_code} %{time_total}\n' \
     https://api.openai.com/v1/models
 
 echo LISTENERS
 ss -lntup 2>/dev/null | grep -E ':(7890|17890|17891|9091) ' || true
 
-echo TRANSPARENT_RULES
-ip rule show 2>/dev/null | grep -E '1000[01]|lookup 100' || true
+echo ROUTER_POLICY
+"$PREFIX/bin/su" -c '/data/adb/router-network/router-network status'
+"$PREFIX/bin/su" -c '/data/data/com.termux/files/usr/bin/ip -4 rule show; /data/data/com.termux/files/usr/bin/ip -4 route show table 102'

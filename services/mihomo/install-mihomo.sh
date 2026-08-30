@@ -10,7 +10,7 @@ UPDATER_SERVICE="$STACK/services/mihomo-updater"
 STAGE="$HOME/.stage"
 BACKUPS="$HOME/router-data/backups/mihomo"
 
-for file in mihomo mihomo-config.base.yaml mihomo-update-subscription mihomo-updater-run mihomo-run-root metacubexd-ui.tar.gz metacubexd-config.js; do
+for file in mihomo mihomo-config.base.yaml mihomo-update-subscription mihomo-updater-run mihomo-run-root mihomo-health-probe ai-proxy-domains.txt selective-proxy-domains.txt metacubexd-ui.tar.gz metacubexd-config.js; do
     [ -s "$STAGE/$file" ] || { echo "missing staged $file" >&2; exit 1; }
 done
 
@@ -24,6 +24,10 @@ chmod 700 "$DATA" "$BACKUP"
 [ -f "$DATA/runtime-settings.yaml" ] && cp -p "$DATA/runtime-settings.yaml" "$BACKUP/runtime-settings.yaml"
 [ -f "$DATA/runtime-mode" ] && cp -p "$DATA/runtime-mode" "$BACKUP/runtime-mode"
 [ -f "$DATA/subscription.url" ] && cp -p "$DATA/subscription.url" "$BACKUP/subscription.url"
+[ -f "$DATA/ai-proxy-domains.txt" ] && cp -p "$DATA/ai-proxy-domains.txt" "$BACKUP/ai-proxy-domains.txt"
+[ -f "$DATA/custom-ai-proxy-domains.txt" ] && cp -p "$DATA/custom-ai-proxy-domains.txt" "$BACKUP/custom-ai-proxy-domains.txt"
+[ -f "$DATA/selective-proxy-domains.txt" ] && cp -p "$DATA/selective-proxy-domains.txt" "$BACKUP/selective-proxy-domains.txt"
+[ -f "$DATA/custom-proxy-domains.txt" ] && cp -p "$DATA/custom-proxy-domains.txt" "$BACKUP/custom-proxy-domains.txt"
 [ -f "$HOME/router-data/cpa/config.yaml" ] && cp -p "$HOME/router-data/cpa/config.yaml" "$BACKUP/cpa-config.yaml"
 
 cp "$STAGE/mihomo" "$PREFIX/bin/mihomo.new"
@@ -44,9 +48,13 @@ allow-lan: false
 bind-address: 127.0.0.1
 EOF
 fi
-# Keep the generic listener on MATCH,DIRECT. CPA uses the dedicated
-# codex-cpa listener, whose outbound is pinned to the Codex-日本 group.
-printf 'rule\n' > "$DATA/runtime-mode"
+# A fresh install starts fail-open. The user can switch to the locally managed
+# RULE allowlist after the subscription has produced a valid candidate.
+[ -s "$DATA/runtime-mode" ] || printf 'direct\n' > "$DATA/runtime-mode"
+cp "$STAGE/ai-proxy-domains.txt" "$DATA/ai-proxy-domains.txt"
+cp "$STAGE/selective-proxy-domains.txt" "$DATA/selective-proxy-domains.txt"
+[ -f "$DATA/custom-ai-proxy-domains.txt" ] || : > "$DATA/custom-ai-proxy-domains.txt"
+[ -f "$DATA/custom-proxy-domains.txt" ] || : > "$DATA/custom-proxy-domains.txt"
 if [ -s "$STAGE/mihomo-subscription.url" ] && [ ! -s "$DATA/subscription.url" ]; then
     cp "$STAGE/mihomo-subscription.url" "$DATA/subscription.url"
 fi
@@ -71,6 +79,10 @@ mv "$UI_NEW" "$DATA/ui"
 cp "$STAGE/mihomo-update-subscription" "$STACK/bin/mihomo-update-subscription.new"
 chmod 700 "$STACK/bin/mihomo-update-subscription.new"
 mv "$STACK/bin/mihomo-update-subscription.new" "$STACK/bin/mihomo-update-subscription"
+
+cp "$STAGE/mihomo-health-probe" "$STACK/bin/mihomo-health-probe.new"
+chmod 700 "$STACK/bin/mihomo-health-probe.new"
+mv "$STACK/bin/mihomo-health-probe.new" "$STACK/bin/mihomo-health-probe"
 
 cp "$STAGE/mihomo-run-root" "$SERVICE/run"
 
@@ -103,7 +115,9 @@ cat > "$UPDATER_SERVICE/finish" <<'EOF'
 sleep 10
 EOF
 
-chmod 600 "$DATA/config.yaml" "$DATA/runtime-settings.yaml" "$DATA/runtime-mode"
+chmod 600 "$DATA/config.yaml" "$DATA/runtime-settings.yaml" "$DATA/runtime-mode" \
+    "$DATA/ai-proxy-domains.txt" "$DATA/custom-ai-proxy-domains.txt" \
+    "$DATA/selective-proxy-domains.txt" "$DATA/custom-proxy-domains.txt"
 [ ! -f "$DATA/subscription.url" ] || chmod 600 "$DATA/subscription.url"
 chmod 700 "$SERVICE/run" "$SERVICE/finish" "$SERVICE/log/run"
 chmod 700 "$UPDATER_SERVICE/run" "$UPDATER_SERVICE/finish" "$UPDATER_SERVICE/log/run"
@@ -130,12 +144,17 @@ done
 [ "$ready" -eq 1 ] || { echo 'Mihomo failed its local health check' >&2; exit 1; }
 
 HEALTHD="$STACK/bin/healthd"
-if [ -f "$HEALTHD" ] && ! grep -q 'probe mihomo ' "$HEALTHD"; then
+if [ -f "$HEALTHD" ]; then
     cp -p "$HEALTHD" "$BACKUP/healthd"
     "$PREFIX/bin/awk" '
+    /^[[:space:]]*probe mihomo / {
+        print "    probe mihomo /data/data/com.termux/files/home/router-stack/bin/mihomo-health-probe"
+        done=1
+        next
+    }
     /^  sleep 60$/ && !done {
         print "  if [ -d \"$SERVICES/mihomo\" ] && [ ! -f \"/data/data/com.termux/files/home/router-data/mihomo/disabled\" ]; then"
-        print "    probe mihomo curl -fsS --max-time 5 http://127.0.0.1:9091/version"
+        print "    probe mihomo /data/data/com.termux/files/home/router-stack/bin/mihomo-health-probe"
         print "  fi"
         done=1
     }
@@ -149,9 +168,9 @@ fi
 
 CPA_CONFIG="$HOME/router-data/cpa/config.yaml"
 EGRESS_CODE=$("$PREFIX/bin/curl" -sS --connect-timeout 8 --max-time 20 \
-    --proxy socks5h://127.0.0.1:17891 \
+    --proxy http://127.0.0.1:17891 \
     --output /dev/null --write-out '%{http_code}' \
-    https://api.openai.com/v1/models 2>/dev/null || true)
+    https://chatgpt.com/cdn-cgi/trace 2>/dev/null || true)
 case "$EGRESS_CODE" in
     2??|3??|4??) EGRESS_READY=1 ;;
     *) EGRESS_READY=0 ;;
@@ -160,11 +179,11 @@ esac
 if [ -s "$CPA_CONFIG" ] && [ "$EGRESS_READY" -eq 1 ]; then
     "$PREFIX/bin/awk" '
     /^usage-statistics-enabled:[[:space:]]*/ { print "usage-statistics-enabled: true"; usage=1; next }
-    /^proxy-url:[[:space:]]*/ { print "proxy-url: \"socks5://127.0.0.1:17891\""; proxy=1; next }
+    /^proxy-url:[[:space:]]*/ { print "proxy-url: \"http://127.0.0.1:17891\""; proxy=1; next }
     { print }
     END {
         if (!usage) print "usage-statistics-enabled: true"
-        if (!proxy) print "proxy-url: \"socks5://127.0.0.1:17891\""
+        if (!proxy) print "proxy-url: \"http://127.0.0.1:17891\""
     }
     ' "$CPA_CONFIG" > "$CPA_CONFIG.new"
     chmod 600 "$CPA_CONFIG.new"
@@ -187,11 +206,13 @@ if [ -s "$CPA_CONFIG" ] && [ "$EGRESS_READY" -eq 1 ]; then
         exit 1
     fi
 elif [ -s "$CPA_CONFIG" ]; then
-    echo 'Mihomo is running but its OpenAI egress is not ready; CPA configuration was left unchanged' >&2
+    echo 'Mihomo CPA listener is not ready; CPA configuration was left unchanged' >&2
 fi
 
 rm -f "$STAGE/mihomo" "$STAGE/mihomo-config.base.yaml" \
     "$STAGE/mihomo-update-subscription" "$STAGE/mihomo-updater-run" \
+    "$STAGE/mihomo-health-probe" \
+    "$STAGE/ai-proxy-domains.txt" "$STAGE/selective-proxy-domains.txt" \
     "$STAGE/metacubexd-ui.tar.gz" "$STAGE/metacubexd-config.js" \
     "$STAGE/mihomo-subscription.url" "$STAGE/GeoSite.dat" "$STAGE/geoip.metadb"
 

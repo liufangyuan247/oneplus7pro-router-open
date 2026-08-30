@@ -1,41 +1,61 @@
-# Mihomo management stack
+# Mihomo unified routing stack
 
 This directory contains the standalone Mihomo service used by the OnePlus 7 Pro router.
 
 ## Current deployment
 
 - Core: Mihomo `v1.19.30`
-- Generic local listener: `127.0.0.1:17890` (`MATCH,DIRECT` in rule mode)
-- OpenAI selective listener: `127.0.0.1:17891` -> `Codex-日本`
+- Native TUN: `op7tun`, gVisor stack, route table `2022`, rules `8100-8110`
+- Physical egress: `ppp0`; root UID 0 bypasses the TUN to prevent proxy loops
+- Generic local listener: `127.0.0.1:17890`, follows `rule` / `global` / `direct`
+- CPA listener: `127.0.0.1:17891`, pinned to `AI`
 - Controller: `127.0.0.1:9091`
-- Mode: `rule`
-- Android system proxy: disabled by default
-- LAN listener, TUN, redir and TProxy: disabled by default
-- CPA outbound: direct (`proxy-url: ""`), captured by router table 102
+- Persistent mode: `direct` on a fresh install; `rule` after the local
+  allowlist has been validated
+- LAN exposure, Redirect and TProxy listeners: disabled
 - Subscription refresh: every six hours
+- Health recovery: controller, singleton PID, listeners, TUN route and real
+  `17891` ChatGPT/OpenAI egress are checked every minute; healthd restarts
+  Mihomo after three consecutive actionable failures
 
-FlClash is no longer installed and port `7890` is intentionally unused. The
-standalone core remains isolated on `17890` and `17891`.
+Mihomo now owns routing for both forwarded LAN clients and Android-local
+applications. Private, management, multicast and Tailscale networks are
+excluded from the TUN. The root network manager only maintains PPPoE, DHCP,
+firewalling and the physical fail-open route; it no longer launches the
+`op7proxy` / `op7codex` sing-box instances or policy tables 101/102.
 
-`Codex-日本` is regenerated on every subscription refresh. It contains a
-selectable Japanese-node group and a `Codex-日本自动` latency-tested subgroup.
-The automatic subgroup probes `chatgpt.com` every 30 seconds, excludes the
-known-bad `日本 | 04` node, requires two failed checks before declaring a node
-unhealthy, and uses a 1000 ms tolerance to suppress latency-jitter switching.
-Probes do not change the egress IP by themselves. `Codex-日本自动` is the first
-choice in the parent group, while every Japanese node remains available for
-manual selection in `Codex-日本`.
-The OpenAI-only `op7codex` TUN uses the dedicated listener and pins every
-selected OpenAI connection to that group. CPA has no private proxy setting;
-its normal OpenAI sockets and LAN client sockets are selected by the same
-trusted DNS and table-102 policy. The independent whole-home TUN remains off,
-so unrelated household traffic stays direct.
+`AI-日本自动` latency-tests Japanese nodes and excludes the known-bad
+`日本 | 03`, `日本 | 04` and `日本 | 05` entries. The `AI` group exposes only
+that automatic choice, `DIRECT`, and healthy Japanese subscription nodes.
+`家庭RULE自动` tests every subscription node, while `家庭RULE` exposes that
+automatic choice, `DIRECT`, and every individual subscription node.
 
-When Android system proxy is explicitly enabled from Router Admin, it points
-to the same isolated Japanese listener on `127.0.0.1:17891`. Stopping Mihomo
-through any Router Admin service action clears the Android proxy first. The
-offline API returns stable empty/default state and the Dashboard button is
-disabled, rather than surfacing controller errors.
+CPA currently uses `proxy-url: "http://127.0.0.1:17891"` as an explicit,
+loopback-only migration bridge. This makes the CPA egress independent of its
+process UID while still using the same Mihomo core and the `AI` group. No proxy
+listener is exposed to the LAN.
+
+DNS uses dedicated domestic resolvers for proxy-node hostnames. Overseas DoH
+fallbacks are explicitly bound to `ppp0`, avoiding a proxy/DNS bootstrap loop.
+
+## Failure behavior
+
+When Mihomo exits, its auto-route rules and `op7tun` are withdrawn. The
+priority-9000 physical route through table 100 remains, so normal router and LAN
+traffic fails open to `ppp0`. CPA/Codex traffic intentionally does not bypass
+its dedicated proxy listener and is unavailable until Mihomo recovers.
+
+Stopping Mihomo through Router Admin creates
+`~/router-data/mihomo/disabled`. The health monitor and subscription updater
+respect this marker, so an intentional stop survives service supervision and
+reboot.
+
+The Mihomo health probe distinguishes a dead proxy data plane from a physical
+WAN outage. A working direct connectivity check plus failed `17891` egress is
+actionable; an unavailable WAN is reported as degraded without restarting the
+core. After a core PID change, external-egress restarts have a five-minute
+cooldown to prevent restart loops, while broken local PID/TUN/listener
+invariants remain immediately actionable.
 
 ## Persistent paths on the phone
 
@@ -47,30 +67,46 @@ disabled, rather than surfacing controller errors.
 - Persistent mode: `~/router-data/mihomo/runtime-mode`
 - Service: `~/router-stack/services/mihomo`
 - Update service: `~/router-stack/services/mihomo-updater`
+- Data-plane probe: `~/router-stack/bin/mihomo-health-probe`
+- Last probe state: `~/router-data/health/mihomo-data-plane.status`
 
-Subscription URLs are returned to the web UI only as masked origins. Each update is downloaded to a temporary directory, sanitized, validated with `mihomo -t`, and then atomically activated. A failed start restores the last known-good configuration.
+Subscription updates are downloaded to a temporary directory, adapted,
+validated with `mihomo -t`, and atomically activated. Set
+`MIHOMO_UPDATE_VALIDATE_ONLY=1` to generate
+`config.unified-candidate.yaml` without replacing the live configuration.
 
-Stopping Mihomo through Router Admin creates `~/router-data/mihomo/disabled`. The health monitor and subscription updater respect this marker, so an intentional stop survives service supervision and reboot. Starting or restarting the service removes it.
+The subscription is a node transport only. Its `proxy-groups`,
+`rule-providers`, and `rules` sections are discarded. AI policy comes from
+`~/router-data/mihomo/ai-proxy-domains.txt`, with optional additions in
+`custom-ai-proxy-domains.txt`; those domains select `AI`. The general household
+allowlist comes from `selective-proxy-domains.txt`, with optional additions in
+`custom-proxy-domains.txt`; those domains select `家庭RULE`. The generated
+policy also sends Telegram's MTProto IPv4 ranges to `家庭RULE`, because the
+mobile app commonly connects to literal IP addresses instead of hostnames. It
+always ends with `MATCH,DIRECT`.
 
-## Management
+## Management and verification
 
-Router Admin exposes the complete management page at `http://192.168.2.1:9090` under **代理**. It includes service lifecycle, mode, node selection and delay tests, listener settings, Android system proxy, active connections, multiple subscriptions, logs, CPA status, and an authenticated reverse proxy for MetaCubeXD.
+Router Admin exposes mode selection, TUN state, proxy groups, subscriptions,
+CPA status, logs and an authenticated MetaCubeXD reverse proxy at
+`http://192.168.2.1:9090` under **代理**. The controller itself remains
+loopback-only.
 
-The MetaCubeXD controller remains loopback-only. Router Admin proxies its UI and API through the authenticated session instead of exposing port `9091` to the LAN.
-
-## Verification
-
-Run on the phone as the Termux user:
+Useful checks on the phone:
 
 ```sh
+/data/adb/router-network/router-network status
+ip rule show
+ip route show table 2022
+pidof mihomo
+pidof sing-box
 ~/router-stack/bin/mihomo-update-subscription
-~/.stage/verify-management.sh
 ```
 
 Local source verification:
 
 ```sh
-bash -n mihomo/*.sh
+bash -n mihomo/*.sh router-stack/router-network.sh
 cd router-admin && go test ./...
 cd ../router-admin-ui && npm run export
 ```
