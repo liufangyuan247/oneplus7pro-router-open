@@ -81,6 +81,8 @@ type Snapshot = {
     OTGActive: boolean;
     chargeGuard: boolean;
     chargePaused: boolean;
+    guardLow?: number;
+    guardHigh?: number;
   };
   thermals: { Name: string; Type: string; Temp: number }[];
   interfaces: {
@@ -183,6 +185,7 @@ type MihomoStatus = {
   bindAddress: string;
   tunEnabled: boolean;
   tunStack: string;
+  tunDevice: string;
   cpaLinked: boolean;
   cpaUsageEnabled: boolean;
   cpaAccountCount: number;
@@ -217,6 +220,10 @@ type WholeHomeProxy = {
   enabled: boolean;
   active: boolean;
   ready: boolean;
+  localApps: boolean;
+  mode: string;
+  engine: string;
+  tunDevice: string;
   listener: string;
 };
 type TailscaleState = {
@@ -354,6 +361,8 @@ const demo: Snapshot = {
     OTGActive: true,
     chargeGuard: true,
     chargePaused: false,
+    guardLow: 40,
+    guardHigh: 60,
   },
   thermals: [
     { Name: "thermal_zone14", Type: "cpu-1-7-usr", Temp: 64.7 },
@@ -362,7 +371,7 @@ const demo: Snapshot = {
   interfaces: [
     {
       Name: "wlan0",
-      MAC: "02:00:00:00:00:01",
+      MAC: "46:1f:c3:0b:89:d1",
       State: "up",
       Carrier: "1",
       Role: "管理网络",
@@ -376,7 +385,7 @@ const demo: Snapshot = {
     },
     {
       Name: "eth0",
-      MAC: "02:00:00:00:00:02",
+      MAC: "2c:16:db:a8:e7:20",
       State: "down",
       Carrier: "0",
       Role: "未分配",
@@ -392,7 +401,7 @@ const demo: Snapshot = {
   clients: [
     {
       IP: "192.168.2.152",
-      MAC: "02:00:00:00:00:03",
+      MAC: "88:66:5a:3f:72:7f",
       Hostname: "未知设备",
       Interface: "wlan0",
       State: "已发现",
@@ -401,7 +410,7 @@ const demo: Snapshot = {
     },
     {
       IP: "192.168.2.203",
-      MAC: "02:00:00:00:00:04",
+      MAC: "8e:3e:4c:de:29:16",
       Hostname: "未知设备",
       Interface: "wlan0",
       State: "已发现",
@@ -459,10 +468,10 @@ const demo: Snapshot = {
   },
   storage: [
     {
-      Name: "ABCD-1234",
-      Mount: "/mnt/media_rw/ABCD-1234",
+      Name: "5CE9BC3029E46B06",
+      Mount: "/mnt/media_rw/5CE9BC3029E46B06",
       Filesystem: "fuseblk",
-      Model: "Example USB Disk",
+      Model: "SSD 870 EVO 500G",
       Total: 450e9,
       Used: 286e9,
       Free: 164e9,
@@ -767,7 +776,9 @@ export default function Home() {
           <MihomoManager data={data} refresh={refresh} setNotice={setNotice} />
         )}
         {active === "storage" && <Storage data={data} />}
-        {active === "system" && <System data={data} history={history} />}
+        {active === "system" && (
+          <System data={data} history={history} onRefresh={() => refresh(true)} />
+        )}
         {active === "remote" && (
           <RemoteMaintenance mode={remoteMode} onMode={setRemoteMode} />
         )}
@@ -1872,11 +1883,12 @@ function MihomoManager({
     bindAddress: "127.0.0.1",
     tunEnabled: false,
     tunStack: "",
+    tunDevice: "",
     cpaLinked: false,
     cpaUsageEnabled: false,
     cpaAccountCount: 0,
     cpaProxyPort: 17891,
-    cpaProxyGroup: "Codex-日本",
+    cpaProxyGroup: "AI",
     cpaProxyNode: "",
     cpaAutoNode: "",
     cpaJapaneseNodeCount: 0,
@@ -1896,6 +1908,10 @@ function MihomoManager({
     enabled: false,
     active: false,
     ready: false,
+    localApps: false,
+    mode: "direct",
+    engine: "mihomo",
+    tunDevice: "",
     listener: "127.0.0.1:17890",
   });
   const [traffic, setTraffic] = useState({ download: 0, upload: 0 });
@@ -2065,7 +2081,7 @@ function MihomoManager({
   const serviceAction = async (action: "start" | "stop" | "restart") => {
     if (
       action === "stop" &&
-      !confirm("确定停止 Mihomo？停止后代理流量将不可用。")
+      !confirm("确定停止 Mihomo？普通网络会自动直连，但 CPA/Codex 专线会暂时不可用。")
     )
       return;
     setBusy(`service-${action}`);
@@ -2132,38 +2148,17 @@ function MihomoManager({
       if (!response.ok)
         throw new Error(await responseError(response, "模式切换失败"));
       setStatus((old) => ({ ...old, mode }));
+      setWholeHomeProxy((old) => ({
+        ...old,
+        enabled: mode !== "direct",
+        active: mode !== "direct" && old.ready,
+        mode,
+      }));
       setNotice(
         `代理模式已切换为 ${mode === "rule" ? "规则" : mode === "global" ? "全局" : "直连"}`,
       );
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "模式切换失败");
-    } finally {
-      setBusy("");
-    }
-  };
-
-  const toggleWholeHomeProxy = async (enabled: boolean) => {
-    setBusy("whole-home-proxy");
-    try {
-      const response = await fetch("/api/mihomo/whole-home-proxy", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      });
-      if (!response.ok)
-        throw new Error(await responseError(response, "全屋代理切换失败"));
-      const next = (await response.json()) as WholeHomeProxy;
-      setWholeHomeProxy(next);
-      setNotice(
-        enabled
-          ? next.active
-            ? `全屋代理已开启，LAN 与手机本机正在跟随“${status.mode}”模式`
-            : "全屋代理已配置，等待 WAN 转发链路就绪"
-          : "全屋代理已关闭，LAN 与手机本机已恢复直连",
-      );
-      finishLater();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "全屋代理切换失败");
     } finally {
       setBusy("");
     }
@@ -2429,7 +2424,7 @@ function MihomoManager({
           <strong>{bytes(status.memory)}</strong>
           <small>
             {status.tunEnabled
-              ? `TUN ${status.tunStack || "已启用"}`
+              ? `TUN ${status.tunDevice || "op7tun"} · ${status.tunStack || "已启用"}`
               : "TUN 未启用"}
           </small>
         </article>
@@ -2442,7 +2437,7 @@ function MihomoManager({
             <h2>CPA 集成</h2>
           </div>
           <span className={status.cpaLinked ? "state-good" : "state-muted"}>
-            {status.cpaLinked ? "已连接 Mihomo" : "尚未连接"}
+            {status.cpaLinked ? "已连接 Mihomo" : "专线未连接"}
           </span>
         </div>
         <div className="cpa-integration-grid">
@@ -2490,7 +2485,7 @@ function MihomoManager({
           </p>
         )}
         <p className="safe-note">
-          CPA 的所有请求固定进入“{status.cpaProxyGroup || "Codex-日本"}”组；普通
+          CPA 的所有请求固定进入“{status.cpaProxyGroup || "AI"}”组；普通
           17890 端口跟随全局、规则或直连模式。CPA 专线不受模式和全屋代理开关影响。
         </p>
       </article>
@@ -2506,29 +2501,6 @@ function MihomoManager({
             {modes.find((mode) => mode.id === status.mode)?.label || "未知"}
           </span>
         </div>
-        <label className="lan-toggle whole-home-proxy-toggle">
-          <input
-            type="checkbox"
-            checked={wholeHomeProxy.enabled}
-            disabled={Boolean(busy) || !status.online}
-            onChange={(event) => toggleWholeHomeProxy(event.target.checked)}
-          />
-          <span>
-            <strong>
-              全屋透明代理
-              {wholeHomeProxy.active
-                ? " · 正在接管全屋与本机"
-                : wholeHomeProxy.enabled
-                  ? " · 等待链路"
-                  : " · 全部直连"}
-            </strong>
-            <small>
-              开启后，所有经过手机路由器的终端和手机本机应用无需单独设置，统一跟随当前
-              “{modes.find((mode) => mode.id === status.mode)?.label || "规则"}”模式；
-              关闭后立即恢复直连。内网管理和 Tailscale 始终绕过代理。
-            </small>
-          </span>
-        </label>
         <div className="mode-options">
           {modes.map((mode) => (
             <button
@@ -2593,8 +2565,8 @@ function MihomoManager({
       <article className="panel mihomo-section">
         <div className="section-heading small">
           <div>
-            <p className="eyebrow">入站监听</p>
-            <h2>代理端口设置</h2>
+            <p className="eyebrow">本机监听</p>
+            <h2>本地服务端口</h2>
           </div>
           <span className={settings.allowLan ? "warning-chip" : "state-good"}>
             仅手机本机
@@ -2651,38 +2623,6 @@ function MihomoManager({
               <small>0 表示关闭独立 SOCKS 端口</small>
             </label>
             <label>
-              Redirect 端口
-              <input
-                type="number"
-                min="0"
-                max="65535"
-                value={settings.redirPort}
-                onChange={(event) =>
-                  setSettings((old) => ({
-                    ...old,
-                    redirPort: Number(event.target.value),
-                  }))
-                }
-              />
-              <small>用于 TCP 透明转发规则</small>
-            </label>
-            <label>
-              TProxy 端口
-              <input
-                type="number"
-                min="0"
-                max="65535"
-                value={settings.tproxyPort}
-                onChange={(event) =>
-                  setSettings((old) => ({
-                    ...old,
-                    tproxyPort: Number(event.target.value),
-                  }))
-                }
-              />
-              <small>用于 TCP/UDP 路由转发</small>
-            </label>
-            <label>
               监听地址
               <input
                 value={settings.bindAddress}
@@ -2696,9 +2636,9 @@ function MihomoManager({
           </button>
         </form>
         <p className="safe-note">
-          `127.0.0.1:{settings.mixedPort}` 是跟随当前模式的普通入口；CPA 单独使用
-          `127.0.0.1:17891` 并固定进入“Codex-日本”。全屋代理通过内部透明转发
-          接入 17890，并同时覆盖 LAN 与 Android 本机应用；不需要也不会向 LAN
+          `127.0.0.1:{settings.mixedPort}` 是跟随当前模式的本机调试入口；CPA 单独使用
+          `127.0.0.1:17891` 并固定进入“AI”。实际分流由原生 op7tun 接管，
+          同时覆盖 LAN 与 Android 本机应用；不依赖 Redirect/TProxy 端口，也不会向 LAN
           暴露代理监听端口。
         </p>
       </article>
@@ -3324,12 +3264,308 @@ function Storage({ data }: { data: Snapshot }) {
   );
 }
 
+function BatteryGuardSettings({
+  guardLow,
+  guardHigh,
+  onRefresh,
+}: {
+  guardLow?: number;
+  guardHigh?: number;
+  onRefresh?: () => void | Promise<void>;
+}) {
+  const [userLow, setUserLow] = useState<string | null>(null);
+  const [userHigh, setUserHigh] = useState<string | null>(null);
+  const [status, setStatus] = useState<
+    "idle" | "saving" | "waiting" | "applied" | "error"
+  >("idle");
+  const [statusMessage, setStatusMessage] = useState<string>("");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const disabled = status === "saving" || status === "waiting";
+
+  const lowInput =
+    userLow ?? (guardLow != null && guardLow > 0 ? String(guardLow) : "40");
+  const highInput =
+    userHigh ?? (guardHigh != null && guardHigh > 0 ? String(guardHigh) : "60");
+
+  const applyPreset = (low: number, high: number) => {
+    if (disabled) return;
+    setUserLow(String(low));
+    setUserHigh(String(high));
+    if (errorMessage) {
+      setErrorMessage(null);
+      setStatus("idle");
+    }
+  };
+
+  const handleApply = async () => {
+    const trimmedLow = lowInput.trim();
+    const trimmedHigh = highInput.trim();
+
+    if (!trimmedLow || !trimmedHigh) {
+      setStatus("error");
+      setErrorMessage("请输入起充和停充阈值");
+      return;
+    }
+
+    const low = Number(trimmedLow);
+    const high = Number(trimmedHigh);
+
+    if (
+      !Number.isFinite(low) ||
+      !Number.isFinite(high) ||
+      !Number.isInteger(low) ||
+      !Number.isInteger(high)
+    ) {
+      setStatus("error");
+      setErrorMessage("阈值必须为有效整数");
+      return;
+    }
+
+    if (low < 20 || high > 95 || low >= high) {
+      setStatus("error");
+      setErrorMessage("阈值需满足 20% ≤ 起充 < 停充 ≤ 95%");
+      return;
+    }
+
+    setErrorMessage(null);
+    setStatus("saving");
+    setStatusMessage("正在保存配置...");
+
+    try {
+      const res = await fetch("/api/power/battery-guard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ low, high }),
+      });
+      const result = (await res.json()) as {
+        error?: string;
+        ok?: boolean;
+        low?: number;
+        high?: number;
+      };
+
+      if (!res.ok || !result.ok) {
+        setStatus("error");
+        setErrorMessage(result.error ?? "保存失败，请重试");
+        return;
+      }
+
+      setStatus("waiting");
+      setStatusMessage("配置已保存，等待后台控制器生效（约需10秒）...");
+
+      const maxAttempts = 14;
+      const pollInterval = 1500;
+      let applied = false;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        try {
+          const getRes = await fetch("/api/power/battery-guard", {
+            cache: "no-store",
+          });
+          if (getRes.ok) {
+            const getStatus = (await getRes.json()) as {
+              healthy?: boolean;
+              enabled?: boolean;
+              paused?: boolean;
+              low?: number;
+              high?: number;
+            };
+            if (
+              getStatus.healthy &&
+              getStatus.low === low &&
+              getStatus.high === high
+            ) {
+              applied = true;
+              break;
+            }
+          }
+        } catch {
+          // ignore network glitch during polling
+        }
+      }
+
+      if (applied) {
+        setStatus("waiting");
+        setStatusMessage("配置已生效，正在同步最新系统数据...");
+        try {
+          if (onRefresh) {
+            await Promise.resolve(onRefresh());
+          }
+          setUserLow(null);
+          setUserHigh(null);
+          setStatus("applied");
+          setStatusMessage(`✓ 阈值已成功生效（${low}%–${high}%）`);
+          setTimeout(() => {
+            setStatus((cur) => (cur === "applied" ? "idle" : cur));
+            setStatusMessage("");
+          }, 4000);
+        } catch (refreshErr) {
+          // Backend apply succeeded; retain local overrides to prevent reversion to stale snapshot
+          setStatus("applied");
+          setStatusMessage(`✓ 阈值已成功生效（${low}%–${high}%）`);
+          setErrorMessage(
+            "阈值已生效，但系统数据同步异常: " +
+              (refreshErr instanceof Error ? refreshErr.message : "网络异常")
+          );
+        }
+      } else {
+        setStatus("error");
+        setErrorMessage(
+          "配置已保存，但控制器未在预期间内确认生效，请检查电池保护服务"
+        );
+      }
+    } catch (err) {
+      setStatus("error");
+      setErrorMessage(
+        "请求失败: " + (err instanceof Error ? err.message : "网络异常")
+      );
+    }
+  };
+
+  const parsedLow = Number.parseInt(lowInput, 10);
+  const parsedHigh = Number.parseInt(highInput, 10);
+  const displayLow = Number.isInteger(parsedLow) ? parsedLow : (guardLow ?? 40);
+  const displayHigh = Number.isInteger(parsedHigh)
+    ? parsedHigh
+    : (guardHigh ?? 60);
+
+  return (
+    <div className="battery-guard-section">
+      <div className="battery-guard-header">
+        <span className="battery-guard-title">自定义电池保护阈值</span>
+      </div>
+
+      <div className="battery-guard-flow" aria-label="充电保护迟滞工作流程">
+        <div className="battery-guard-flow-step">
+          <span className="battery-guard-flow-tag start">起充点</span>
+          <strong>≤ {displayLow}%</strong>
+          <small>开始充电</small>
+        </div>
+        <div className="battery-guard-flow-arrow">
+          <span className="battery-guard-flow-line" />
+          <span className="battery-guard-flow-band">
+            {displayLow}% ~ {displayHigh}% 维持当前状态
+          </span>
+          <span className="battery-guard-flow-line" />
+        </div>
+        <div className="battery-guard-flow-step">
+          <span className="battery-guard-flow-tag stop">停充点</span>
+          <strong>≥ {displayHigh}%</strong>
+          <small>暂停充电 (旁路供电)</small>
+        </div>
+      </div>
+
+      <div className="battery-guard-form">
+        <div className="battery-guard-inputs">
+          <label className="battery-guard-field">
+            <span>起充:</span>
+            <div className="battery-guard-input-wrap">
+              <input
+                type="number"
+                min={20}
+                max={94}
+                value={lowInput}
+                disabled={disabled}
+                onChange={(e) => {
+                  setUserLow(e.target.value);
+                  if (errorMessage) {
+                    setErrorMessage(null);
+                    setStatus("idle");
+                  }
+                }}
+                className="battery-guard-input"
+              />
+              <span className="battery-guard-unit">%</span>
+            </div>
+          </label>
+          <label className="battery-guard-field">
+            <span>停充:</span>
+            <div className="battery-guard-input-wrap">
+              <input
+                type="number"
+                min={21}
+                max={95}
+                value={highInput}
+                disabled={disabled}
+                onChange={(e) => {
+                  setUserHigh(e.target.value);
+                  if (errorMessage) {
+                    setErrorMessage(null);
+                    setStatus("idle");
+                  }
+                }}
+                className="battery-guard-input"
+              />
+              <span className="battery-guard-unit">%</span>
+            </div>
+          </label>
+        </div>
+
+        <button
+          type="button"
+          className="battery-guard-btn-apply"
+          disabled={disabled}
+          onClick={handleApply}
+        >
+          {status === "saving"
+            ? "正在保存..."
+            : status === "waiting"
+            ? "等待生效..."
+            : "应用阈值"}
+        </button>
+      </div>
+
+      <div className="battery-guard-presets">
+        <span className="battery-guard-preset-label">预设:</span>
+        {[
+          { label: "40%–60% · 防胀气", low: 40, high: 60 },
+          { label: "50%–70% · 平衡", low: 50, high: 70 },
+          { label: "60%–75% · 续航", low: 60, high: 75 },
+        ].map((preset) => (
+          <button
+            key={preset.label}
+            type="button"
+            className="battery-guard-preset-btn"
+            disabled={disabled}
+            onClick={() => applyPreset(preset.low, preset.high)}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
+
+      {errorMessage && (
+        <div className="battery-guard-alert" role="alert">
+          <span>⚠️ {errorMessage}</span>
+        </div>
+      )}
+
+      {status === "waiting" && (
+        <div className="battery-guard-waiting" role="status">
+          <span className="battery-guard-spinner" />
+          <span>{statusMessage}</span>
+        </div>
+      )}
+
+      {status === "applied" && (
+        <div className="battery-guard-success" role="status">
+          <span>{statusMessage}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function System({
   data,
   history,
+  onRefresh,
 }: {
   data: Snapshot;
   history: HistoryPoint[];
+  onRefresh?: () => void | Promise<void>;
 }) {
   const memoryUsedPercent = data.memory.Total
     ? (data.memory.Used / data.memory.Total) * 100
@@ -3450,14 +3686,27 @@ function System({
             <div>
               <dt>充电保护</dt>
               <dd>
-                {data.power.chargeGuard
-                  ? data.power.chargePaused
-                    ? "已启用（60%–75%）· 当前暂停充电"
-                    : "已启用（60%–75%）· 当前允许充电"
+                {data.power.chargeGuard && (data.power.guardLow ?? 0) > 0 && (data.power.guardHigh ?? 0) > 0
+                  ? `已启用（${data.power.guardLow}%–${data.power.guardHigh}%）· ${
+                      data.power.chargePaused
+                        ? "当前暂停充电"
+                        : "当前允许充电"
+                    }`
+                  : data.power.chargeGuard
+                  ? `已启用 · ${
+                      data.power.chargePaused
+                        ? "当前暂停充电"
+                        : "当前允许充电"
+                    }`
                   : "未启用"}
               </dd>
             </div>
           </dl>
+          <BatteryGuardSettings
+            guardLow={data.power.guardLow}
+            guardHigh={data.power.guardHigh}
+            onRefresh={onRefresh}
+          />
         </article>
         <article className="panel device-card">
           <div className="panel-title">

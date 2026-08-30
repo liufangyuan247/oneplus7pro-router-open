@@ -12,9 +12,19 @@ GUARD=/data/adb/service.d/30-battery-guard.sh
 CAPACITY=/sys/class/power_supply/battery/capacity
 DISABLE_CHARGE=/sys/class/power_supply/battery/op_disable_charge
 STATUS_FILE=/data/data/com.termux/files/home/router-data/admin/battery-guard.status
-LOW=60
+CONF_FILE="$STATE_DIR/battery-guard.conf"
+LOW=40
 MAX_HEARTBEAT_AGE=45
 INTERVAL=20
+
+read_config() {
+  if [ -f "$CONF_FILE" ]; then
+    conf_low=$(awk -F= '$1=="LOW"||$1=="low"{print $2; exit}' "$CONF_FILE" 2>/dev/null)
+    if valid_capacity "$conf_low"; then
+      LOW=$conf_low
+    fi
+  fi
+}
 
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
@@ -68,6 +78,7 @@ valid_capacity() {
   # Give Magisk service.d and Android power_supply nodes time to settle.
   sleep 15
   while true; do
+    read_config
     capacity=$(cat "$CAPACITY" 2>/dev/null)
 
     # Invalid telemetry and a low battery always override every other state.

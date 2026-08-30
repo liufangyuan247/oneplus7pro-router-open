@@ -40,6 +40,7 @@ Runtime paths:
 - Browser terminal: `/api/terminal` (authenticated WebSocket, at most two sessions)
 - Browser screen control: `/api/screen` (one on-demand scrcpy session)
 - Deterministic wake/unlock and lock actions: `/api/device/power` (authenticated POST)
+- Battery guard configuration: `/api/power/battery-guard` (authenticated GET / POST)
 - scrcpy server: `/data/data/com.termux/files/home/router-data/remote/scrcpy-server-v3.3.1`
 
 The dashboard's Remote page provides an in-browser Termux/root terminal and

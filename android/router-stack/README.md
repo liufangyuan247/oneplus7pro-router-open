@@ -61,10 +61,11 @@ stack is enabled and forces attached USB devices out of autosuspend.
 The battery guard is enabled by
 `/data/adb/router-stack/battery-guard.enabled`. Powered passthrough was tested:
 with charging disabled, USB-PD, Host mode and RTL8153 remained active while
-battery current reported zero. It uses 60%-75% charge hysteresis. To disable
-the feature for the current boot, remove the marker; the controller restores
-charging within 10 seconds. The marker is recreated automatically on every
-boot. A readable heartbeat for the dashboard is written to
+battery current reported zero. It defaults to 40%-60% charge hysteresis for
+battery swelling prevention, configurable via `/data/adb/router-stack/battery-guard.conf`
+or the Web Admin console (20%-95% valid range). To disable the feature for the current boot,
+remove the marker; the controller restores charging within 10 seconds. The marker is recreated
+automatically on every boot. A readable heartbeat for the dashboard is written to
 `router-data/admin/battery-guard.status` every 10 seconds.
 
 The charge controller is deliberately fail-open: invalid battery telemetry,

@@ -13,9 +13,21 @@ USB_PRESENT=/sys/class/power_supply/usb/present
 STATUS_DIR=/data/data/com.termux/files/home/router-data/admin
 STATUS_FILE="$STATUS_DIR/battery-guard.status"
 WATCHDOG=/data/adb/service.d/31-battery-guard-watchdog.sh
-LOW=60
-HIGH=75
+CONF_FILE="$STATE_DIR/battery-guard.conf"
+LOW=40
+HIGH=60
 INTERVAL=10
+
+read_config() {
+  if [ -f "$CONF_FILE" ]; then
+    conf_low=$(awk -F= '$1=="LOW"||$1=="low"{print $2; exit}' "$CONF_FILE" 2>/dev/null)
+    conf_high=$(awk -F= '$1=="HIGH"||$1=="high"{print $2; exit}' "$CONF_FILE" 2>/dev/null)
+    if valid_capacity "$conf_low" && valid_capacity "$conf_high" && [ "$conf_low" -lt "$conf_high" ]; then
+      LOW=$conf_low
+      HIGH=$conf_high
+    fi
+  fi
+}
 
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
@@ -115,6 +127,7 @@ write_status() {
   last_applied=unknown
   watchdog_counter=0
   while true; do
+    read_config
     capacity=$(cat "$CAPACITY" 2>/dev/null)
     present=$(cat "$USB_PRESENT" 2>/dev/null)
     current=$(cat "$DISABLE_CHARGE" 2>/dev/null)

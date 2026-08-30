@@ -117,10 +117,20 @@ done
 capacity=$(cat "$CAPACITY_NODE" 2>/dev/null)
 usb_present=$(cat "$USB_PRESENT_NODE" 2>/dev/null)
 charge_state=$(cat "$CHARGE_NODE" 2>/dev/null)
+check_low=40
+check_high=60
+if [ -f "$STATE_DIR/battery-guard.conf" ]; then
+  conf_low=$(awk -F= '$1=="LOW"||$1=="low"{print $2; exit}' "$STATE_DIR/battery-guard.conf" 2>/dev/null)
+  conf_high=$(awk -F= '$1=="HIGH"||$1=="high"{print $2; exit}' "$STATE_DIR/battery-guard.conf" 2>/dev/null)
+  if [ -n "$conf_low" ] && [ -n "$conf_high" ] && [ "$conf_low" -lt "$conf_high" ] 2>/dev/null; then
+    check_low=$conf_low
+    check_high=$conf_high
+  fi
+fi
 state_ok=1
-if [ "$usb_present" = "1" ] && [ "${capacity:-0}" -ge 75 ] 2>/dev/null; then
+if [ "$usb_present" = "1" ] && [ "${capacity:-0}" -ge "$check_high" ] 2>/dev/null; then
   [ "$charge_state" = "1" ] || state_ok=0
-elif [ "${capacity:-100}" -le 60 ] 2>/dev/null; then
+elif [ "${capacity:-100}" -le "$check_low" ] 2>/dev/null; then
   [ "$charge_state" = "0" ] || state_ok=0
 fi
 [ "$pre_eth0" != "1" ] || [ "$(carrier eth0)" = "1" ] || state_ok=0

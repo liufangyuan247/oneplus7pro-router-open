@@ -85,6 +85,7 @@ type Server struct {
 	storageAt                          time.Time
 	terminalSessions                   atomic.Int32
 	screenSessions                     atomic.Int32
+	runSu                              func(command string) ([]byte, error)
 }
 
 const (
@@ -182,6 +183,8 @@ type PowerInfo struct {
 	OTGActive                                   bool
 	ChargeGuard                                 bool `json:"chargeGuard"`
 	ChargePaused                                bool `json:"chargePaused"`
+	GuardLow                                    int  `json:"guardLow"`
+	GuardHigh                                   int  `json:"guardHigh"`
 }
 type ThermalInfo struct {
 	Name, Type string
@@ -344,6 +347,7 @@ func main() {
 	mux.HandleFunc("/api/terminal", s.auth(s.terminal))
 	mux.HandleFunc("/api/screen", s.auth(s.screen))
 	mux.HandleFunc("/api/device/power", s.auth(s.devicePower))
+	mux.HandleFunc("/api/power/battery-guard", s.auth(s.batteryGuardConfig))
 	mux.HandleFunc("/api/mihomo/status", s.auth(s.mihomoStatus))
 	mux.HandleFunc("/api/mihomo/mode", s.auth(s.mihomoMode))
 	mux.HandleFunc("/api/mihomo/settings", s.auth(s.mihomoSettings))
@@ -728,13 +732,64 @@ func (s *Server) devicePower(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "无效电源操作"})
 		return
 	}
-	su := filepath.Join(s.prefix, "bin", "su")
-	if output, err := exec.Command(su, "-c", command).CombinedOutput(); err != nil {
+	if output, err := s.execSu(command); err != nil {
 		log.Printf("device power %s failed: %s", body.Action, tailLines(string(output), 10))
 		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": "手机屏幕操作失败"})
 		return
 	}
 	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "action": body.Action})
+}
+
+func (s *Server) execSu(command string) ([]byte, error) {
+	if s.runSu != nil {
+		return s.runSu(command)
+	}
+	su := filepath.Join(s.prefix, "bin", "su")
+	return exec.Command(su, "-c", command).CombinedOutput()
+}
+
+func (s *Server) batteryGuardConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		statusPath := filepath.Join(s.data, "admin", "battery-guard.status")
+		st := readBatteryGuardStatus(statusPath, time.Now())
+		jsonOut(w, http.StatusOK, st)
+		return
+	}
+	if !method(w, r, http.MethodPost) {
+		return
+	}
+	var payload struct {
+		Low  int `json:"low"`
+		High int `json:"high"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	if payload.Low < 20 || payload.High > 95 || payload.Low >= payload.High {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "阈值范围无效 (需满足 20 <= 最低 < 最高 <= 95)"})
+		return
+	}
+	confContent := fmt.Sprintf("LOW=%d\nHIGH=%d\n", payload.Low, payload.High)
+	tmpPath := fmt.Sprintf("/data/adb/router-stack/battery-guard.conf.tmp.%d", time.Now().UnixNano())
+	targetPath := "/data/adb/router-stack/battery-guard.conf"
+	cmdStr := fmt.Sprintf("tmp=%s; trap 'rm -f \"$tmp\"' EXIT; printf '%%s' %s > \"$tmp\" && chmod 600 \"$tmp\" && [ \"$(sed -n '1p' \"$tmp\")\" = 'LOW=%d' ] && [ \"$(sed -n '2p' \"$tmp\")\" = 'HIGH=%d' ] && [ \"$(wc -l < \"$tmp\")\" -eq 2 ] && mv -f \"$tmp\" %s",
+		shellQuote(tmpPath),
+		shellQuote(confContent),
+		payload.Low,
+		payload.High,
+		shellQuote(targetPath),
+	)
+	if output, err := s.execSu(cmdStr); err != nil {
+		log.Printf("battery guard config failed: %s", tailLines(string(output), 10))
+		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": "保存电池保护配置失败"})
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{
+		"ok":   true,
+		"low":  payload.Low,
+		"high": payload.High,
+	})
 }
 
 func (s *Server) startScrcpySession() (*scrcpySession, error) {
@@ -1159,21 +1214,31 @@ func (s *Server) readPower() PowerInfo {
 			paused = true
 		}
 	}
-	guard, reportedPaused := readBatteryGuardStatus(filepath.Join(s.data, "admin", "battery-guard.status"), now)
+	st := readBatteryGuardStatus(filepath.Join(s.data, "admin", "battery-guard.status"), now)
+	guard := st.Healthy && st.Enabled
 	if guard {
-		paused = reportedPaused
+		paused = st.Paused
 	} else if paused {
 		// Keep compatibility with kernels where the charge node is readable by
 		// Termux even before the heartbeat file has been created.
 		guard = true
 	}
-	return PowerInfo{BatteryPercent: readInt(b + "/capacity"), BatteryTemp: float64(readInt(b+"/temp")) / 10, Voltage: voltage, Current: current, BatteryWatts: round(batteryWatts, 2), AverageCurrent: round(averageCurrent, 3), CoulombCurrent: round(coulombCurrent, 3), ChargeCounterMAh: round(float64(chargeCounter)/1000, 1), TimeToEmptySec: readInt(bms + "/time_to_empty_avg"), Status: strings.TrimSpace(readText(b + "/status")), ChargingEnabled: readInt(b+"/charging_enabled") == 1, InputSuspended: readInt(b+"/input_suspend") == 1, USBPresent: usbPresent, USBOnline: usbOnline, USBType: usbType, USBVoltage: round(usbVoltage, 3), USBInputCurrent: round(usbInputCurrent, 3), USBInputWatts: round(usbInputWatts, 2), USBInputFiltered: filtered, PDVoltage: round(pdVoltage, 2), PDCurrentMax: round(pdCurrent, 3), PDWattsMax: round(pdVoltage*pdCurrent, 1), TypeCMode: strings.TrimSpace(readText(u + "/typec_mode")), PowerRole: strings.TrimSpace(readText(u + "/typec_power_role")), OTGActive: readInt(u+"/otg_switch") == 1, ChargeGuard: guard, ChargePaused: paused}
+	return PowerInfo{BatteryPercent: readInt(b + "/capacity"), BatteryTemp: float64(readInt(b+"/temp")) / 10, Voltage: voltage, Current: current, BatteryWatts: round(batteryWatts, 2), AverageCurrent: round(averageCurrent, 3), CoulombCurrent: round(coulombCurrent, 3), ChargeCounterMAh: round(float64(chargeCounter)/1000, 1), TimeToEmptySec: readInt(bms + "/time_to_empty_avg"), Status: strings.TrimSpace(readText(b + "/status")), ChargingEnabled: readInt(b+"/charging_enabled") == 1, InputSuspended: readInt(b+"/input_suspend") == 1, USBPresent: usbPresent, USBOnline: usbOnline, USBType: usbType, USBVoltage: round(usbVoltage, 3), USBInputCurrent: round(usbInputCurrent, 3), USBInputWatts: round(usbInputWatts, 2), USBInputFiltered: filtered, PDVoltage: round(pdVoltage, 2), PDCurrentMax: round(pdCurrent, 3), PDWattsMax: round(pdVoltage*pdCurrent, 1), TypeCMode: strings.TrimSpace(readText(u + "/typec_mode")), PowerRole: strings.TrimSpace(readText(u + "/typec_power_role")), OTGActive: readInt(u+"/otg_switch") == 1, ChargeGuard: guard, ChargePaused: paused, GuardLow: st.Low, GuardHigh: st.High}
 }
 
-func readBatteryGuardStatus(path string, now time.Time) (enabled, paused bool) {
+type BatteryGuardStatus struct {
+	Healthy bool  `json:"healthy"`
+	Enabled bool  `json:"enabled"`
+	Paused  bool  `json:"paused"`
+	Low     int   `json:"low"`
+	High    int   `json:"high"`
+	Updated int64 `json:"updated"`
+}
+
+func readBatteryGuardStatus(path string, now time.Time) BatteryGuardStatus {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return false, false
+		return BatteryGuardStatus{}
 	}
 	values := make(map[string]string)
 	for _, line := range strings.Split(string(content), "\n") {
@@ -1184,13 +1249,44 @@ func readBatteryGuardStatus(path string, now time.Time) (enabled, paused bool) {
 	}
 	updated, err := strconv.ParseInt(values["updated"], 10, 64)
 	if err != nil || updated <= 0 {
-		return false, false
+		return BatteryGuardStatus{}
 	}
 	age := now.Sub(time.Unix(updated, 0))
 	if age < -30*time.Second || age > 45*time.Second || values["healthy"] != "1" {
-		return false, false
+		return BatteryGuardStatus{
+			Healthy: false,
+			Enabled: false,
+			Paused:  false,
+			Low:     0,
+			High:    0,
+			Updated: updated,
+		}
 	}
-	return values["enabled"] == "1", values["paused"] == "1"
+	var low, high int
+	if parsedLow, err := strconv.Atoi(values["low"]); err == nil && parsedLow >= 20 && parsedLow <= 95 {
+		low = parsedLow
+	}
+	if parsedHigh, err := strconv.Atoi(values["high"]); err == nil && parsedHigh >= 20 && parsedHigh <= 95 {
+		high = parsedHigh
+	}
+	if low >= high || low == 0 || high == 0 {
+		return BatteryGuardStatus{
+			Healthy: false,
+			Enabled: false,
+			Paused:  false,
+			Low:     0,
+			High:    0,
+			Updated: updated,
+		}
+	}
+	return BatteryGuardStatus{
+		Healthy: true,
+		Enabled: values["enabled"] == "1",
+		Paused:  values["paused"] == "1",
+		Low:     low,
+		High:    high,
+		Updated: updated,
+	}
 }
 
 func readThermals() []ThermalInfo {
