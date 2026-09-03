@@ -134,6 +134,11 @@ function emit_proxy_groups(indent, child) {
     print child "include-all-proxies: true"
     print child "filter: \"(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)\""
     print child "exclude-filter: \"(?i)日本.*(03|04|05)\""
+    print indent "- name: \"Antigravity\""
+    print child "type: select"
+    print child "include-all-proxies: true"
+    print child "filter: \"(?i)🇺🇸|美国|USA|United States\""
+    print child "exclude-filter: \"(?i)剩余|到期|官网|重置\""
 }
 function emit_ai_listener() {
     print "listeners:"
@@ -142,6 +147,12 @@ function emit_ai_listener() {
     print "    listen: 127.0.0.1"
     print "    port: 17891"
     print "    proxy: \"AI\""
+    print "    udp: true"
+    print "  - name: antigravity-selective"
+    print "    type: mixed"
+    print "    listen: 127.0.0.1"
+    print "    port: 17892"
+    print "    proxy: \"Antigravity\""
     print "    udp: true"
 }
 function emit_sniffer() {
@@ -456,7 +467,7 @@ controller_ready() {
 
 ports_ready() {
     [ -x "$SOCAT" ] || return 1
-    for port in 9091 17890 17891; do
+    for port in 9091 17890 17891 17892; do
         "$SOCAT" -T1 -u /dev/null "TCP:127.0.0.1:$port,connect-timeout=1" >/dev/null 2>&1 || return 1
     done
 }

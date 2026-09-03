@@ -8,14 +8,16 @@ This directory contains the standalone Mihomo service used by the OnePlus 7 Pro 
 - Native TUN: `op7tun`, gVisor stack, route table `2022`, rules `8100-8110`
 - Physical egress: `ppp0`; root UID 0 bypasses the TUN to prevent proxy loops
 - Generic local listener: `127.0.0.1:17890`, follows `rule` / `global` / `direct`
-- CPA listener: `127.0.0.1:17891`, pinned to `AI`
+- Codex/CPA listener: `127.0.0.1:17891`, pinned to `AI`
+- Antigravity listener: `127.0.0.1:17892`, pinned to `Antigravity`
 - Controller: `127.0.0.1:9091`
 - Persistent mode: `direct` on a fresh install; `rule` after the local
   allowlist has been validated
 - LAN exposure, Redirect and TProxy listeners: disabled
 - Subscription refresh: every six hours
 - Health recovery: controller, singleton PID, listeners, TUN route and real
-  `17891` ChatGPT/OpenAI egress are checked every minute; healthd restarts
+  `17891` ChatGPT/OpenAI egress are checked every minute; subscription
+  activation additionally requires both `17891` and `17892`; healthd restarts
   Mihomo after three consecutive actionable failures
 
 Mihomo now owns routing for both forwarded LAN clients and Android-local
@@ -27,13 +29,18 @@ firewalling and the physical fail-open route; it no longer launches the
 `AI-日本自动` latency-tests Japanese nodes and excludes the known-bad
 `日本 | 03`, `日本 | 04` and `日本 | 05` entries. The `AI` group exposes only
 that automatic choice, `DIRECT`, and healthy Japanese subscription nodes.
+`Antigravity` is a separate selector containing only US subscription nodes. An
+update preserves the currently selected Antigravity node by default; set
+`ANTIGRAVITY_NODE` to override it. This prevents Google location policy from
+sharing the Japanese Codex egress or changing the existing `AI` selection.
 `家庭RULE自动` tests every subscription node, while `家庭RULE` exposes that
 automatic choice, `DIRECT`, and every individual subscription node.
 
 CPA currently uses `proxy-url: "http://127.0.0.1:17891"` as an explicit,
-loopback-only migration bridge. This makes the CPA egress independent of its
-process UID while still using the same Mihomo core and the `AI` group. No proxy
-listener is exposed to the LAN.
+loopback-only migration bridge for Codex. Each Antigravity auth file overrides
+that default with `proxy_url: "http://127.0.0.1:17892"`. Both providers use the
+same Mihomo core but independent selectors, and neither listener is exposed to
+the LAN.
 
 DNS uses dedicated domestic resolvers for proxy-node hostnames. Overseas DoH
 fallbacks are explicitly bound to `ppp0`, avoiding a proxy/DNS bootstrap loop.

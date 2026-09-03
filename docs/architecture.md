@@ -65,7 +65,8 @@ Magisk 只负责必须是 root、必须早于用户解锁或必须独立于 Term
 Mihomo 维持单个 root 核心：
 
 - `17890`：通用本机 mixed listener；
-- `17891`：CPA 专用 listener，绑定独立代理组；
+- `17891`：CPA/Codex 专用 listener，绑定日本 `AI` 代理组；
+- `17892`：Antigravity 专用 listener，绑定美国 `Antigravity` 代理组；
 - `9091`：controller，仅回环；
 - 默认规则为直连；
 - 全屋代理由路由管理器显式创建 TUN 和策略路由。

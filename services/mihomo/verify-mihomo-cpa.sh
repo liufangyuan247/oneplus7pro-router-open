@@ -26,14 +26,27 @@ echo AUTH_COUNT
 find "$HOME/router-data/cpa/auth" -maxdepth 1 -type f 2>/dev/null | wc -l
 
 echo OPENAI_EGRESS
-"$PREFIX/bin/curl" -fsS http://127.0.0.1:9091/proxies/Codex-%E6%97%A5%E6%9C%AC | "$PREFIX/bin/jq" -r .now
+"$PREFIX/bin/curl" -fsS http://127.0.0.1:9091/proxies/AI | "$PREFIX/bin/jq" -r .now
 "$PREFIX/bin/curl" -sS --max-time 20 \
-    --noproxy '*' \
+    --proxy http://127.0.0.1:17891 \
     --output /dev/null --write-out '%{http_code} %{time_total}\n' \
     https://api.openai.com/v1/models
 
+echo ANTIGRAVITY_EGRESS
+"$PREFIX/bin/curl" -fsS http://127.0.0.1:9091/proxies/Antigravity | "$PREFIX/bin/jq" -r .now
+antigravity_auth=0
+for file in "$HOME/router-data/cpa/auth"/*.json; do
+    [ -f "$file" ] || continue
+    if "$PREFIX/bin/jq" -e '.type == "antigravity"' "$file" >/dev/null 2>&1; then
+        "$PREFIX/bin/jq" -e '.proxy_url == "http://127.0.0.1:17892"' "$file" >/dev/null
+        antigravity_auth=$((antigravity_auth + 1))
+    fi
+done
+[ "$antigravity_auth" -gt 0 ]
+echo "auth_files=$antigravity_auth proxy=http://127.0.0.1:17892"
+
 echo LISTENERS
-ss -lntup 2>/dev/null | grep -E ':(7890|17890|17891|9091) ' || true
+ss -lntup 2>/dev/null | grep -E ':(7890|17890|17891|17892|9091) ' || true
 
 echo ROUTER_POLICY
 "$PREFIX/bin/su" -c '/data/adb/router-network/router-network status'
