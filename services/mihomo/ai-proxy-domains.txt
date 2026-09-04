@@ -7,17 +7,12 @@ chatgpt.com
 oaistatic.com
 oaiusercontent.com
 
-# Google AI / Antigravity
-cloudcode-pa.googleapis.com
-daily-cloudcode-pa.googleapis.com
-daily-cloudcode-pa.sandbox.googleapis.com
-oauth2.googleapis.com
+# Google AI (Antigravity-specific domains are managed separately)
 generativeai.googleapis.com
 generativelanguage.googleapis.com
 ai.google.dev
 aistudio.google.com
 gemini.google.com
-antigravity-hub-auto-updater-974169037036.us-central1.run.app
 
 # Other AI assistants
 anthropic.com

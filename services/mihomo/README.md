@@ -120,6 +120,12 @@ The subscription is a node transport only. Its `proxy-groups`,
 `rule-providers`, and `rules` sections are discarded. AI policy comes from
 `~/router-data/mihomo/ai-proxy-domains.txt`, with optional additions in
 `custom-ai-proxy-domains.txt`; those domains select `AI`.
+Antigravity policy is managed independently in
+`antigravity-proxy-domains.txt`, with optional additions in
+`custom-antigravity-proxy-domains.txt`; those domains select the US-only
+`Antigravity` group for both transparent routing and policy-bound DNS/DoH.
+Together with the per-account `17892` proxy override, this keeps Antigravity
+on the US exit even when a request is not made through CPA's explicit proxy.
 
 `~/router-data/mihomo/routing-policy` selects one of two locally managed
 policies:

@@ -45,6 +45,10 @@ grep -q '^[[:space:]]*- GEOIP,CN,DIRECT$' "$CANDIDATE"
 grep -q '^[[:space:]]*- MATCH,家庭RULE$' "$CANDIDATE"
 grep -q '^[[:space:]]*fake-ip-filter-mode: whitelist$' "$CANDIDATE"
 grep -q '^[[:space:]]*store-fake-ip: true$' "$CANDIDATE"
+grep -q '^[[:space:]]*- DOMAIN-SUFFIX,cloudcode-pa.googleapis.com,Antigravity$' "$CANDIDATE"
+grep -q '^[[:space:]]*- DOMAIN-SUFFIX,antigravity-unleash.goog,Antigravity$' "$CANDIDATE"
+grep -q '^[[:space:]]*port: 17892$' "$CANDIDATE"
+grep -q '^[[:space:]]*proxy: "Antigravity"$' "$CANDIDATE"
 
 mkdir -p "$SHADOW"
 chmod 700 "$SHADOW"
@@ -60,6 +64,7 @@ done
     /^external-controller:[[:space:]]*/ { print "external-controller: 127.0.0.1:9191"; next }
     /^  listen: 127\.0\.0\.1:1053[[:space:]]*$/ { print "  listen: 127.0.0.1:1153"; next }
     /^    port: 17891[[:space:]]*$/ { print "    port: 17991"; next }
+    /^    port: 17892[[:space:]]*$/ { print "    port: 17992"; next }
     /^tun:[[:space:]]*$/ { in_tun=1; print; next }
     in_tun && /^  enable:[[:space:]]*/ { print "  enable: false"; in_tun=0; next }
     { print }
@@ -88,12 +93,17 @@ done
 proxy_state="$($CURL -fsS --max-time 3 http://127.0.0.1:9191/proxies)"
 household_now="$(printf '%s' "$proxy_state" | "$JQ" -r '.proxies["家庭RULE"].now // empty')"
 ai_now="$(printf '%s' "$proxy_state" | "$JQ" -r '.proxies["AI"].now // empty')"
+antigravity_now="$(printf '%s' "$proxy_state" | "$JQ" -r '.proxies["Antigravity"].now // empty')"
 [ -n "$household_now" ] && [ "$household_now" != DIRECT ] || {
     echo "household shadow group is not using a proxy: ${household_now:-missing}" >&2
     exit 1
 }
 [ -n "$ai_now" ] && [ "$ai_now" != DIRECT ] || {
     echo "AI shadow group is not using a proxy: ${ai_now:-missing}" >&2
+    exit 1
+}
+[ -n "$antigravity_now" ] && [ "$antigravity_now" != DIRECT ] || {
+    echo "Antigravity shadow group is not using a proxy: ${antigravity_now:-missing}" >&2
     exit 1
 }
 
@@ -127,9 +137,13 @@ fallback_code="$($CURL -sS --connect-timeout 5 --max-time 20 \
 ai_code="$($CURL -sS --connect-timeout 5 --max-time 20 \
     --proxy http://127.0.0.1:17991 --output /dev/null --write-out '%{http_code}' \
     https://chatgpt.com/cdn-cgi/trace 2>/dev/null || true)"
+antigravity_code="$($CURL -sS --connect-timeout 5 --max-time 20 \
+    --proxy http://127.0.0.1:17992 --output /dev/null --write-out '%{http_code}' \
+    https://cloudcode-pa.googleapis.com/ 2>/dev/null || true)"
 http_ok "$domestic_code" || { echo "domestic shadow request failed: $domestic_code" >&2; exit 1; }
 http_ok "$overseas_code" || { echo "overseas shadow request failed: $overseas_code" >&2; exit 1; }
 http_ok "$fallback_code" || { echo "fallback shadow request failed: $fallback_code" >&2; exit 1; }
 http_ok "$ai_code" || { echo "AI shadow request failed: $ai_code" >&2; exit 1; }
+http_ok "$antigravity_code" || { echo "Antigravity shadow request failed: $antigravity_code" >&2; exit 1; }
 
-echo "CN_DIRECT_CANDIDATE_OK household=$household_now ai_group=$ai_now domestic=$domestic_code overseas=$overseas_code fallback=$fallback_code ai=$ai_code"
+echo "CN_DIRECT_CANDIDATE_OK household=$household_now ai_group=$ai_now antigravity_group=$antigravity_now domestic=$domestic_code overseas=$overseas_code fallback=$fallback_code ai=$ai_code antigravity=$antigravity_code"

@@ -34,6 +34,15 @@ echo OPENAI_EGRESS
 
 echo ANTIGRAVITY_EGRESS
 "$PREFIX/bin/curl" -fsS http://127.0.0.1:9091/proxies/Antigravity | "$PREFIX/bin/jq" -r .now
+while IFS= read -r domain; do
+    case "$domain" in ''|'#'*) continue ;; esac
+    grep -Fq -- "- DOMAIN-SUFFIX,$domain,Antigravity" \
+        "$HOME/router-data/mihomo/config.yaml"
+done < "$HOME/router-data/mihomo/antigravity-proxy-domains.txt"
+"$PREFIX/bin/curl" -sS --max-time 20 \
+    --proxy http://127.0.0.1:17892 \
+    --output /dev/null --write-out '%{http_code} %{time_total}\n' \
+    https://cloudcode-pa.googleapis.com/
 antigravity_auth=0
 for file in "$HOME/router-data/cpa/auth"/*.json; do
     [ -f "$file" ] || continue

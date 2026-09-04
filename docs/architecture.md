@@ -71,6 +71,11 @@ Mihomo 维持单个 root 核心：
 - 默认规则为直连；
 - 全屋代理由路由管理器显式创建 TUN 和策略路由。
 
+Antigravity 的 Cloud Code、OAuth、Unleash 和自动更新域名单独维护，规则与
+DNS/DoH 均绑定美国 `Antigravity` 组；其 CPA 账号配置同时固定使用回环监听
+`127.0.0.1:17892`。因此账号级请求和透明代理兜底不会误落到日本 `AI` 或家庭
+代理组。
+
 订阅更新流程为：下载到临时目录 → 大小检查 → 适配端口/组/规则 → `mihomo -t` 离线校验 → 保存 last-good → controller 热加载 → 完整健康检查。热加载失败才短暂重启；重启后仍失败则回滚。
 
 为了不形成代理环路，Mihomo 订阅中实际节点的入口 IP 会加入 direct bypass。否则“电脑自己的 Clash 测延迟”或代理核心访问上游节点可能再次进入全屋 TUN，表现为所有节点 timeout。

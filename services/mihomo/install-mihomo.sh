@@ -10,7 +10,7 @@ UPDATER_SERVICE="$STACK/services/mihomo-updater"
 STAGE="$HOME/.stage"
 BACKUPS="$HOME/router-data/backups/mihomo"
 
-for file in mihomo mihomo-config.base.yaml mihomo-update-subscription mihomo-updater-run mihomo-run-root mihomo-health-probe mihomo-client-bypass ai-proxy-domains.txt selective-proxy-domains.txt metacubexd-ui.tar.gz metacubexd-config.js; do
+for file in mihomo mihomo-config.base.yaml mihomo-update-subscription mihomo-updater-run mihomo-run-root mihomo-health-probe mihomo-client-bypass ai-proxy-domains.txt antigravity-proxy-domains.txt selective-proxy-domains.txt metacubexd-ui.tar.gz metacubexd-config.js; do
     [ -s "$STAGE/$file" ] || { echo "missing staged $file" >&2; exit 1; }
 done
 
@@ -27,6 +27,8 @@ chmod 700 "$DATA" "$BACKUP"
 [ -f "$DATA/subscription.url" ] && cp -p "$DATA/subscription.url" "$BACKUP/subscription.url"
 [ -f "$DATA/ai-proxy-domains.txt" ] && cp -p "$DATA/ai-proxy-domains.txt" "$BACKUP/ai-proxy-domains.txt"
 [ -f "$DATA/custom-ai-proxy-domains.txt" ] && cp -p "$DATA/custom-ai-proxy-domains.txt" "$BACKUP/custom-ai-proxy-domains.txt"
+[ -f "$DATA/antigravity-proxy-domains.txt" ] && cp -p "$DATA/antigravity-proxy-domains.txt" "$BACKUP/antigravity-proxy-domains.txt"
+[ -f "$DATA/custom-antigravity-proxy-domains.txt" ] && cp -p "$DATA/custom-antigravity-proxy-domains.txt" "$BACKUP/custom-antigravity-proxy-domains.txt"
 [ -f "$DATA/selective-proxy-domains.txt" ] && cp -p "$DATA/selective-proxy-domains.txt" "$BACKUP/selective-proxy-domains.txt"
 [ -f "$DATA/custom-proxy-domains.txt" ] && cp -p "$DATA/custom-proxy-domains.txt" "$BACKUP/custom-proxy-domains.txt"
 [ -f "$DATA/client-bypass-ipv4.txt" ] && cp -p "$DATA/client-bypass-ipv4.txt" "$BACKUP/client-bypass-ipv4.txt"
@@ -57,8 +59,10 @@ fi
 [ -s "$DATA/runtime-mode" ] || printf 'direct\n' > "$DATA/runtime-mode"
 [ -s "$DATA/routing-policy" ] || printf 'allowlist\n' > "$DATA/routing-policy"
 cp "$STAGE/ai-proxy-domains.txt" "$DATA/ai-proxy-domains.txt"
+cp "$STAGE/antigravity-proxy-domains.txt" "$DATA/antigravity-proxy-domains.txt"
 cp "$STAGE/selective-proxy-domains.txt" "$DATA/selective-proxy-domains.txt"
 [ -f "$DATA/custom-ai-proxy-domains.txt" ] || : > "$DATA/custom-ai-proxy-domains.txt"
+[ -f "$DATA/custom-antigravity-proxy-domains.txt" ] || : > "$DATA/custom-antigravity-proxy-domains.txt"
 [ -f "$DATA/custom-proxy-domains.txt" ] || : > "$DATA/custom-proxy-domains.txt"
 [ -f "$DATA/client-bypass-ipv4.txt" ] || : > "$DATA/client-bypass-ipv4.txt"
 [ -f "$DATA/client-bypass-lan-iface" ] || : > "$DATA/client-bypass-lan-iface"
@@ -128,6 +132,7 @@ EOF
 
 chmod 600 "$DATA/config.yaml" "$DATA/runtime-settings.yaml" "$DATA/runtime-mode" "$DATA/routing-policy" \
     "$DATA/ai-proxy-domains.txt" "$DATA/custom-ai-proxy-domains.txt" \
+    "$DATA/antigravity-proxy-domains.txt" "$DATA/custom-antigravity-proxy-domains.txt" \
     "$DATA/selective-proxy-domains.txt" "$DATA/custom-proxy-domains.txt"
 chmod 600 "$DATA/client-bypass-ipv4.txt"
 chmod 600 "$DATA/client-bypass-lan-iface"
@@ -225,7 +230,8 @@ fi
 rm -f "$STAGE/mihomo" "$STAGE/mihomo-config.base.yaml" \
     "$STAGE/mihomo-update-subscription" "$STAGE/mihomo-updater-run" \
     "$STAGE/mihomo-health-probe" "$STAGE/mihomo-client-bypass" \
-    "$STAGE/ai-proxy-domains.txt" "$STAGE/selective-proxy-domains.txt" \
+    "$STAGE/ai-proxy-domains.txt" "$STAGE/antigravity-proxy-domains.txt" \
+    "$STAGE/selective-proxy-domains.txt" \
     "$STAGE/metacubexd-ui.tar.gz" "$STAGE/metacubexd-config.js" \
     "$STAGE/mihomo-subscription.url" "$STAGE/GeoSite.dat" "$STAGE/geoip.metadb"
 

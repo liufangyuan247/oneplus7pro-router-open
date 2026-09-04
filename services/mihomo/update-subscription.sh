@@ -19,6 +19,8 @@ SU="$PREFIX/bin/su"
 CORE_PIDFILE="$DATA/supervised-core.pid"
 MANAGED_AI_DOMAINS="$DATA/ai-proxy-domains.txt"
 CUSTOM_AI_DOMAINS="$DATA/custom-ai-proxy-domains.txt"
+MANAGED_ANTIGRAVITY_DOMAINS="$DATA/antigravity-proxy-domains.txt"
+CUSTOM_ANTIGRAVITY_DOMAINS="$DATA/custom-antigravity-proxy-domains.txt"
 MANAGED_RULE_DOMAINS="$DATA/selective-proxy-domains.txt"
 CUSTOM_RULE_DOMAINS="$DATA/custom-proxy-domains.txt"
 
@@ -48,6 +50,11 @@ AI	oauth2.googleapis.com
 AI	generativelanguage.googleapis.com
 EOF_DOMAINS
 fi
+for domain_file in "$MANAGED_ANTIGRAVITY_DOMAINS" "$CUSTOM_ANTIGRAVITY_DOMAINS"; do
+    [ ! -f "$domain_file" ] || "$PREFIX/bin/awk" '
+        { line=$0; sub(/[[:space:]]*#.*/, "", line); gsub(/\r/, "", line); if (line != "") print "ANTIGRAVITY\t" line }
+    ' "$domain_file" >> "$DOMAIN_POLICY_SNAPSHOT"
+done
 for domain_file in "$MANAGED_RULE_DOMAINS" "$CUSTOM_RULE_DOMAINS"; do
     [ ! -f "$domain_file" ] || "$PREFIX/bin/awk" '
         { line=$0; sub(/[[:space:]]*#.*/, "", line); gsub(/\r/, "", line); if (line != "") print "RULE\t" line }
@@ -55,7 +62,7 @@ for domain_file in "$MANAGED_RULE_DOMAINS" "$CUSTOM_RULE_DOMAINS"; do
 done
 
 "$PREFIX/bin/awk" -F '\t' '
-    NF != 2 || $1 !~ /^(AI|RULE)$/ || $2 !~ /^([A-Za-z0-9_*-]+\.)*[A-Za-z0-9_*-]+$/ {
+    NF != 2 || $1 !~ /^(AI|ANTIGRAVITY|RULE)$/ || $2 !~ /^([A-Za-z0-9_*-]+\.)*[A-Za-z0-9_*-]+$/ {
         print "invalid managed proxy domain at line " NR > "/dev/stderr"
         bad=1
     }
@@ -208,6 +215,7 @@ function emit_dns() {
     print "  fake-ip-range: 198.18.0.1/16"
     print "  fake-ip-filter-mode: whitelist"
     print "  fake-ip-filter:"
+    for (i=1; i<=dns_antigravity_count; i++) print "    - \"+." dns_antigravity_domains[i] "\""
     for (i=1; i<=dns_ai_count; i++) print "    - \"+." dns_ai_domains[i] "\""
     for (i=1; i<=dns_rule_count; i++) print "    - \"+." dns_rule_domains[i] "\""
     print "  respect-rules: false"
@@ -222,6 +230,11 @@ function emit_dns() {
     print "    - 119.29.29.29"
     print "  direct-nameserver-follow-policy: false"
     print "  nameserver-policy:"
+    for (i=1; i<=dns_antigravity_count; i++) {
+        print "    \"+." dns_antigravity_domains[i] "\":"
+        print "      - https://1.1.1.1/dns-query#Antigravity"
+        print "      - https://8.8.8.8/dns-query#Antigravity"
+    }
     for (i=1; i<=dns_ai_count; i++) {
         print "    \"+." dns_ai_domains[i] "\":"
         print "      - https://1.1.1.1/dns-query#AI"
@@ -259,6 +272,7 @@ BEGIN {
         if (domain == "" || dns_seen[policy_key]) continue
         dns_seen[policy_key]=1
         if (policy == "AI") dns_ai_domains[++dns_ai_count]=domain
+        else if (policy == "ANTIGRAVITY") dns_antigravity_domains[++dns_antigravity_count]=domain
         else if (policy == "RULE") dns_rule_domains[++dns_rule_count]=domain
     }
     close(domain_policy_file)
@@ -369,8 +383,12 @@ function emit_managed_rules(indent) {
     print indent "- IP-CIDR,95.161.64.0/20,家庭RULE,no-resolve"
     print indent "- IP-CIDR,149.154.160.0/20,家庭RULE,no-resolve"
 
-    # AI services keep a stable Japanese exit; the general household group can
-    # select any subscription node. The routing policy decides the fallback.
+    # Antigravity keeps a stable US exit, other AI services keep a stable
+    # Japanese exit, and the general household group can select any
+    # subscription node. The routing policy decides the fallback.
+    for (i=1; i<=antigravity_domain_count; i++) {
+        print indent "- DOMAIN-SUFFIX," antigravity_domains[i] ",Antigravity"
+    }
     for (i=1; i<=ai_domain_count; i++) {
         print indent "- DOMAIN-SUFFIX," ai_domains[i] ",AI"
     }
@@ -391,6 +409,7 @@ NR == FNR {
     sub(/^[^\t]*\t/, "", domain)
     if (domain != "" && !(domain in seen_domain)) {
         if (policy == "AI") ai_domains[++ai_domain_count]=domain
+        else if (policy == "ANTIGRAVITY") antigravity_domains[++antigravity_domain_count]=domain
         else if (policy == "RULE") rule_domains[++rule_domain_count]=domain
         seen_domain[domain]=1
     }

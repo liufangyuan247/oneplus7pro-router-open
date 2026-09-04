@@ -1,0 +1,9 @@
+# Google Antigravity uses the dedicated US-only Antigravity group.
+# One parent domain per line; DOMAIN-SUFFIX also covers subdomains.
+
+cloudcode-pa.googleapis.com
+daily-cloudcode-pa.googleapis.com
+daily-cloudcode-pa.sandbox.googleapis.com
+oauth2.googleapis.com
+antigravity-unleash.goog
+antigravity-hub-auto-updater-974169037036.us-central1.run.app
