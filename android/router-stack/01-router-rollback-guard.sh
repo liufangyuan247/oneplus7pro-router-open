@@ -13,12 +13,45 @@ SUPERVISOR_PID="$BASE/supervisor.pid"
 MANAGER_PID="$BASE/manager.pid"
 LOG="$BASE/rollback.log"
 TIMEOUT="${ROUTER_ROLLBACK_TIMEOUT:-180}"
+PPPD_OPTIONS="$BASE/runtime/pppd.options"
+PPPOE_BACKEND_STATE="$BASE/runtime/pppoe-backend"
+PPPOE=/data/data/com.termux/files/usr/bin/pppoe
 
 mkdir -p "$BASE"
 chmod 700 "$BASE" 2>/dev/null || true
 
 log() {
   printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"
+}
+
+candidate_ppp_pids() {
+  for pid in $(pidof pppd pppoe 2>/dev/null || true); do
+    [ -r "/proc/$pid/cmdline" ] || continue
+    cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$cmdline" in
+      "/system/bin/pppd file $PPPD_OPTIONS"*|"$PPPOE "*)
+        echo "$pid"
+        ;;
+    esac
+  done
+  return 0
+}
+
+quiesce_candidate_ppp() {
+  [ -s "$PPPOE_BACKEND_STATE" ] || return 0
+  pids="$(candidate_ppp_pids)"
+  for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
+  elapsed=0
+  while [ -n "$(candidate_ppp_pids)" ] && [ "$elapsed" -lt 10 ]; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  pids="$(candidate_ppp_pids)"
+  for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
+  rm -f "$BASE/pppd.pid" "$BASE/runtime/pppoe-backend" \
+    "$BASE/runtime/pppoe-backend-pid" "$BASE/runtime/pppoe-backend-started-at" \
+    "$BASE/runtime/pppoe-kernel-proven" "$BASE/runtime/pppoe-switching"
+  log "candidate PPPoE processes quiesced for rollback"
 }
 
 restore_script() {
@@ -43,11 +76,13 @@ restore_script() {
 }
 
 rollback_manager() {
-  restore_script "$MANAGER_BACKUP" "$MANAGER" 700 manager || return 1
-  rm -f "$MANAGER_PENDING" "$MANAGER_TRIAL"
   if [ -s "$MANAGER_PID" ]; then
     kill "$(cat "$MANAGER_PID" 2>/dev/null)" 2>/dev/null || true
+    sleep 1
   fi
+  quiesce_candidate_ppp || true
+  restore_script "$MANAGER_BACKUP" "$MANAGER" 700 manager || return 1
+  rm -f "$MANAGER_PENDING" "$MANAGER_TRIAL"
 }
 
 rollback_service() {

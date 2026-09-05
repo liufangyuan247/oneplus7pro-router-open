@@ -14,6 +14,9 @@ TIMEOUT_BIN=/data/data/com.termux/files/usr/bin/timeout
 HEALTH_INTERVAL="${ROUTER_HEALTH_INTERVAL:-10}"
 HEALTH_SUCCESSES="${ROUTER_HEALTH_SUCCESSES:-3}"
 HEALTH_TIMEOUT="${ROUTER_HEALTH_TIMEOUT:-150}"
+PPPD_OPTIONS="$BASE/runtime/pppd.options"
+PPPOE_BACKEND_STATE="$BASE/runtime/pppoe-backend"
+PPPOE=/data/data/com.termux/files/usr/bin/pppoe
 
 if [ "${1:-}" != supervise ]; then
   /system/bin/sh "$SERVICE" supervise >> "$LOG" 2>&1 &
@@ -29,6 +32,39 @@ process_alive() {
   kill -0 "$pid" 2>/dev/null || return 1
   [ -r "/proc/$pid/stat" ] || return 1
   [ "$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" != Z ]
+}
+
+candidate_ppp_pids() {
+  for pid in $(pidof pppd pppoe 2>/dev/null || true); do
+    [ -r "/proc/$pid/cmdline" ] || continue
+    cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$cmdline" in
+      "/system/bin/pppd file $PPPD_OPTIONS"*|"$PPPOE "*)
+        echo "$pid"
+        ;;
+    esac
+  done
+  return 0
+}
+
+quiesce_candidate_ppp() {
+  # A manager that never selected a new backend has no state marker and keeps
+  # the pre-upgrade PPPoE session intact.  If it did select one, rollback must
+  # also remove its pppd/helper processes before the stable manager restarts.
+  [ -s "$PPPOE_BACKEND_STATE" ] || return 0
+  pids="$(candidate_ppp_pids)"
+  for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
+  elapsed=0
+  while [ -n "$(candidate_ppp_pids)" ] && [ "$elapsed" -lt 10 ]; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  pids="$(candidate_ppp_pids)"
+  for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
+  rm -f "$BASE/pppd.pid" "$BASE/runtime/pppoe-backend" \
+    "$BASE/runtime/pppoe-backend-pid" "$BASE/runtime/pppoe-backend-started-at" \
+    "$BASE/runtime/pppoe-kernel-proven" "$BASE/runtime/pppoe-switching"
+  log "candidate PPPoE processes quiesced for rollback"
 }
 
 restore_manager() {
@@ -151,8 +187,10 @@ while [ -x "$MANAGER" ]; do
     if ! confirm_trials "$child"; then
       if [ -f "$MANAGER_PENDING" ]; then
         log "manager candidate failed health confirmation"
-        restore_manager || true
         kill "$child" 2>/dev/null || true
+        sleep 1
+        quiesce_candidate_ppp || true
+        restore_manager || true
       fi
     fi
   fi
@@ -161,6 +199,7 @@ while [ -x "$MANAGER" ]; do
   result=$?
   if [ -f "$MANAGER_PENDING" ]; then
     log "manager candidate exited before confirmation: rc=$result"
+    quiesce_candidate_ppp || true
     restore_manager || true
   else
     log "manager exited: rc=$result; restarting in 5 seconds"

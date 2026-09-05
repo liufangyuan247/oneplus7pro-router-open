@@ -42,6 +42,11 @@ mv -f "$BASE/safe-update-router-network.new" "$BASE/safe-update-router-network"
 current_hash="$(sha256sum "$SERVICE" | awk '{print $1}')"
 candidate_hash="$(sha256sum "$SERVICE_SRC" | awk '{print $1}')"
 if [ "$current_hash" != "$candidate_hash" ]; then
+  # Roll back to the service that is actually running now, not to an older
+  # one-time bootstrap backup left by a previous upgrade.
+  cp -p "$SERVICE" "$BASE/22-router-network.sh.backup.new"
+  chmod 755 "$BASE/22-router-network.sh.backup.new"
+  mv -f "$BASE/22-router-network.sh.backup.new" "$BASE/22-router-network.sh.backup"
   cp -p "$SERVICE_SRC" "$SERVICE.new"
   chmod 755 "$SERVICE.new"
   mv -f "$SERVICE.new" "$SERVICE"

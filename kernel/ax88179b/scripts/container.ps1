@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('image', 'prepare', 'integrate', 'configure', 'build', 'candidate', 'candidate-package', 'package', 'shell', 'status')]
+    [ValidateSet('image', 'prepare', 'integrate', 'configure', 'build', 'candidate', 'candidate-package', 'performance-modules', 'package', 'shell', 'status')]
     [string]$Action = 'status',
     [ValidateRange(1, 12)]
     [int]$Jobs = 8
@@ -27,6 +27,7 @@ switch ($Action) {
     'build'     { Invoke-Compose @('run', '--rm', '-e', "OP7P_BUILD_JOBS=$Jobs", 'kernel-builder', 'bash', '/project/scripts/build.sh') }
     'candidate' { Invoke-Compose @('run', '--rm', '-e', "OP7P_BUILD_JOBS=$Jobs", 'kernel-builder', 'bash', '/project/scripts/build-resetfix-fqcodel.sh') }
     'candidate-package' { Invoke-Compose @('run', '--rm', 'kernel-builder', 'bash', '/project/scripts/package-resetfix-fqcodel.sh') }
+    'performance-modules' { Invoke-Compose @('run', '--rm', '-e', "OP7P_BUILD_JOBS=$Jobs", 'kernel-builder', 'bash', '/project/scripts/build-network-performance-modules.sh') }
     'package'   { Invoke-Compose @('run', '--rm', 'kernel-builder', 'bash', '/project/scripts/package.sh') }
     'shell'     { Invoke-Compose @('run', '--rm', 'kernel-builder', 'bash') }
     'status'    { & docker volume inspect oneplus7pro-oos11-ax88179b-work }

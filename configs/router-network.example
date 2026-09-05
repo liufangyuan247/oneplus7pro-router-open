@@ -13,6 +13,12 @@ LAN_MODE='auto'
 
 PPPOE_USER='<replace-me>'
 PPPOE_PASS='<replace-me>'
+# userspace is the stable default. Set kernel explicitly only for a guarded
+# maintenance-window trial; auto remains available for compatibility.
+PPPOE_BACKEND='userspace'
+PPPOE_PLUGIN='/data/adb/router-network/plugins/pppd-2.4.7/rp-pppoe.so'
+PPPOE_KERNEL_TRIAL_SECONDS='45'
+PPPOE_KERNEL_DOWN_FALLBACK_SECONDS='120'
 
 LAN_ADDRESS='192.168.2.1/24'
 LAN_SUBNET='192.168.2.0/24'

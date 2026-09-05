@@ -18,6 +18,14 @@ PPPD_LOG="$BASE/pppd.log"
 DNSMASQ_LOG="$BASE/dnsmasq.log"
 CODEX_DNSMASQ_LOG="$BASE/codex-dnsmasq.log"
 RUNTIME="$BASE/runtime"
+PPPD_OPTIONS="$RUNTIME/pppd.options"
+PPPOE_BACKEND_STATE="$RUNTIME/pppoe-backend"
+PPPOE_BACKEND_PID="$RUNTIME/pppoe-backend-pid"
+PPPOE_BACKEND_STARTED_AT="$RUNTIME/pppoe-backend-started-at"
+PPPOE_KERNEL_PROVEN="$RUNTIME/pppoe-kernel-proven"
+PPPOE_KERNEL_FAILED="$RUNTIME/pppoe-kernel-failed"
+PPPOE_SWITCH_LOCK="$RUNTIME/pppoe-switching"
+PPPOE_KERNEL_DOWN_SINCE="$RUNTIME/pppoe-kernel-down-since"
 DNSMASQ_OPENAI_SCHEMA="$RUNTIME/dnsmasq-openai-dns-v2"
 DNSMASQ_UNIFIED_SCHEMA="$RUNTIME/dnsmasq-unified-mihomo-v1"
 DNSMASQ_POLICY="$RUNTIME/dnsmasq-policy"
@@ -48,6 +56,7 @@ MIHOMO_MODE_FILE="$MIHOMO_DATA/runtime-mode"
 MIHOMO_CONTROLLER=http://127.0.0.1:9091
 MIHOMO_TUN=op7tun
 PPPD=/system/bin/pppd
+PPPOE_PLUGIN_DEFAULT="$BASE/plugins/pppd-2.4.7/rp-pppoe.so"
 
 TABLE_WAN=100
 TABLE_TPROXY=101
@@ -85,6 +94,13 @@ load_config() {
   CODEX_PROXY_ENABLED="${CODEX_PROXY_ENABLED:-1}"
   PPP_TXQUEUELEN="${PPP_TXQUEUELEN:-1024}"
   PPP_QDISC="${PPP_QDISC:-auto}"
+  # Kernel PPPoE is experimental and must be selected explicitly. Making it
+  # the implicit choice can replace a healthy userspace session during a live
+  # manager upgrade.
+  PPPOE_BACKEND="${PPPOE_BACKEND:-userspace}"
+  PPPOE_PLUGIN="${PPPOE_PLUGIN:-$PPPOE_PLUGIN_DEFAULT}"
+  PPPOE_KERNEL_TRIAL_SECONDS="${PPPOE_KERNEL_TRIAL_SECONDS:-45}"
+  PPPOE_KERNEL_DOWN_FALLBACK_SECONDS="${PPPOE_KERNEL_DOWN_FALLBACK_SECONDS:-120}"
   case "$PPP_TXQUEUELEN" in
     default) ;;
     ''|*[!0-9]*) log "invalid PPP_TXQUEUELEN=$PPP_TXQUEUELEN"; return 1 ;;
@@ -96,6 +112,24 @@ load_config() {
   case "$PPP_QDISC" in
     auto|fq_codel|keep) ;;
     *) log "invalid PPP_QDISC=$PPP_QDISC"; return 1 ;;
+  esac
+  case "$PPPOE_BACKEND" in
+    auto|kernel|userspace) ;;
+    *) log "invalid PPPOE_BACKEND=$PPPOE_BACKEND"; return 1 ;;
+  esac
+  case "$PPPOE_KERNEL_TRIAL_SECONDS" in
+    ''|*[!0-9]*) log "invalid PPPOE_KERNEL_TRIAL_SECONDS=$PPPOE_KERNEL_TRIAL_SECONDS"; return 1 ;;
+    *) [ "$PPPOE_KERNEL_TRIAL_SECONDS" -ge 15 ] && [ "$PPPOE_KERNEL_TRIAL_SECONDS" -le 300 ] || {
+      log "PPPOE_KERNEL_TRIAL_SECONDS out of range: $PPPOE_KERNEL_TRIAL_SECONDS"
+      return 1
+    } ;;
+  esac
+  case "$PPPOE_KERNEL_DOWN_FALLBACK_SECONDS" in
+    ''|*[!0-9]*) log "invalid PPPOE_KERNEL_DOWN_FALLBACK_SECONDS=$PPPOE_KERNEL_DOWN_FALLBACK_SECONDS"; return 1 ;;
+    *) [ "$PPPOE_KERNEL_DOWN_FALLBACK_SECONDS" -ge 30 ] && [ "$PPPOE_KERNEL_DOWN_FALLBACK_SECONDS" -le 600 ] || {
+      log "PPPOE_KERNEL_DOWN_FALLBACK_SECONDS out of range: $PPPOE_KERNEL_DOWN_FALLBACK_SECONDS"
+      return 1
+    } ;;
   esac
   case "$CODEX_PROXY_ENABLED" in
     0|1) ;;
@@ -208,10 +242,102 @@ pid_alive() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
+managed_pppd_pid_matches() {
+  pid="$1"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in
+    "$PPPD file $PPPD_OPTIONS"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_pppd_pids() {
+  # pidof narrows this to the one or two relevant processes.  Scanning every
+  # Android process and spawning tr for each entry made a controlled redial
+  # take minutes and could outlive its rollback watchdog.
+  for pid in $(pidof pppd 2>/dev/null || true); do
+    managed_pppd_pid_matches "$pid" && echo "$pid"
+  done
+  return 0
+}
+
+managed_pppoe_helper_pid_matches() {
+  pid="$1"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in "$PPPOE "*) return 0 ;; *) return 1 ;; esac
+}
+
+managed_pppoe_helper_pids() {
+  for pid in $(pidof pppoe 2>/dev/null || true); do
+    managed_pppoe_helper_pid_matches "$pid" && echo "$pid"
+  done
+  return 0
+}
+
+managed_ppp_pids() {
+  { managed_pppd_pids; managed_pppoe_helper_pids; } | awk '!seen[$0]++'
+}
+
+wait_for_managed_ppp_down() {
+  remaining="${1:-10}"
+  while [ "$remaining" -gt 0 ]; do
+    [ -z "$(managed_ppp_pids)" ] && [ -z "$(find_ppp 2>/dev/null || true)" ] && return 0
+    sleep 1
+    remaining=$((remaining - 1))
+  done
+  [ -z "$(managed_ppp_pids)" ] && [ -z "$(find_ppp 2>/dev/null || true)" ]
+}
+
+verify_kernel_pppoe_plugin() {
+  wan="$1"
+  [ -s "$PPPOE_PLUGIN" ] || return 1
+  "$PPPD" plugin "$PPPOE_PLUGIN" "$wan" dryrun noauth noipdefault nodetach \
+    >/dev/null 2>> "$PPPD_LOG"
+}
+
+select_pppoe_backend() {
+  case "$PPPOE_BACKEND" in
+    userspace) echo userspace ;;
+    kernel) [ -s "$PPPOE_PLUGIN" ] && echo kernel || return 1 ;;
+    auto)
+      if [ -s "$PPPOE_PLUGIN" ] && [ ! -f "$PPPOE_KERNEL_FAILED" ]; then
+        echo kernel
+      else
+        echo userspace
+      fi
+      ;;
+  esac
+}
+
 write_ppp_options() {
   wan="$1"
+  backend="$2"
   umask 077
-  cat > "$RUNTIME/pppd.options" <<EOF
+  if [ "$backend" = kernel ]; then
+    cat > "$PPPD_OPTIONS" <<EOF
+plugin "$PPPOE_PLUGIN"
+$wan
+user "$PPPOE_USER"
+password "$PPPOE_PASS"
+noauth
+noipdefault
+nodefaultroute
+hide-password
+persist
+maxfail 0
+holdoff 5
+lcp-echo-interval 10
+lcp-echo-failure 3
+mtu 1492
+mru 1492
+nodetach
+EOF
+  else
+    cat > "$PPPD_OPTIONS" <<EOF
 pty "$PPPOE -I $wan -T 20 -m 1412 -U"
 user "$PPPOE_USER"
 password "$PPPOE_PASS"
@@ -228,23 +354,142 @@ mtu 1492
 mru 1492
 nodetach
 EOF
+  fi
 }
 
 start_ppp() {
   wan="$1"
-  pid_alive "$PPPD_PID" && return 0
-  write_ppp_options "$wan"
-  log "starting PPPoE on $wan"
-  "$PPPD" file "$RUNTIME/pppd.options" >> "$PPPD_LOG" 2>&1 &
-  echo $! > "$PPPD_PID"
+  [ ! -f "$PPPOE_SWITCH_LOCK" ] || return 0
+  if pid_alive "$PPPD_PID"; then
+    pid="$(cat "$PPPD_PID" 2>/dev/null || true)"
+    backend_pid="$(cat "$PPPOE_BACKEND_PID" 2>/dev/null || true)"
+    if managed_pppd_pid_matches "$pid" && \
+       { [ -z "$backend_pid" ] || [ "$backend_pid" = "$pid" ]; }; then
+      return 0
+    fi
+    log "inconsistent PPPoE process state detected; rebuilding the managed session"
+    stop_ppp || return 1
+  else
+    running_pids="$(managed_pppd_pids)"
+    if [ -n "$running_pids" ] || [ -n "$(managed_pppoe_helper_pids)" ] || \
+       [ -n "$(find_ppp 2>/dev/null || true)" ]; then
+      log "untracked PPPoE process or interface detected; quiescing before start"
+      stop_ppp || return 1
+    fi
+  fi
+  backend="$(select_pppoe_backend 2>/dev/null || true)"
+  if [ -z "$backend" ]; then
+    log "kernel PPPoE requested but plugin is unavailable: $PPPOE_PLUGIN"
+    return 1
+  fi
+  if [ "$backend" = kernel ] && ! verify_kernel_pppoe_plugin "$wan"; then
+    if [ "$PPPOE_BACKEND" = auto ]; then
+      touch "$PPPOE_KERNEL_FAILED"
+      backend=userspace
+      log "kernel PPPoE plugin preflight failed; falling back to userspace"
+    else
+      log "kernel PPPoE plugin preflight failed"
+      return 1
+    fi
+  fi
+  previous_backend="$(cat "$PPPOE_BACKEND_STATE" 2>/dev/null || true)"
+  if [ "$previous_backend" != "$backend" ]; then
+    printf '%s\n' "$backend" > "$PPPOE_BACKEND_STATE"
+    date +%s > "$PPPOE_BACKEND_STARTED_AT"
+    rm -f "$PPPOE_KERNEL_PROVEN"
+  fi
+  write_ppp_options "$wan" "$backend"
+  log "starting PPPoE on $wan backend=$backend"
+  "$PPPD" file "$PPPD_OPTIONS" >> "$PPPD_LOG" 2>&1 &
+  pid=$!
+  echo "$pid" > "$PPPD_PID"
+  echo "$pid" > "$PPPOE_BACKEND_PID"
 }
 
 stop_ppp() {
-  if pid_alive "$PPPD_PID"; then
-    kill "$(cat "$PPPD_PID")" 2>/dev/null || true
-    sleep 1
+  pids="$(managed_ppp_pids)"
+  for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
+  if ! wait_for_managed_ppp_down 10; then
+    pids="$(managed_ppp_pids)"
+    for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
+    wait_for_managed_ppp_down 5 || {
+      log "managed PPPoE processes or interfaces did not quiesce"
+      return 1
+    }
   fi
-  rm -f "$PPPD_PID"
+  rm -f "$PPPD_PID" "$PPPOE_BACKEND_STATE" "$PPPOE_BACKEND_PID" \
+    "$PPPOE_BACKEND_STARTED_AT" "$PPPOE_KERNEL_PROVEN" "$PPPOE_KERNEL_DOWN_SINCE"
+}
+
+kernel_pppoe_transport_ready() {
+  ppp="$1"
+  awk 'NR > 1 { found=1 } END { exit(found ? 0 : 1) }' /proc/net/pppoe 2>/dev/null || return 1
+  "$IP" -4 route show table "$TABLE_WAN" 2>/dev/null | grep -q "^default dev $ppp" || return 1
+  mihomo_policy_ready || return 1
+
+  # An address and a kernel PPPoE socket do not prove that the routed data
+  # plane works.  The previous implementation marked the trial successful at
+  # that point and could strand Mihomo/CPA behind a dead session.  Confirm the
+  # same OpenAI proxy path used by Codex before making the kernel backend
+  # sticky.  Any normal HTTP response proves DNS, TLS, Mihomo and WAN egress.
+  code="$($CURL -sS --connect-timeout 5 --max-time 12 \
+    --proxy http://127.0.0.1:17891 \
+    --output /dev/null --write-out '%{http_code}' \
+    https://api.openai.com/v1/models 2>/dev/null || true)"
+  case "$code" in 2??|3??|4??) ;; *) return 1 ;; esac
+  printf '%s\n' "$code"
+}
+
+record_pppoe_backend_success() {
+  ppp="$1"
+  [ "$(cat "$PPPOE_BACKEND_STATE" 2>/dev/null || true)" = kernel ] || return 0
+  [ ! -f "$PPPOE_KERNEL_PROVEN" ] || {
+    rm -f "$PPPOE_KERNEL_DOWN_SINCE"
+    return 0
+  }
+  started_pid="$(cat "$PPPOE_BACKEND_PID" 2>/dev/null || true)"
+  tracked_pid="$(cat "$PPPD_PID" 2>/dev/null || true)"
+  [ -n "$started_pid" ] && [ "$started_pid" = "$tracked_pid" ] || return 1
+  managed_pppd_pid_matches "$started_pid" || return 1
+  "$IP" -4 addr show dev "$ppp" 2>/dev/null | grep -q 'inet ' || return 1
+  code="$(kernel_pppoe_transport_ready "$ppp")" || return 1
+  [ -f "$PPPOE_KERNEL_PROVEN" ] || {
+    touch "$PPPOE_KERNEL_PROVEN"
+    rm -f "$PPPOE_KERNEL_DOWN_SINCE"
+    log "kernel PPPoE end-to-end data path established: openai_http=$code"
+  }
+}
+
+pppoe_switch_holdoff() {
+  sleep 10
+}
+
+fallback_unproven_kernel_pppoe() {
+  wan="$1"
+  [ "$PPPOE_BACKEND" = auto ] || return 1
+  [ "$(cat "$PPPOE_BACKEND_STATE" 2>/dev/null || true)" = kernel ] || return 1
+  now="$(date +%s)"
+  if [ -f "$PPPOE_KERNEL_PROVEN" ]; then
+    if [ ! -s "$PPPOE_KERNEL_DOWN_SINCE" ]; then
+      printf '%s\n' "$now" > "$PPPOE_KERNEL_DOWN_SINCE"
+      return 1
+    fi
+    started="$(cat "$PPPOE_KERNEL_DOWN_SINCE" 2>/dev/null || echo 0)"
+    threshold="$PPPOE_KERNEL_DOWN_FALLBACK_SECONDS"
+  else
+    started="$(cat "$PPPOE_BACKEND_STARTED_AT" 2>/dev/null || echo 0)"
+    threshold="$PPPOE_KERNEL_TRIAL_SECONDS"
+  fi
+  [ "$started" -gt 0 ] 2>/dev/null || return 1
+  [ $((now - started)) -ge "$threshold" ] || return 1
+  touch "$PPPOE_KERNEL_FAILED"
+  stop_ppp
+  # Give the access concentrator time to discard the old session before the
+  # userspace client starts discovery.  Immediate reconnects caused repeated
+  # PADS/LCP failures in the field.
+  pppoe_switch_holdoff
+  log "kernel PPPoE health failed after ${threshold}s; falling back to userspace"
+  start_ppp "$wan"
 }
 
 find_ppp() {
@@ -1509,7 +1754,21 @@ validate() {
   [ "$wan" != "$lan" ]
   write_dnsmasq_config "$lan" direct
   "$DNSMASQ" --test --conf-file="$RUNTIME/dnsmasq.conf"
-  write_ppp_options "$wan"
+  live_pppd_options="$PPPD_OPTIONS"
+  PPPD_OPTIONS="$RUNTIME/pppd.options.validate.$$"
+  trap 'rm -f "$PPPD_OPTIONS"' EXIT INT TERM
+  backend="$(select_pppoe_backend 2>/dev/null || true)"
+  [ -n "$backend" ] || { echo "kernel PPPoE plugin unavailable: $PPPOE_PLUGIN" >&2; exit 1; }
+  if [ "$backend" = kernel ]; then
+    verify_kernel_pppoe_plugin "$wan" || {
+      echo "kernel PPPoE plugin preflight failed: $PPPOE_PLUGIN" >&2
+      exit 1
+    }
+  fi
+  write_ppp_options "$wan" "$backend"
+  rm -f "$PPPD_OPTIONS"
+  PPPD_OPTIONS="$live_pppd_options"
+  trap - EXIT INT TERM
   echo "VALID WAN=$wan LAN=$lan ENGINE=mihomo MODE=$(mihomo_mode)"
 }
 
@@ -1524,6 +1783,15 @@ status() {
   echo "lan=${lan:-missing} carrier=$([ -n "$lan" ] && cat "/sys/class/net/$lan/carrier" 2>/dev/null || echo 0)"
   echo "role_policy=cm418-wan/auto-lan wan_usb=${WAN_USB_PORT:-unknown}"
   echo "ppp=${ppp:-down}"
+  echo "pppoe_backend_requested=${PPPOE_BACKEND:-auto}"
+  echo "pppoe_backend_active=$(cat "$PPPOE_BACKEND_STATE" 2>/dev/null || echo down)"
+  echo "pppoe_kernel_plugin=$([ -s "${PPPOE_PLUGIN:-$PPPOE_PLUGIN_DEFAULT}" ] && echo available || echo missing)"
+  echo "pppoe_kernel_session=$(awk 'NR > 1 { found=1 } END { print found ? "active" : "inactive" }' /proc/net/pppoe 2>/dev/null || echo unavailable)"
+  echo "tcp_congestion_control=$(cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null || echo unavailable)"
+  echo "default_qdisc=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null || echo unavailable)"
+  echo "rps_sock_flow_entries=$(cat /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null || echo unavailable)"
+  echo "wan_rps_cpus=$([ -n "$wan" ] && cat "$NET_CLASS/$wan/queues/rx-0/rps_cpus" 2>/dev/null || echo unavailable)"
+  echo "lan_rps_cpus=$([ -n "$lan" ] && cat "$NET_CLASS/$lan/queues/rx-0/rps_cpus" 2>/dev/null || echo unavailable)"
   if [ -n "$ppp" ]; then
     echo "ppp_txqueuelen=$(cat "$NET_CLASS/$ppp/tx_queue_len" 2>/dev/null || echo unknown)"
     echo "ppp_qdisc=$("$TC" qdisc show dev "$ppp" 2>/dev/null | awk 'NR == 1 { print $2 }')"
@@ -1556,7 +1824,10 @@ daemon() {
     exit 0
   fi
   echo $$ > "$PIDFILE"
-  trap 'rm -f "$PIDFILE"' EXIT
+  # A replacement manager may write a new PID before this shell finishes its
+  # exit trap.  Remove only our own record so an old process cannot erase the
+  # new manager's supervision state.
+  trap '[ "$(cat "$PIDFILE" 2>/dev/null || true)" != "$$" ] || rm -f "$PIDFILE"' EXIT
   trap 'exit 0' INT TERM
   log "network manager started"
   if pid_alive "$DNSMASQ_PID" && {
@@ -1612,6 +1883,10 @@ daemon() {
     fi
 
     ppp="$(find_ppp 2>/dev/null || true)"
+    if [ -z "$ppp" ]; then
+      fallback_unproven_kernel_pppoe "$wan" || true
+      ppp="$(find_ppp 2>/dev/null || true)"
+    fi
     if [ -n "$ppp" ] && has_carrier "$lan"; then
       current="$(cat "$RUNTIME/interfaces" 2>/dev/null || true)"
       desired="$wan $lan $ppp"
@@ -1628,6 +1903,15 @@ daemon() {
         publish_interfaces "$wan" "$lan" "$ppp"
         if [ "${DISABLE_WIFI_ON_ACTIVE:-0}" = "1" ]; then
           svc wifi disable >/dev/null 2>&1 || true
+        fi
+      fi
+      if ! record_pppoe_backend_success "$ppp"; then
+        if fallback_unproven_kernel_pppoe "$wan"; then
+          # The fallback has replaced the failed kernel attempt.  Let the next
+          # loop observe the new userspace interface instead of reconciling
+          # stale state from the former ppp device.
+          sleep 5
+          continue
         fi
       fi
     elif [ -f "$ACTIVE" ]; then
@@ -1671,6 +1955,42 @@ if [ "${ROUTER_NETWORK_SOURCE_ONLY:-0}" != 1 ]; then
   arm) touch "$ARMED"; echo ARMED ;;
   disarm) rm -f "$ARMED"; cleanup_runtime; echo DISARMED ;;
   cleanup) cleanup_runtime; echo CLEANED ;;
-    *) echo "usage: $0 {validate|status|proxy-on|proxy-off|proxy-refresh|codex-refresh|list-static|set-static|clear-static|daemon|arm|disarm|cleanup}" >&2; exit 2 ;;
+  pppoe-retry-kernel)
+    load_config
+    case "$PPPOE_BACKEND" in
+      auto|kernel) ;;
+      *)
+        echo 'kernel PPPoE retry requires PPPOE_BACKEND=auto or kernel; stable userspace PPPoE was left unchanged' >&2
+        exit 1
+        ;;
+    esac
+    : > "$PPPOE_SWITCH_LOCK"
+    trap 'rm -f "$PPPOE_SWITCH_LOCK"' EXIT INT TERM
+    rm -f "$PPPOE_KERNEL_FAILED" "$PPPOE_KERNEL_PROVEN" "$PPPOE_KERNEL_DOWN_SINCE"
+    stop_ppp
+    # Avoid racing a still-live concentrator session when changing PPPoE
+    # implementations.  LAN management remains up while this lock is held.
+    pppoe_switch_holdoff
+    rm -f "$PPPOE_SWITCH_LOCK"
+    trap - EXIT INT TERM
+    echo PPPOE_KERNEL_RETRY_ARMED
+    ;;
+  pppoe-retry-userspace)
+    load_config
+    [ "$PPPOE_BACKEND" != kernel ] || {
+      echo 'userspace fallback requires PPPOE_BACKEND=auto or userspace' >&2
+      exit 1
+    }
+    : > "$PPPOE_SWITCH_LOCK"
+    trap 'rm -f "$PPPOE_SWITCH_LOCK"' EXIT INT TERM
+    touch "$PPPOE_KERNEL_FAILED"
+    rm -f "$PPPOE_KERNEL_PROVEN" "$PPPOE_KERNEL_DOWN_SINCE"
+    stop_ppp
+    pppoe_switch_holdoff
+    rm -f "$PPPOE_SWITCH_LOCK"
+    trap - EXIT INT TERM
+    echo PPPOE_USERSPACE_RETRY_ARMED
+    ;;
+    *) echo "usage: $0 {validate|status|proxy-on|proxy-off|proxy-refresh|codex-refresh|list-static|set-static|clear-static|daemon|arm|disarm|cleanup|pppoe-retry-kernel|pppoe-retry-userspace}" >&2; exit 2 ;;
   esac
 fi

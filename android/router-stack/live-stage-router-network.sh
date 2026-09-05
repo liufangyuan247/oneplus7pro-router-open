@@ -8,21 +8,28 @@ UPDATER="$BASE/safe-update-router-network"
 CANDIDATE="${1:-/data/local/tmp/router-network-v2.candidate}"
 STARTED=0
 
+process_alive() {
+  pid="$1"
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ -r "/proc/$pid/stat" ] || return 1
+  [ "$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" != Z ]
+}
+
 stop_pidfile_process() {
   pidfile="$1"
   label="$2"
   [ -s "$pidfile" ] || return 0
   pid="$(cat "$pidfile" 2>/dev/null || true)"
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  if kill -0 "$pid" 2>/dev/null; then
+  if process_alive "$pid"; then
     kill "$pid" 2>/dev/null || true
     elapsed=0
-    while kill -0 "$pid" 2>/dev/null && [ "$elapsed" -lt 10 ]; do
+    while process_alive "$pid" && [ "$elapsed" -lt 30 ]; do
       sleep 1
       elapsed=$((elapsed + 1))
     done
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "$label did not stop within 10 seconds" >&2
+    if process_alive "$pid"; then
+      echo "$label did not stop within 30 seconds" >&2
       return 1
     fi
   fi

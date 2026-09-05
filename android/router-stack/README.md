@@ -187,10 +187,21 @@ values during a temporary resolver or node outage.
 
 ## Current stability state
 
-- The phone is temporarily running the v3 custom kernel through `fastboot
-  boot`; a normal reboot returns to the permanent v2 boot image.
+- The active `boot_a` SHA-256 matches the verified v4 final Magisk image
+  recorded in the private recovery inventory, so a normal reboot keeps the
+  exact kernel ABI used by the pinned performance modules.
 - `ppp0` uses `txqueuelen=1024` and `fq_codel`. USB autosuspend is disabled and
   the router keeper holds the `oneplus7-router` suspend blocker.
+- On the exact verified `4.14.190-perf+` build, the performance service loads
+  checksum-pinned `fq`, BBR, IFB and TBF modules, selects BBR for
+  router-originated TCP, and applies RPS/RFS/XPS to recreated Ethernet/PPP
+  queues. It skips all module changes on any other kernel build.
+- Kernel PPPoE is selected with `PPPOE_BACKEND=auto`. A trial is not confirmed
+  by an IP address alone: the kernel session, WAN route, Mihomo TUN and the
+  Codex/OpenAI proxy path must all pass. Initial failure falls back after 45
+  seconds; an established kernel session that remains down falls back after
+  120 seconds. `tools/android/safe-kernel-pppoe-trial.sh` adds an independent
+  userspace rollback watchdog around a live backend change.
 - The Tailscale service entry validates `/proc/<pid>/exe` instead of trusting a
   reusable PID, and has a single-instance supervisor. Its pre-fix backup is
   `/data/adb/service.d/25-tailscale-root.sh.backup-pre-pidfix-20260826`.
