@@ -9,7 +9,7 @@ protection.
 | Service | Local listener | Purpose |
 |---|---:|---|
 | OpenList | `0.0.0.0:5244` | File-list service and LAN WebUI |
-| aria2 | `0.0.0.0:6800` | Download RPC (secret protected) |
+| aria2 | `0.0.0.0:6800` | Download RPC (trusted LAN; optional secret) |
 | AriaNg/Caddy | `0.0.0.0:6880` | LAN aria2 web interface |
 | qBittorrent-nox | `0.0.0.0:8080` | qBittorrent WebUI |
 | CLIProxyAPI | `0.0.0.0:8317` | AI subscription API and management center |
@@ -126,8 +126,9 @@ adb forward tcp:8080 tcp:8080
 - AriaNg: <http://127.0.0.1:16880>
 - qBittorrent: <http://127.0.0.1:8080>
 
-AriaNg should use `http://127.0.0.1:16800/jsonrpc` with the RPC secret stored
-in `~/router-data/aria2/aria2.conf`.
+AriaNg should use `http://127.0.0.1:16800/jsonrpc`. RPC authentication is
+disabled when `~/router-data/aria2/aria2.conf` has no `rpc-secret` entry; an
+existing non-empty secret is still detected and used by stack components.
 
 AriaNg is also the authority for aria2 concurrency and other tunable global
 options. `aria2-config-sync` watches for RPC changes and writes only changed

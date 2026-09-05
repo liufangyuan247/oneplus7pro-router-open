@@ -49,6 +49,7 @@ kernel/**/.config
 # Go / Node output
 admin/backend/router-admin*
 !admin/backend/router-admin*.go
+admin/backend/build/
 admin/backend/.runtime-test/
 admin/frontend/node_modules/
 admin/frontend/.next/

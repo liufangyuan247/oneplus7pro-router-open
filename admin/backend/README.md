@@ -35,6 +35,8 @@ Runtime paths:
 - Binary: `/data/data/com.termux/files/usr/bin/router-admin`
 - UI: `/data/data/com.termux/files/home/router-admin/web`
 - Password: `/data/data/com.termux/files/home/router-data/admin/password`
+- Remembered sessions: `/data/data/com.termux/files/home/router-data/admin/sessions.json`
+  (hashed session identifiers only, mode `0600`; explicit logout revokes them)
 - Network draft: `/data/data/com.termux/files/home/router-data/admin/network-draft.json`
 - Service: `/data/data/com.termux/files/home/router-stack/services/router-admin`
 - Browser terminal: `/api/terminal` (authenticated WebSocket, at most two sessions)

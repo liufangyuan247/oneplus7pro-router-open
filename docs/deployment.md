@@ -115,7 +115,7 @@ su -c 'blkid /dev/block/sd*'
 
 ## 7. 应用服务
 
-`install-termux.sh` 创建 runit 服务、日志轮转、随机 aria2 RPC secret 和持久配置。顺序建议：
+`install-termux.sh` 创建 runit 服务、日志轮转和持久配置。aria2 RPC 默认不设 secret；若现有配置含 secret，相关探测与管理组件仍会自动使用。顺序建议：
 
 1. aria2 + AriaNg/Caddy；
 2. OpenList，并从 WebUI 验证“发送到 aria2”；

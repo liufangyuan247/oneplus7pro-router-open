@@ -16,13 +16,6 @@ mkdir -p "$STACK/bin" "$STACK/www/ariang" "$SERVICES" \
 
 ARIA_CONF="$DATA/aria2/aria2.conf"
 ARIA_SECRET=$(sed -n 's/^rpc-secret=//p' "$ARIA_CONF" 2>/dev/null | head -n 1 || true)
-if [ -z "$ARIA_SECRET" ]; then
-  ARIA_SECRET=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
-  [ -n "$ARIA_SECRET" ] || { echo 'failed to generate aria2 RPC secret' >&2; exit 1; }
-  if [ -f "$ARIA_CONF" ]; then
-    printf '\nrpc-secret=%s\n' "$ARIA_SECRET" >> "$ARIA_CONF"
-  fi
-fi
 ARIA_SECRET_B64=$(printf '%s' "$ARIA_SECRET" | base64 | tr -d '\r\n')
 
 # Google Public DNS is unreliable on this uplink. Keep Termux-native package
@@ -53,7 +46,6 @@ disk-cache=128M
 enable-rpc=true
 rpc-listen-all=true
 rpc-listen-port=6800
-rpc-secret=$ARIA_SECRET
 rpc-allow-origin-all=true
 input-file=$DATA/aria2/aria2.session
 save-session=$DATA/aria2/aria2.session
@@ -97,12 +89,13 @@ trap cleanup EXIT
 trap 'exit 0' HUP INT TERM
 
 secret=$(sed -n 's/^rpc-secret=//p' "$CONF" | head -n 1)
-[ -n "$secret" ] || { echo 'aria2 config sync: RPC secret missing' >&2; exit 1; }
+auth=
+[ -n "$secret" ] && auth="\"token:$secret\""
 
 fetch_options() {
   curl -fsS --max-time 5 \
     -H 'Content-Type: application/json' \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":\"persist\",\"method\":\"aria2.getGlobalOption\",\"params\":[\"token:$secret\"]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"persist\",\"method\":\"aria2.getGlobalOption\",\"params\":[$auth]}" \
     http://127.0.0.1:6800/jsonrpc | jq -c '.result // empty'
 }
 
@@ -246,9 +239,11 @@ aria_conf='$DATA/aria2/aria2.conf'
 attempt=0
 while [ "\$attempt" -lt 15 ]; do
   aria_secret=\$(sed -n 's/^rpc-secret=//p' "\$aria_conf" 2>/dev/null | head -n 1)
-  if [ -n "\$aria_secret" ] && curl -fsS --max-time 2 \\
+  aria_auth=
+  [ -n "\$aria_secret" ] && aria_auth="\"token:\$aria_secret\""
+  if curl -fsS --max-time 2 \\
     -H 'Content-Type: application/json' \\
-    -d "{\"jsonrpc\":\"2.0\",\"id\":\"openlist-start\",\"method\":\"aria2.getVersion\",\"params\":[\"token:\$aria_secret\"]}" \\
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"openlist-start\",\"method\":\"aria2.getVersion\",\"params\":[\$aria_auth]}" \\
     http://127.0.0.1:6800/jsonrpc >/dev/null 2>&1; then
     break
   fi
@@ -353,8 +348,10 @@ probe() {
 
 while :; do
   probe openlist curl -fsS --max-time 5 http://127.0.0.1:5244/ping
+  aria_auth=
+  [ -n "\$ARIA_SECRET" ] && aria_auth="\"token:\$ARIA_SECRET\""
   probe aria2 curl -fsS --max-time 5 -H 'Content-Type: application/json' \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"aria2.getVersion\",\"params\":[\"token:\$ARIA_SECRET\"]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"aria2.getVersion\",\"params\":[\$aria_auth]}" \
     http://127.0.0.1:6800/jsonrpc
   # A protected qBittorrent WebUI returns HTTP 401 before login, which still
   # proves that the daemon and HTTP listener are healthy. Do not use -f here.
@@ -428,4 +425,8 @@ chmod 700 "$STACK/bin/routerctl"
 
 : > "$STACK/enabled"
 echo "Installed router stack at $STACK"
-echo "Aria2 RPC secret: $ARIA_SECRET"
+if [ -n "$ARIA_SECRET" ]; then
+  echo 'Aria2 RPC authentication: enabled'
+else
+  echo 'Aria2 RPC authentication: disabled'
+fi

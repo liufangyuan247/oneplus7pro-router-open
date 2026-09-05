@@ -818,6 +818,7 @@ export default function Home() {
 
 function Login({ onSuccess }: { onSuccess: () => void }) {
   const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async (event: FormEvent) => {
@@ -828,7 +829,7 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
       const r = await fetch("/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, remember }),
       });
       if (!r.ok) {
         const b = (await r.json()) as { error?: string };
@@ -862,10 +863,19 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
             <input
               autoFocus
               type="password"
+              autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="输入初始管理员密码"
             />
+          </label>
+          <label className="remember-login">
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={(e) => setRemember(e.target.checked)}
+            />
+            <span>记住密码（长期有效）</span>
           </label>
           {error && <p className="form-error">{error}</p>}
           <button disabled={busy} type="submit">
@@ -873,7 +883,7 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
           </button>
         </form>
         <small className="login-hint">
-          仅允许局域网访问 · 会话 24 小时后过期
+          勾选后持续保持登录，主动退出前不会失效；不保存明文密码
         </small>
       </section>
     </main>
@@ -1018,9 +1028,6 @@ function Overview({
         <div className="remote-tools-copy">
           <p className="eyebrow">远程维护</p>
           <h2>浏览器内维护</h2>
-          <p>
-            终端和手机屏幕都在管理后台中打开，不依赖电脑端启动器；原有外部工具继续保留作备用。
-          </p>
         </div>
         <div className="remote-tools-actions">
           <button type="button" onClick={() => onRemote("screen")}>
@@ -1039,7 +1046,7 @@ function Overview({
         <article className="panel">
           <div className="panel-title">
             <div>
-              <p className="eyebrow">固定窗口 · 最近 10 分钟</p>
+              <p className="eyebrow">最近 10 分钟</p>
               <h2>CPU 与核心温度</h2>
             </div>
             <strong>{data.cpu.usage.toFixed(1)}%</strong>
@@ -1055,6 +1062,7 @@ function Overview({
               },
             ]}
             format={(value) => value.toFixed(1)}
+            domain={[0, 100]}
           />
         </article>
         <article className="panel storage-panel">
@@ -1110,7 +1118,6 @@ function RemoteMaintenance({
         <div>
           <p className="eyebrow">远程维护</p>
           <h2>浏览器控制中心</h2>
-          <p>操作始终留在当前网页中；关闭页面后会自动释放终端或视频会话。</p>
         </div>
         <div className="remote-mode-switch" role="tablist" aria-label="远程维护方式">
           <button
@@ -1295,9 +1302,6 @@ function WebTerminal({
         </div>
       </header>
       <div className="terminal-host" ref={hostRef} aria-label="手机路由器终端" />
-      <footer className="terminal-help">
-        终端由当前后台会话保护；最多同时打开两个连接，关闭页面后 shell 自动结束。
-      </footer>
     </article>
   );
 }
@@ -1311,6 +1315,7 @@ function TimeSeriesChart({
   series,
   format,
   zeroBaseline = true,
+  domain,
 }: {
   history: HistoryPoint[];
   series: {
@@ -1320,6 +1325,7 @@ function TimeSeriesChart({
   }[];
   format: (value: number) => string;
   zeroBaseline?: boolean;
+  domain?: readonly [number, number];
 }) {
   const points = history.length
     ? history
@@ -1351,13 +1357,25 @@ function TimeSeriesChart({
   const endAt = points[points.length - 1].at;
   const startAt = endAt - windowMs;
   const visiblePoints = points.filter((point) => point.at >= startAt);
-  const values = series.flatMap((item) => visiblePoints.map(item.value));
-  const rawMin = Math.min(...values);
-  const rawMax = Math.max(...values);
+  const values = series
+    .flatMap((item) => visiblePoints.map(item.value))
+    .filter(Number.isFinite);
+  const rawMin = values.length ? Math.min(...values) : 0;
+  const rawMax = values.length ? Math.max(...values) : 0;
   const naturalRange = Math.max(Math.abs(rawMax - rawMin), Math.abs(rawMax) * 0.02, 0.01);
-  const min = zeroBaseline ? Math.min(0, rawMin * 1.12) : rawMin - naturalRange * 0.12;
-  const max = zeroBaseline ? Math.max(1, rawMax * 1.12) : rawMax + naturalRange * 0.12;
+  const min = domain
+    ? domain[0]
+    : zeroBaseline
+      ? Math.min(0, rawMin * 1.12)
+      : rawMin - naturalRange * 0.12;
+  const max = domain
+    ? domain[1]
+    : zeroBaseline
+      ? Math.max(1, rawMax * 1.12)
+      : rawMax + naturalRange * 0.12;
   const range = Math.max(0.0001, max - min);
+  const ticks = [0, 0.25, 0.5, 0.75, 1];
+  const yTicks = ticks.map((position) => max - range * position);
   const width = 760;
   const height = 190;
   const top = 10;
@@ -1366,7 +1384,7 @@ function TimeSeriesChart({
     visiblePoints
       .map(
         (point) =>
-          `${Math.max(0, Math.min(width, ((point.at - startAt) / windowMs) * width))},${top + ((max - getter(point)) / range) * (height - top - bottom)}`,
+          `${Math.max(0, Math.min(width, ((point.at - startAt) / windowMs) * width))},${Math.max(top, Math.min(height - bottom, top + ((max - getter(point)) / range) * (height - top - bottom)))}`,
       )
       .join(" ");
   const timeLabel = (at: number) =>
@@ -1392,37 +1410,44 @@ function TimeSeriesChart({
           );
         })}
       </div>
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        aria-label="时间序列曲线"
-      >
-        <g className="chart-grid">
-          {[0, 0.25, 0.5, 0.75, 1].map((value) => (
-            <line
-              key={value}
-              x1="0"
-              x2={width}
-              y1={top + value * (height - top - bottom)}
-              y2={top + value * (height - top - bottom)}
+      <div className="chart-frame">
+        <div className="chart-y-axis" aria-label="数值范围">
+          {yTicks.map((value, index) => (
+            <span key={`${index}-${value}`}>{format(value)}</span>
+          ))}
+        </div>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          aria-label="时间序列曲线"
+        >
+          <g className="chart-grid">
+            {ticks.map((value) => (
+              <line
+                key={value}
+                x1="0"
+                x2={width}
+                y1={top + value * (height - top - bottom)}
+                y2={top + value * (height - top - bottom)}
+              />
+            ))}
+          </g>
+          {series.map((item) => (
+            <polyline
+              key={item.label}
+              points={line(item.value)}
+              fill="none"
+              stroke={item.color}
+              strokeWidth="2.4"
+              vectorEffect="non-scaling-stroke"
             />
           ))}
-        </g>
-        {series.map((item) => (
-          <polyline
-            key={item.label}
-            points={line(item.value)}
-            fill="none"
-            stroke={item.color}
-            strokeWidth="2.4"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-      </svg>
-      <div className="chart-axis">
-        <span>{timeLabel(startAt)}</span>
-        <span>{timeLabel(startAt + windowMs / 2)}</span>
-        <span>{timeLabel(endAt)}</span>
+        </svg>
+        <div className="chart-axis">
+          <span>{timeLabel(startAt)}</span>
+          <span>{timeLabel(startAt + windowMs / 2)}</span>
+          <span>{timeLabel(endAt)}</span>
+        </div>
       </div>
     </div>
   );
@@ -1461,7 +1486,7 @@ function Network({
       <article className="panel history-panel">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">固定窗口 · 最近 10 分钟</p>
+            <p className="eyebrow">最近 10 分钟</p>
             <h2>WAN / LAN 实时吞吐</h2>
           </div>
         </div>
@@ -3800,6 +3825,20 @@ function System({
       : data.power.Current < -0.02
         ? "充电"
         : "基本平衡";
+  const isBatteryThermal = (sensor: Snapshot["thermals"][number]) =>
+    `${sensor.Type} ${sensor.Name}`.toLowerCase().includes("battery");
+  const batteryThermal = data.thermals.find(isBatteryThermal);
+  const batteryTemperature = batteryThermal?.Temp ?? data.power.BatteryTemp;
+  const secondaryThermals = data.thermals.filter(
+    (sensor) => !isBatteryThermal(sensor),
+  );
+  const hottestSecondary = secondaryThermals.reduce<
+    Snapshot["thermals"][number] | undefined
+  >(
+    (hottest, sensor) =>
+      !hottest || sensor.Temp > hottest.Temp ? sensor : hottest,
+    undefined,
+  );
   return (
     <div className="view">
       <div className="system-grid">
@@ -3968,7 +4007,7 @@ function System({
         <article className="panel history-panel">
           <div className="panel-title">
             <div>
-              <p className="eyebrow">2.5 秒采样 · 最近 10 分钟</p>
+              <p className="eyebrow">最近 10 分钟</p>
               <h2>电池电流趋势（正值为放电）</h2>
             </div>
           </div>
@@ -3985,7 +4024,7 @@ function System({
         <article className="panel history-panel">
           <div className="panel-title">
             <div>
-              <p className="eyebrow">实际端口读数 · 最近 10 分钟</p>
+              <p className="eyebrow">最近 10 分钟</p>
               <h2>电池与 USB 输入电压</h2>
             </div>
           </div>
@@ -4003,7 +4042,7 @@ function System({
       <article className="panel history-panel system-history">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">固定窗口 · 最近 10 分钟</p>
+            <p className="eyebrow">最近 10 分钟</p>
             <h2>CPU、内存与温度趋势</h2>
           </div>
         </div>
@@ -4015,6 +4054,7 @@ function System({
             { label: "温度 °C", color: "#ffad66", value: (p) => p.temperature },
           ]}
           format={(value) => value.toFixed(1)}
+          domain={[0, 100]}
         />
       </article>
       <div className="section-heading small">
@@ -4022,7 +4062,6 @@ function System({
           <p className="eyebrow">处理器与内存</p>
           <h2>实时性能</h2>
         </div>
-        <span className="state-good">2.5 秒采样</span>
       </div>
       <div className="system-grid">
         <article className="panel cpu-panel">
@@ -4103,40 +4142,42 @@ function System({
       <div className="section-heading small">
         <div>
           <p className="eyebrow">热状态</p>
-          <h2>温度传感器</h2>
+          <h2>温度</h2>
         </div>
         <span
-          className={data.cpu.temperature < 80 ? "state-good" : "warning-chip"}
+          className={batteryTemperature < 45 ? "state-good" : "warning-chip"}
         >
-          最高 {data.cpu.temperature.toFixed(1)}°C
+          电池 {batteryTemperature.toFixed(1)}°C
         </span>
       </div>
-      <article className="panel thermal-grid">
-        {data.thermals.map((sensor) => (
-          <div className="thermal-row" key={sensor.Name}>
-            <div>
-              <strong>{sensor.Type}</strong>
-              <small>{sensor.Name}</small>
-            </div>
-            <span className={sensor.Temp > 80 ? "hot" : ""}>
-              {sensor.Temp.toFixed(1)}°C
-            </span>
-            <i>
-              <b style={{ width: `${Math.min(100, sensor.Temp)}%` }} />
-            </i>
+      <article className="panel thermal-summary">
+        <div className="battery-thermal">
+          <div>
+            <small>电池温度</small>
+            <strong>{batteryTemperature.toFixed(1)}°C</strong>
           </div>
-        ))}
-      </article>
-      <article className="panel stress-note">
-        <div>
-          <p className="eyebrow">监控说明</p>
-          <h2>页面只更新数字，不重载网页</h2>
-          <p>
-            温度传感器已按固定 thermal_zone
-            编号排列，不再随温度高低交换位置。CPU、RAM、温度、PD、网口吞吐和服务状态均由同一实时快照原位更新。
-          </p>
+          <span>{batteryThermal?.Name || "battery"}</span>
         </div>
-        <span>监控就绪</span>
+        {secondaryThermals.length > 0 && (
+          <details className="thermal-secondary">
+            <summary>
+              <span>其他传感器 · {secondaryThermals.length}</span>
+              <strong>
+                最高 {hottestSecondary?.Temp.toFixed(1)}°C
+              </strong>
+            </summary>
+            <div className="thermal-compact-list">
+              {secondaryThermals.map((sensor) => (
+                <div key={sensor.Name}>
+                  <span>{sensor.Type}</span>
+                  <strong className={sensor.Temp > 80 ? "hot" : ""}>
+                    {sensor.Temp.toFixed(1)}°C
+                  </strong>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
       </article>
     </div>
   );

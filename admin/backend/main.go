@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -36,6 +37,8 @@ const (
 	defaultListen          = "0.0.0.0:9090"
 	defaultHome            = "/data/data/com.termux/files/home"
 	defaultPrefix          = "/data/data/com.termux/files/usr"
+	defaultSessionTTL      = 24 * time.Hour
+	rememberedCookieTTL    = 400 * 24 * time.Hour
 	mihomoController       = "http://127.0.0.1:9091"
 	mihomoDashboardPrefix  = "/mihomo-dashboard/"
 	mihomoAPIPrefix        = "/mihomo-api/"
@@ -66,6 +69,11 @@ type ServiceMeta struct {
 	Port  int
 }
 
+type authSession struct {
+	Expires    time.Time `json:"expires"`
+	Persistent bool      `json:"persistent,omitempty"`
+}
+
 type Server struct {
 	home, prefix, stack, data, webRoot string
 	password                           string
@@ -73,7 +81,7 @@ type Server struct {
 	mu                                 sync.Mutex
 	subscriptionMu                     sync.Mutex
 	clientPolicyMu                     sync.Mutex
-	sessions                           map[string]time.Time
+	sessions                           map[string]authSession
 	lastCPU                            cpuCounters
 	lastCoreCPU                        map[int]cpuCounters
 	lastNet                            map[string]netCounter
@@ -335,7 +343,7 @@ func main() {
 		stack:   filepath.Join(home, "router-stack"),
 		data:    filepath.Join(home, "router-data"),
 		webRoot: env("ROUTER_ADMIN_WEB", filepath.Join(home, "router-admin", "web")),
-		started: time.Now(), sessions: make(map[string]time.Time), lastCoreCPU: make(map[int]cpuCounters), lastNet: make(map[string]netCounter),
+		started: time.Now(), sessions: make(map[string]authSession), lastCoreCPU: make(map[int]cpuCounters), lastNet: make(map[string]netCounter),
 	}
 	password, created, err := ensurePassword(filepath.Join(s.data, "admin", "password"))
 	if err != nil {
@@ -344,6 +352,9 @@ func main() {
 	s.password = password
 	if created {
 		log.Printf("INITIAL_ADMIN_PASSWORD=%s", password)
+	}
+	if err := s.loadRememberedSessions(); err != nil {
+		log.Printf("load remembered sessions: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -438,6 +449,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Password string `json:"password"`
+		Remember bool   `json:"remember"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		jsonOut(w, 400, map[string]string{"error": "请求格式错误"})
@@ -451,11 +463,29 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	tokenBytes := make([]byte, 32)
 	_, _ = rand.Read(tokenBytes)
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+	session := authSession{Expires: time.Now().Add(defaultSessionTTL), Persistent: body.Remember}
+	if body.Remember {
+		session.Expires = time.Time{}
+	}
 	s.mu.Lock()
-	s.sessions[token] = time.Now().Add(24 * time.Hour)
+	s.sessions[sessionKey(token)] = session
 	s.pruneSessionsLocked()
+	if body.Remember {
+		if err := s.saveRememberedSessionsLocked(); err != nil {
+			delete(s.sessions, sessionKey(token))
+			s.mu.Unlock()
+			log.Printf("save remembered session: %v", err)
+			jsonOut(w, 500, map[string]string{"error": "failed to remember login"})
+			return
+		}
+	}
 	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "router_session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 86400})
+	cookie := &http.Cookie{Name: "router_session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode}
+	if body.Remember {
+		cookie.MaxAge = int(rememberedCookieTTL.Seconds())
+		cookie.Expires = time.Now().Add(rememberedCookieTTL)
+	}
+	http.SetCookie(w, cookie)
 	jsonOut(w, 200, map[string]bool{"ok": true})
 }
 
@@ -465,7 +495,14 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	if c, e := r.Cookie("router_session"); e == nil {
 		s.mu.Lock()
-		delete(s.sessions, c.Value)
+		key := sessionKey(c.Value)
+		remembered := s.sessions[key].Persistent
+		delete(s.sessions, key)
+		if remembered {
+			if err := s.saveRememberedSessionsLocked(); err != nil {
+				log.Printf("remove remembered session: %v", err)
+			}
+		}
 		s.mu.Unlock()
 	}
 	http.SetCookie(w, &http.Cookie{Name: "router_session", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
@@ -490,14 +527,32 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		s.mu.Lock()
-		expiry, ok := s.sessions[c.Value]
-		if ok && time.Now().Before(expiry) {
-			s.sessions[c.Value] = time.Now().Add(24 * time.Hour)
+		key := sessionKey(c.Value)
+		session, ok := s.sessions[key]
+		expired := ok && !session.Persistent && time.Now().After(session.Expires)
+		if ok && !expired && !session.Persistent {
+			session.Expires = time.Now().Add(defaultSessionTTL)
+			s.sessions[key] = session
+		}
+		if expired {
+			delete(s.sessions, key)
+			if session.Persistent {
+				if err := s.saveRememberedSessionsLocked(); err != nil {
+					log.Printf("prune remembered session: %v", err)
+				}
+			}
 		}
 		s.mu.Unlock()
-		if !ok || time.Now().After(expiry) {
+		if !ok || expired {
 			jsonOut(w, 401, map[string]string{"error": "login required"})
 			return
+		}
+		if session.Persistent {
+			http.SetCookie(w, &http.Cookie{
+				Name: "router_session", Value: c.Value, Path: "/", HttpOnly: true,
+				SameSite: http.SameSiteStrictMode, MaxAge: int(rememberedCookieTTL.Seconds()),
+				Expires: time.Now().Add(rememberedCookieTTL),
+			})
 		}
 		next(w, r)
 	}
@@ -981,10 +1036,69 @@ func sameOrigin(r *http.Request) bool {
 func (s *Server) pruneSessionsLocked() {
 	now := time.Now()
 	for k, v := range s.sessions {
-		if now.After(v) {
+		if !v.Persistent && now.After(v.Expires) {
 			delete(s.sessions, k)
 		}
 	}
+}
+
+func sessionKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func (s *Server) rememberedSessionsPath() string {
+	return filepath.Join(s.data, "admin", "sessions.json")
+}
+
+func (s *Server) loadRememberedSessions() error {
+	data, err := os.ReadFile(s.rememberedSessionsPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var stored map[string]authSession
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return err
+	}
+	for key, session := range stored {
+		if session.Persistent {
+			s.sessions[key] = session
+		}
+	}
+	return nil
+}
+
+func (s *Server) saveRememberedSessionsLocked() error {
+	stored := make(map[string]authSession)
+	for key, session := range s.sessions {
+		if session.Persistent {
+			stored[key] = session
+		}
+	}
+	payload, err := json.Marshal(stored)
+	if err != nil {
+		return err
+	}
+	path := s.rememberedSessionsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, payload, 0600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0600); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 func decodeJSON(r *http.Request, v any) error {
 	defer r.Body.Close()
@@ -1747,11 +1861,7 @@ func (s *Server) aria2RPC(method string, args []any, dst any) error {
 			break
 		}
 	}
-	if secret == "" {
-		return errors.New("aria2 RPC secret missing")
-	}
-	params := []any{"token:" + secret}
-	params = append(params, args...)
+	params := aria2RPCParams(secret, args)
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "router-admin", "method": method, "params": params})
 	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:6800/jsonrpc", strings.NewReader(string(body)))
 	if err != nil {
@@ -1777,6 +1887,14 @@ func (s *Server) aria2RPC(method string, args []any, dst any) error {
 		return errors.New("aria2 RPC error")
 	}
 	return json.Unmarshal(envelope.Result, dst)
+}
+
+func aria2RPCParams(secret string, args []any) []any {
+	params := make([]any, 0, len(args)+1)
+	if secret != "" {
+		params = append(params, "token:"+secret)
+	}
+	return append(params, args...)
 }
 
 func ariaUint(value string) uint64 {

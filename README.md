@@ -63,7 +63,7 @@ Android 11 可以正常解锁、Root 和使用 Magisk。早期“Android 11 不�
 | --- | --- | --- |
 | Router Admin | `0.0.0.0:9090` | 一体化管理后台 |
 | OpenList | `0.0.0.0:5244` | 文件与 WebDAV |
-| aria2 RPC | `0.0.0.0:6800` | 必须配置 RPC secret |
+| aria2 RPC | `0.0.0.0:6800` | 当前按设备要求关闭 RPC 鉴权；仅允许可信局域网使用 |
 | AriaNg/Caddy | `0.0.0.0:6880` | aria2 前端与同源 RPC 反代 |
 | CPA | `0.0.0.0:8317` | CLIProxyAPI |
 | Mihomo | `127.0.0.1:17890` | 通用本机入口 |

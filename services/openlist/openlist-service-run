@@ -13,9 +13,11 @@ aria_conf="$HOME/router-data/aria2/aria2.conf"
 attempt=0
 while [ "$attempt" -lt 15 ]; do
   aria_secret=$(sed -n 's/^rpc-secret=//p' "$aria_conf" 2>/dev/null | head -n 1)
-  if [ -n "$aria_secret" ] && curl -fsS --max-time 2 \
+  aria_auth=
+  [ -n "$aria_secret" ] && aria_auth="\"token:$aria_secret\""
+  if curl -fsS --max-time 2 \
     -H 'Content-Type: application/json' \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":\"openlist-start\",\"method\":\"aria2.getVersion\",\"params\":[\"token:$aria_secret\"]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"openlist-start\",\"method\":\"aria2.getVersion\",\"params\":[$aria_auth]}" \
     http://127.0.0.1:6800/jsonrpc >/dev/null 2>&1; then
     break
   fi
