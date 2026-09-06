@@ -154,36 +154,33 @@ adapter as LAN. At the 2026-08-26 snapshot this resolves to `eth0` WAN,
 AX88179B `eth1` LAN, `ppp0` Internet and `192.168.2.1/24` management LAN. The
 policy does not rely on the replaceable LAN adapter's `ethX` name.
 
-## OpenAI and Antigravity selective routing
+## Unified Mihomo routing
 
-OpenAI and CPA Antigravity traffic is handled independently from the optional
-whole-home proxy. With `PROXY_ENABLED=0` and `CODEX_PROXY_ENABLED=1`, the
-manager resolves the hostnames in `openai-domains.txt` through the router's
-Japanese Mihomo egress, publishes those trusted answers through dnsmasq, and
-installs only their IPv4 routes in table 102 via `op7codex`. Both forwarded LAN
-traffic and router-local CPA traffic use this table. Root-owned Mihomo sockets
-bypass it through table 100 to prevent a proxy loop.
+Mihomo now owns the only proxy TUN (`op7tun`). The router manager no longer
+starts the former `op7proxy` or `op7codex` sing-box TUNs, a second dnsmasq, or
+tables 101/102. `proxy-on` switches Mihomo to rule mode and installs the LAN
+policy through table 2022; `proxy-off` withdraws that policy and returns LAN
+traffic and DNS to direct PPPoE. Route and DNS changes are reconciled as one
+state transition so failure falls open to the direct WAN.
 
-The main dnsmasq forwards this namespace to a dedicated instance on
-`127.0.0.1:5354`. Its trusted Cloudflare DNS upstreams use priority-8018 rules
-through `op7codex`, ahead of the root-process bypass. The dedicated instance
-filters AAAA because the router's selective path is IPv4-only; other DNS
-namespaces are unaffected.
+CPA/Codex integrations use Mihomo's dedicated local listeners and geosite
+rules. The `codex_*` status keys remain compatibility aliases for existing
+health and link scripts; they do not represent a separate TUN or resolver.
 
 Useful checks:
 
 ```sh
 /data/adb/router-network/router-network status
-/data/adb/router-network/router-network codex-refresh
-ip -4 route show table 102
-ip rule show priority 8018
-drill -p 5354 @127.0.0.1 chatgpt.com AAAA
+/data/adb/router-network/router-network proxy-on
+ip rule show priority 5000
+ip -4 route show table 2022
+/data/adb/router-network/router-network proxy-off
 ```
 
-The expected state is `whole_home_proxy=disabled`,
-`codex_selective_proxy=enabled`, `codex_tun=up`, `codex_dns=up`, and
-`codex_policy=active`. Trusted DNS addresses are retained as last-known-good
-values during a temporary resolver or node outage.
+The expected rule-mode state is `whole_home_proxy=enabled`, `mihomo_tun=up`,
+`lan_tun_policy=active`, and `codex_policy=active`. In direct mode the two
+policy fields are inactive while Mihomo and its local CPA listeners remain
+available.
 
 ## Current stability state
 
@@ -200,18 +197,17 @@ values during a temporary resolver or node outage.
   by an IP address alone: the kernel session, WAN route, Mihomo TUN and the
   Codex/OpenAI proxy path must all pass. Initial failure falls back after 45
   seconds; an established kernel session that remains down falls back after
-  120 seconds. `tools/android/safe-kernel-pppoe-trial.sh` adds an independent
-  userspace rollback watchdog around a live backend change.
+  120 seconds. The userspace backend remains available as an emergency path.
 - The Tailscale service entry validates `/proc/<pid>/exe` instead of trusting a
   reusable PID, and has a single-instance supervisor. Its pre-fix backup is
   `/data/adb/service.d/25-tailscale-root.sh.backup-pre-pidfix-20260826`.
-- The network manager leaves an already-correct priority-9000 policy rule in
-  place, avoiding continuous Tailscale netlink churn. Its pre-fix backup is
-  `/data/adb/router-network/router-network.backup-pre-rule-churn-20260826`.
+- The network manager and supervisor use atomic single-instance locks, adopt a
+  verified existing dnsmasq during live updates, and leave an already-correct
+  priority-9000 policy rule in place.
 - Double-tap and wake gestures are disabled to avoid the observed OnePlus
   infrared regulator imbalance warning during display wake.
-- The automatic boot-script rollback guard has passed its fake-environment
-  self-test but is not installed on the live boot path yet.
+- The boot rollback guard is installed. Manager and supervisor candidates must
+  pass three health checks before their pending/trial markers are cleared.
 
 ## Benchmarks
 

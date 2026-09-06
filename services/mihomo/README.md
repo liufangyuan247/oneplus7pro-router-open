@@ -163,7 +163,6 @@ ip rule show
 ip route show table 2022
 su -c '~/router-stack/bin/mihomo-client-bypass status'
 pidof mihomo
-pidof sing-box
 ~/router-stack/bin/mihomo-update-subscription
 ```
 

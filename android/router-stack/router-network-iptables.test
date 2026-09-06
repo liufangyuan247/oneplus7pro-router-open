@@ -11,8 +11,8 @@
 -A OP7_FORWARD -i eth1 -o ppp0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 -A OP7_FORWARD -i eth1 -o ppp0 -j ACCEPT
 -A OP7_FORWARD -i ppp0 -o eth1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A OP7_FORWARD -i eth1 -o op7proxy -j ACCEPT
--A OP7_FORWARD -i op7proxy -o eth1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A OP7_FORWARD -i eth1 -o op7tun -j ACCEPT
+-A OP7_FORWARD -i op7tun -o eth1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 -A OP7_FORWARD -i eth1 -o eth0 -d 192.168.1.1/32 -j ACCEPT
 -A OP7_FORWARD -i ppp0 -o eth1 -j DROP
 -A OP7_OUTPUT -o eth+ -p udp --sport 68 --dport 67 -j DROP

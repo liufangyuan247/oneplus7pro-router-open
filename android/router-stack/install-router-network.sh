@@ -7,9 +7,8 @@ SERVICE_DIR="${MAGISK_SERVICE_DIR:-/data/adb/service.d}"
 CONFIG_SRC="${ROUTER_CONFIG_SRC:-$STAGE/configs/router-network.conf}"
 MANAGER_SRC="$STAGE/android/router-stack/router-network.sh"
 SERVICE_SRC="$STAGE/android/router-stack/22-router-network.sh"
-CODEX_DOMAINS_SRC="$STAGE/android/router-stack/openai-domains.txt"
 
-for file in "$CONFIG_SRC" "$MANAGER_SRC" "$SERVICE_SRC" "$CODEX_DOMAINS_SRC"; do
+for file in "$CONFIG_SRC" "$MANAGER_SRC" "$SERVICE_SRC"; do
   [ -s "$file" ] || { echo "missing staged file: $file" >&2; exit 1; }
 done
 
@@ -20,23 +19,19 @@ umask 077
 timestamp="$(date '+%Y%m%d-%H%M%S')"
 [ ! -s "$BASE/router-network" ] || cp -p "$BASE/router-network" "$BASE/router-network.backup-$timestamp"
 [ ! -s "$BASE/config" ] || cp -p "$BASE/config" "$BASE/config.backup-$timestamp"
-[ ! -s "$BASE/openai-domains" ] || cp -p "$BASE/openai-domains" "$BASE/openai-domains.backup-$timestamp"
 
 cp "$MANAGER_SRC" "$BASE/router-network.new"
 cp "$CONFIG_SRC" "$BASE/config.new"
-cp "$CODEX_DOMAINS_SRC" "$BASE/openai-domains.new"
 cp "$SERVICE_SRC" "$SERVICE_DIR/22-router-network.sh.new"
 chmod 700 "$BASE/router-network.new"
 chmod 600 "$BASE/config.new"
-chmod 644 "$BASE/openai-domains.new"
 chmod 755 "$SERVICE_DIR/22-router-network.sh.new"
 
 mv -f "$BASE/router-network.new" "$BASE/router-network"
 mv -f "$BASE/config.new" "$BASE/config"
-mv -f "$BASE/openai-domains.new" "$BASE/openai-domains"
 mv -f "$SERVICE_DIR/22-router-network.sh.new" "$SERVICE_DIR/22-router-network.sh"
-chown root:root "$BASE/router-network" "$BASE/config" "$BASE/openai-domains" "$SERVICE_DIR/22-router-network.sh" 2>/dev/null || true
-restorecon "$BASE/router-network" "$BASE/config" "$BASE/openai-domains" "$SERVICE_DIR/22-router-network.sh" >/dev/null 2>&1 || true
+chown root:root "$BASE/router-network" "$BASE/config" "$SERVICE_DIR/22-router-network.sh" 2>/dev/null || true
+restorecon "$BASE/router-network" "$BASE/config" "$SERVICE_DIR/22-router-network.sh" >/dev/null 2>&1 || true
 
 "$BASE/router-network" validate
 echo "installed but not armed"

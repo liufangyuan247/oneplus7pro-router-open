@@ -1,5 +1,5 @@
 // OpenAI and CPA Antigravity share one local handoff group. DIRECT is first
-// because the OnePlus router owns the matching DNS and selective proxy path.
+// because the OnePlus router owns the matching DNS and unified Mihomo path.
 
 function uniq(arr) {
   const out = [];

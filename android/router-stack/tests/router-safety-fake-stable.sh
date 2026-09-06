@@ -15,6 +15,9 @@ case "${1:-}" in
     echo 'lan=missing carrier=0'
     echo ppp=down
     echo dnsmasq=down
+    echo traffic_engine=mihomo
+    echo mihomo_router=available
+    echo mihomo_tun=up
     ;;
   validate) echo VALID ;;
   *) exit 2 ;;

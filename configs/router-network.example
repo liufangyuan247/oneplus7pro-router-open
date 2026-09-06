@@ -13,9 +13,9 @@ LAN_MODE='auto'
 
 PPPOE_USER='<replace-me>'
 PPPOE_PASS='<replace-me>'
-# userspace is the stable default. Set kernel explicitly only for a guarded
-# maintenance-window trial; auto remains available for compatibility.
-PPPOE_BACKEND='userspace'
+# Auto prefers the verified kernel plugin and falls back to userspace when
+# preflight or guarded health confirmation fails.
+PPPOE_BACKEND='auto'
 PPPOE_PLUGIN='/data/adb/router-network/plugins/pppd-2.4.7/rp-pppoe.so'
 PPPOE_KERNEL_TRIAL_SECONDS='45'
 PPPOE_KERNEL_DOWN_FALLBACK_SECONDS='120'
@@ -27,7 +27,6 @@ MODEM_SUBNET='192.168.1.0/24'
 DNSMASQ_HOSTS_FILE='/data/adb/router-network/dnsmasq-hosts.conf'
 
 PROXY_ENABLED='0'
-CODEX_PROXY_ENABLED='1'
 DISABLE_WIFI_ON_ACTIVE='1'
 PPP_TXQUEUELEN='1024'
 PPP_QDISC='auto'

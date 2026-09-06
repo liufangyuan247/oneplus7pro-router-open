@@ -59,4 +59,4 @@ ss -lntup 2>/dev/null | grep -E ':(7890|17890|17891|17892|9091) ' || true
 
 echo ROUTER_POLICY
 "$PREFIX/bin/su" -c '/data/adb/router-network/router-network status'
-"$PREFIX/bin/su" -c '/data/data/com.termux/files/usr/bin/ip -4 rule show; /data/data/com.termux/files/usr/bin/ip -4 route show table 102'
+"$PREFIX/bin/su" -c '/data/data/com.termux/files/usr/bin/ip -4 rule show priority 5000; /data/data/com.termux/files/usr/bin/ip -4 route show table 2022'
