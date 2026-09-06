@@ -68,7 +68,7 @@ set -- $pids
 
 uid="$("$SU" -c "awk '/^Uid:/ { print \$2; exit }' /proc/$pid/status" 2>/dev/null || true)"
 [ "$uid" = 0 ] || fail core_not_root "pid=$pid uid=$uid"
-cmdline="$("$SU" -c "tr '\\000' ' ' < /proc/$pid/cmdline" 2>/dev/null || true)"
+cmdline="$("$SU" -c "/system/bin/timeout 2 /system/bin/tr '\\000' ' ' < /proc/$pid/cmdline" 2>/dev/null || true)"
 case "$cmdline" in
     *"$CONFIG"*) ;;
     *) fail core_identity_mismatch "pid=$pid" ;;
@@ -88,9 +88,20 @@ echo "$listeners" | grep -q '127\.0\.0\.1:17890 ' || fail listener_17890_missing
 echo "$listeners" | grep -q '127\.0\.0\.1:17891 ' || fail listener_17891_missing
 
 "$SU" -c "test -e /sys/class/net/op7tun && \
+    /system/bin/ip rule show priority 8099 | /system/bin/grep -Eq '^8099:.*to 198\\.18\\.0\\.0/30 lookup 2022([[:space:]]|$)' && \
     /system/bin/ip rule show priority 8102 | /system/bin/grep -q 'lookup 2022' && \
     /system/bin/ip route show table 2022 | /system/bin/grep -q 'dev op7tun'" \
     >/dev/null 2>&1 || fail tun_route_missing
+
+config_state="$("$CURL" -fsS --max-time 3 http://127.0.0.1:9091/configs 2>/dev/null || true)"
+case "$config_state" in
+    *'"stack":"Mixed"'*|'"stack":"mixed"'*) ;;
+    *) fail tun_stack_unexpected ;;
+esac
+case "$config_state" in
+    *'"gso":true'*) ;;
+    *) fail tun_gso_disabled ;;
+esac
 
 previous_pid="$(cat "$LAST_PID" 2>/dev/null || true)"
 now="$(date +%s)"

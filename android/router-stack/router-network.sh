@@ -51,6 +51,8 @@ PPPOE_PLUGIN_DEFAULT="$BASE/plugins/pppd-2.4.7/rp-pppoe.so"
 TABLE_WAN=100
 TABLE_MIHOMO=2022
 RULE_MIHOMO_LAN=5000
+MIHOMO_INTERNAL_CIDR=198.18.0.0/30
+RULE_MIHOMO_INTERNAL=8099
 RULE_WAN=9000
 LAN_ADDRESS=192.168.2.1/24
 LAN_SUBNET=192.168.2.0/24
@@ -95,7 +97,7 @@ load_config() {
   # retains the proven userspace implementation as an automatic fallback.
   PPPOE_BACKEND="${PPPOE_BACKEND:-userspace}"
   PPPOE_PLUGIN="${PPPOE_PLUGIN:-$PPPOE_PLUGIN_DEFAULT}"
-  PPPOE_KERNEL_TRIAL_SECONDS="${PPPOE_KERNEL_TRIAL_SECONDS:-45}"
+  PPPOE_KERNEL_TRIAL_SECONDS="${PPPOE_KERNEL_TRIAL_SECONDS:-90}"
   PPPOE_KERNEL_DOWN_FALLBACK_SECONDS="${PPPOE_KERNEL_DOWN_FALLBACK_SECONDS:-120}"
   case "$PPP_TXQUEUELEN" in
     default) ;;
@@ -242,6 +244,16 @@ process_alive_pid() {
   [ "$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" != Z ]
 }
 
+read_process_cmdline() {
+  pid="$1"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  # A procfs cmdline descriptor on this kernel can spin forever when its
+  # process exits during the read. Never let identity checks pin a CPU or
+  # wedge the network manager.
+  /system/bin/timeout 2 tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null
+}
+
 write_pidfile() {
   value="$1"
   target="$2"
@@ -253,7 +265,7 @@ write_pidfile() {
 manager_process_matches() {
   pid="$1"
   process_alive_pid "$pid" || return 1
-  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  cmdline="$(read_process_cmdline "$pid" || true)"
   case "$cmdline" in *"$0 daemon"*) return 0 ;; *) return 1 ;; esac
 }
 
@@ -294,8 +306,7 @@ acquire_manager_lock() {
 managed_dnsmasq_pid_matches() {
   pid="$1"
   process_alive_pid "$pid" || return 1
-  [ -r "/proc/$pid/cmdline" ] || return 1
-  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  cmdline="$(read_process_cmdline "$pid" || true)"
   case "$cmdline" in
     "$DNSMASQ --keep-in-foreground --conf-file=$RUNTIME/dnsmasq.conf"*) return 0 ;;
     *) return 1 ;;
@@ -341,8 +352,7 @@ adopt_dnsmasq() {
 managed_pppd_pid_matches() {
   pid="$1"
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  [ -r "/proc/$pid/cmdline" ] || return 1
-  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  cmdline="$(read_process_cmdline "$pid" || true)"
   case "$cmdline" in
     "$PPPD file $PPPD_OPTIONS"*) return 0 ;;
     *) return 1 ;;
@@ -362,8 +372,7 @@ managed_pppd_pids() {
 managed_pppoe_helper_pid_matches() {
   pid="$1"
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  [ -r "/proc/$pid/cmdline" ] || return 1
-  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  cmdline="$(read_process_cmdline "$pid" || true)"
   case "$cmdline" in "$PPPOE "*) return 0 ;; *) return 1 ;; esac
 }
 
@@ -517,23 +526,39 @@ stop_ppp() {
     "$PPPOE_BACKEND_STARTED_AT" "$PPPOE_KERNEL_PROVEN" "$PPPOE_KERNEL_DOWN_SINCE"
 }
 
+kernel_pppoe_session_ready() {
+  awk 'NR > 1 { found=1 } END { exit(found ? 0 : 1) }' /proc/net/pppoe 2>/dev/null || return 1
+}
+
+kernel_pppoe_proxy_probe() {
+  # The whole-home data plane may intentionally be in direct mode while the
+  # loopback selective proxy remains active for Codex and CPA. Probe that
+  # listener directly instead of requiring Mihomo's rule/global LAN mode.
+  # Try the lightweight trace endpoint first and retain the API endpoint as a
+  # fallback so a transient edge-specific failure does not reject PPPoE.
+  for url in https://chatgpt.com/cdn-cgi/trace https://api.openai.com/v1/models; do
+    code="$($CURL -sS --connect-timeout 5 --max-time 12 \
+      --proxy http://127.0.0.1:17891 \
+      --output /dev/null --write-out '%{http_code}' \
+      "$url" 2>/dev/null || true)"
+    case "$code" in
+      2??|3??|4??) printf '%s\n' "$code"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
 kernel_pppoe_transport_ready() {
   ppp="$1"
-  awk 'NR > 1 { found=1 } END { exit(found ? 0 : 1) }' /proc/net/pppoe 2>/dev/null || return 1
+  kernel_pppoe_session_ready || return 1
   "$IP" -4 route show table "$TABLE_WAN" 2>/dev/null | grep -q "^default dev $ppp" || return 1
-  mihomo_policy_ready || return 1
 
   # An address and a kernel PPPoE socket do not prove that the routed data
   # plane works.  The previous implementation marked the trial successful at
   # that point and could strand Mihomo/CPA behind a dead session.  Confirm the
-  # same OpenAI proxy path used by Codex before making the kernel backend
-  # sticky.  Any normal HTTP response proves DNS, TLS, Mihomo and WAN egress.
-  code="$($CURL -sS --connect-timeout 5 --max-time 12 \
-    --proxy http://127.0.0.1:17891 \
-    --output /dev/null --write-out '%{http_code}' \
-    https://api.openai.com/v1/models 2>/dev/null || true)"
-  case "$code" in 2??|3??|4??) ;; *) return 1 ;; esac
-  printf '%s\n' "$code"
+  # same selective proxy path used by Codex before making the kernel backend
+  # sticky. Any normal HTTP response proves proxy DNS, TLS and WAN egress.
+  kernel_pppoe_proxy_probe
 }
 
 record_pppoe_backend_success() {
@@ -998,7 +1023,7 @@ mihomo_router_isolated() {
   for pid in $(pidof mihomo 2>/dev/null || true); do
     [ -r "/proc/$pid/status" ] || continue
     uid="$(awk '/^Uid:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null)"
-    cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    cmdline="$(read_process_cmdline "$pid" || true)"
     case "$cmdline" in
       *'/router-data/mihomo/config.yaml'*) ;;
       *) continue ;;
@@ -1043,6 +1068,29 @@ desired_data_plane_state() {
   fi
 }
 
+remove_mihomo_internal_policy() {
+  if "$IP" rule show priority "$RULE_MIHOMO_INTERNAL" 2>/dev/null | \
+       grep -Eq "^${RULE_MIHOMO_INTERNAL}:.*to ${MIHOMO_INTERNAL_CIDR} lookup ${TABLE_MIHOMO}([[:space:]]|$)"; then
+    "$IP" rule del priority "$RULE_MIHOMO_INTERNAL" to "$MIHOMO_INTERNAL_CIDR" lookup "$TABLE_MIHOMO" 2>/dev/null || true
+  fi
+}
+
+ensure_mihomo_internal_policy() {
+  rules="$("$IP" rule show priority "$RULE_MIHOMO_INTERNAL" 2>/dev/null || true)"
+  if printf '%s\n' "$rules" | \
+       grep -Eq "^${RULE_MIHOMO_INTERNAL}:.*to ${MIHOMO_INTERNAL_CIDR} lookup ${TABLE_MIHOMO}([[:space:]]|$)"; then
+    return 0
+  fi
+  if printf '%s\n' "$rules" | grep -q "^${RULE_MIHOMO_INTERNAL}:"; then
+    log "reserved Mihomo internal priority $RULE_MIHOMO_INTERNAL is occupied; leaving external rule unchanged"
+    return 1
+  fi
+  "$IP" rule add priority "$RULE_MIHOMO_INTERNAL" to "$MIHOMO_INTERNAL_CIDR" lookup "$TABLE_MIHOMO" || return 1
+  "$IP" rule show priority "$RULE_MIHOMO_INTERNAL" 2>/dev/null | \
+    grep -Eq "^${RULE_MIHOMO_INTERNAL}:.*to ${MIHOMO_INTERNAL_CIDR} lookup ${TABLE_MIHOMO}([[:space:]]|$)" || return 1
+  log "enabled Mihomo internal return route: $MIHOMO_INTERNAL_CIDR lookup $TABLE_MIHOMO"
+}
+
 remove_mihomo_lan_policy() {
   "$IP" rule del priority "$RULE_MIHOMO_LAN" 2>/dev/null || true
 }
@@ -1072,7 +1120,15 @@ reconcile_lan_data_plane() {
   # Route and DNS are one state machine. Enabling installs the TUN route before
   # clients receive proxy-aware DNS. Disabling withdraws the TUN route first,
   # then restores direct DNS, so a Mihomo failure always fails open to PPPoE.
+  # Mixed TUN's root-owned internal TCP endpoint is subject to Mihomo's UID-0
+  # auto-route skip rule. Its more-specific return rule must therefore exist
+  # before any LAN client is sent to table 2022.
+  if [ "$desired" = mihomo ] && ! ensure_mihomo_internal_policy; then
+    desired=direct
+    log "Mihomo internal return route unavailable; keeping LAN on direct data plane"
+  fi
   sync_mihomo_lan_policy "$lan" "$desired"
+  [ "$desired" = mihomo ] || remove_mihomo_internal_policy
   ensure_dnsmasq "$lan" "$desired"
   if [ "$(cat "$DATA_PLANE_STATE" 2>/dev/null || true)" != "$desired" ]; then
     printf '%s\n' "$desired" > "$DATA_PLANE_STATE"
@@ -1098,7 +1154,7 @@ patch_mihomo_mode() {
 legacy_proxy_process_matches() {
   pid="$1"
   process_alive_pid "$pid" || return 1
-  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  cmdline="$(read_process_cmdline "$pid" || true)"
   case "$cmdline" in
     *"sing-box run -c $RUNTIME/sing-box.json"*|\
     *"sing-box run -c $RUNTIME/codex-sing-box.json"*|\
@@ -1294,6 +1350,7 @@ activate_router() {
 cleanup_runtime() {
   stop_dnsmasq
   stop_ppp
+  remove_mihomo_internal_policy
   cleanup_legacy_proxy_artifacts
   remove_jump filter INPUT OP7_INPUT
   remove_jump filter FORWARD OP7_FORWARD
@@ -1375,6 +1432,7 @@ status() {
   echo "mihomo_router=$(mihomo_router_listening && echo available || echo missing)"
   echo "mihomo_isolated=$(mihomo_router_isolated && echo yes || echo no)"
   echo "mihomo_tun=$(mihomo_tun_ready && echo up || echo down)"
+  echo "mihomo_internal_route=$("$IP" rule show priority "$RULE_MIHOMO_INTERNAL" 2>/dev/null | grep -Eq "^${RULE_MIHOMO_INTERNAL}:.*to ${MIHOMO_INTERNAL_CIDR} lookup ${TABLE_MIHOMO}([[:space:]]|$)" && echo active || echo inactive)"
   echo "lan_tun_policy=$([ "$(cat "$DATA_PLANE_STATE" 2>/dev/null || echo direct)" = mihomo ] && "$IP" rule show priority "$RULE_MIHOMO_LAN" 2>/dev/null | grep -q "lookup $TABLE_MIHOMO" && echo active || echo inactive)"
   echo "proxy_tun=$(mihomo_tun_ready && echo up || echo down)"
   echo "local_app_proxy=$(mihomo_tun_ready && echo active || echo inactive)"

@@ -57,8 +57,8 @@ start_ppp() {
 pppoe_switch_holdoff() { :; }
 
 printf '%s\n' kernel > "$PPPOE_BACKEND_STATE"
-date +%s | awk '{ print $1 - 60 }' > "$PPPOE_BACKEND_STARTED_AT"
-PPPOE_KERNEL_TRIAL_SECONDS=45
+date +%s | awk '{ print $1 - 120 }' > "$PPPOE_BACKEND_STARTED_AT"
+PPPOE_KERNEL_TRIAL_SECONDS=90
 fallback_unproven_kernel_pppoe eth9
 [ -f "$PPPOE_KERNEL_FAILED" ]
 [ "$(sed -n '1p' "$TEST_ROOT/actions")" = stop ]
@@ -69,9 +69,19 @@ printf '%s\n' kernel > "$PPPOE_BACKEND_STATE"
 printf '%s\n' 4242 > "$PPPOE_BACKEND_PID"
 printf '%s\n' 4242 > "$PPPD_PID"
 managed_pppd_pid_matches() { [ "$1" = 4242 ]; }
-mock_ip() { echo 'inet 192.0.2.1/32'; }
+mock_ip() {
+  case "$*" in
+    "-4 addr show dev ppp9") echo 'inet 192.0.2.1/32' ;;
+    "-4 route show table 100") echo 'default dev ppp9 scope link' ;;
+  esac
+}
 IP=mock_ip
-kernel_pppoe_transport_ready() { echo 401; }
+kernel_pppoe_session_ready() { return 0; }
+kernel_pppoe_proxy_probe() { echo 401; }
+# Whole-home direct mode must not block the loopback selective proxy probe.
+mihomo_policy_ready() { return 1; }
+code="$(kernel_pppoe_transport_ready ppp9)"
+[ "$code" = 401 ]
 record_pppoe_backend_success ppp9
 [ -f "$PPPOE_KERNEL_PROVEN" ]
 

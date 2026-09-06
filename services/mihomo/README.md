@@ -5,8 +5,9 @@ This directory contains the standalone Mihomo service used by the OnePlus 7 Pro 
 ## Current deployment
 
 - Core: Mihomo `v1.19.30`
-- Native TUN: `op7tun`, gVisor stack, route table `2022`, rules `8100-8110`
-- Physical egress: `ppp0`; root UID 0 bypasses the TUN to prevent proxy loops
+- Native TUN: `op7tun`, Mixed stack with GSO, route table `2022`, rules `8100-8110`
+- Physical egress: `ppp0`; root UID 0 bypasses the TUN to prevent proxy loops,
+  while priority `8099` returns Mixed's internal `198.18.0.0/30` TCP path to `op7tun`
 - Generic local listener: `127.0.0.1:17890`, follows `rule` / `global` / `direct`
 - Codex/CPA listener: `127.0.0.1:17891`, pinned to `AI`
 - Antigravity listener: `127.0.0.1:17892`, pinned to `Antigravity`
@@ -109,7 +110,9 @@ rules before creating `op7tun`, and the data-plane health probe repairs policy
 rule drift after boot or an external flush. `clear` removes runtime rules but
 does not erase the persistent list. Priority `4990` is reserved exclusively for
 this helper: any foreign rule at that priority makes apply, clear, and status
-fail without modifying policy state.
+fail without modifying policy state. A managed rule displayed by the kernel
+with an `iif ... [detached]` marker is recognized as owned state and is
+removed and recreated against the live LAN interface on the next apply.
 
 Subscription updates are downloaded to a temporary directory, adapted,
 validated with `mihomo -t`, and atomically activated. Set

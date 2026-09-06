@@ -114,11 +114,30 @@ managed_rules() {
         {
             priority = $1
             sub(/:$/, "", priority)
-            source = $3; iface = $5; table = $7
+            source = $3; iface = $5
+            lookup_field = ($6 == "[detached]") ? 7 : 6
+            table_field = lookup_field + 1
+            table = $(table_field)
             sub(/\/32$/, "", source)
-            if (NF == 7 && priority == expected_priority && $2 == "from" &&
-                $4 == "iif" && $6 == "lookup" && table == expected_table &&
+            if (NF == table_field && priority == expected_priority && $2 == "from" &&
+                $4 == "iif" && $(lookup_field) == "lookup" && table == expected_table &&
                 iface != "" && source ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print iface, source
+        }
+    '
+}
+
+detached_managed_rules() {
+    run_ip -4 rule show priority "$RULE_PRIORITY" 2>/dev/null | awk \
+        -v expected_priority="$RULE_PRIORITY" -v expected_table="$WAN_TABLE" '
+        {
+            priority = $1
+            sub(/:$/, "", priority)
+            source = $3; iface = $5; table = $8
+            sub(/\/32$/, "", source)
+            if (NF == 8 && priority == expected_priority && $2 == "from" &&
+                $4 == "iif" && $6 == "[detached]" && $7 == "lookup" &&
+                table == expected_table && iface != "" &&
+                source ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print iface, source
         }
     '
 }
@@ -129,10 +148,13 @@ foreign_rules() {
         {
             priority = $1
             sub(/:$/, "", priority)
-            source = $3; iface = $5; table = $7
+            source = $3; iface = $5
+            lookup_field = ($6 == "[detached]") ? 7 : 6
+            table_field = lookup_field + 1
+            table = $(table_field)
             sub(/\/32$/, "", source)
-            managed = NF == 7 && priority == expected_priority && $2 == "from" &&
-                $4 == "iif" && $6 == "lookup" && table == expected_table &&
+            managed = NF == table_field && priority == expected_priority && $2 == "from" &&
+                $4 == "iif" && $(lookup_field) == "lookup" && table == expected_table &&
                 iface != "" && source ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/
             if (!managed && NF > 0) print
         }
@@ -227,7 +249,8 @@ apply_rules() {
 
     previous_count="$(wc -l < "$previous" | tr -d ' ')"
     previous_raw_count="$(wc -l < "$previous_raw" | tr -d ' ')"
-    if cmp -s "$desired" "$previous" && [ "$previous_count" = "$previous_raw_count" ]; then
+    if cmp -s "$desired" "$previous" && [ "$previous_count" = "$previous_raw_count" ] &&
+       [ -z "$(detached_managed_rules)" ]; then
         if [ -s "$desired" ] && ! wan_table_ready; then
             log_error "table $WAN_TABLE has no default route"; rm -rf "$workdir"; return 1
         fi

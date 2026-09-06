@@ -179,7 +179,9 @@ function emit_sniffer() {
 function emit_tun() {
     print "tun:"
     print "  enable: true"
-    print "  stack: gvisor"
+    print "  stack: mixed"
+    print "  gso: true"
+    print "  gso-max-size: 65536"
     print "  device: op7tun"
     print "  auto-route: true"
     print "  auto-redirect: false"
@@ -500,7 +502,7 @@ core_identity_ready() {
     # from the Termux UID, so perform only the identity checks through Magisk su.
     uid=$("$SU" -c "awk '/^Uid:/ { print \$2; exit }' /proc/$supervised/status" 2>/dev/null || true)
     [ "$uid" = 0 ] || return 1
-    cmdline=$("$SU" -c "tr '\\000' ' ' < /proc/$supervised/cmdline" 2>/dev/null || true)
+    cmdline=$("$SU" -c "/system/bin/timeout 2 /system/bin/tr '\\000' ' ' < /proc/$supervised/cmdline" 2>/dev/null || true)
     case "$cmdline" in *"$TARGET"*) ;; *) return 1 ;; esac
     pids=$("$SU" -c 'pidof mihomo' 2>/dev/null || true)
     set -- $pids
@@ -517,26 +519,38 @@ wait_ready() {
     return 1
 }
 
-hot_reload() {
+hot_reload_path() {
+    config_path="$1"
     controller_ready || return 1
     "$PREFIX/bin/curl" -fsS --max-time 5 \
         -X PUT -H 'Content-Type: application/json' \
-        --data-binary "{\"path\":\"$TARGET\"}" \
+        --data-binary "{\"path\":\"$config_path\"}" \
         'http://127.0.0.1:9091/configs?force=true' >/dev/null
     wait_ready
 }
 
-restart_core() {
-    "$PREFIX/bin/sv" down "$SERVICE" >/dev/null 2>&1 || true
-    "$PREFIX/bin/sv" up "$SERVICE"
-    wait_ready
+hot_reload_with_tun_handoff() {
+    tun_disabled="$WORK/tun-disabled.yaml"
+    "$PREFIX/bin/awk" '
+        /^tun:[[:space:]]*$/ { in_tun=1; print; next }
+        in_tun && /^  enable:[[:space:]]*/ { print "  enable: false"; in_tun=0; next }
+        { print }
+    ' "$TARGET" > "$tun_disabled"
+    chmod 600 "$tun_disabled"
+    "$PREFIX/bin/mihomo" -t -d "$DATA" -f "$tun_disabled" >/dev/null
+
+    # Switching TUN stacks while op7tun is owned by the live core can fail.
+    # Release it inside the same process first: the controller and selective
+    # listeners (including Codex on 17891) remain available throughout.
+    hot_reload_path "$tun_disabled" || return 1
+    hot_reload_path "$TARGET"
 }
 
 activate_target() {
-    if hot_reload; then
+    if hot_reload_path "$TARGET"; then
         return 0
     fi
-    restart_core
+    hot_reload_with_tun_handoff
 }
 
 if ! activate_target; then

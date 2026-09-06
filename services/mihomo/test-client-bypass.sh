@@ -26,6 +26,7 @@ FOREIGN_RULES="$TEST_TMP/foreign-rules"
 ROUTE_OK=1
 FAIL_ADD_IP=''
 FAIL_DEL_IP=''
+DETACHED_IP=''
 
 run_ip() {
     echo "$*" >> "$CALLS"
@@ -38,7 +39,12 @@ run_ip() {
             ;;
         "-4 rule show priority 4990")
             while IFS=' ' read -r iface ip; do
-                [ -z "$ip" ] || echo "4990: from $ip iif $iface lookup 100"
+                [ -z "$ip" ] && continue
+                if [ "$ip" = "$DETACHED_IP" ]; then
+                    echo "4990: from $ip iif $iface [detached] lookup 100"
+                else
+                    echo "4990: from $ip iif $iface lookup 100"
+                fi
             done < "$RULES"
             sed -n '/./p' "$FOREIGN_RULES"
             ;;
@@ -56,6 +62,7 @@ run_ip() {
             awk -v target="$target" 'removed || $0 != target { print } $0 == target { removed=1 }' \
                 "$RULES" > "$RULES.new"
             mv "$RULES.new" "$RULES"
+            [ "$ip" != "$DETACHED_IP" ] || DETACHED_IP=''
             ;;
         *)
             echo "unexpected ip command: $*" >&2
@@ -77,6 +84,16 @@ printf '%s\n' 'lan-test0' > "$MIHOMO_CLIENT_BYPASS_IFACE_CONFIG"
 printf '%s\n' '192.0.2.40' '192.0.2.30 # example client' '192.0.2.40' > "$MIHOMO_CLIENT_BYPASS_CONFIG"
 main apply >/dev/null
 assert_rules 'lan-test0 192.0.2.30 lan-test0 192.0.2.40'
+grep -q 'rule add priority 4990 iif lan-test0 from 192.0.2.30/32 lookup 100' "$CALLS"
+
+# A rule whose interface was absent during boot is still owned by this helper.
+# Rebuild it instead of rejecting it as a foreign priority conflict.
+DETACHED_IP=192.0.2.30
+: > "$CALLS"
+main apply >/dev/null
+[ -z "$DETACHED_IP" ]
+assert_rules 'lan-test0 192.0.2.30 lan-test0 192.0.2.40'
+grep -q 'rule del priority 4990 iif lan-test0 from 192.0.2.30/32 lookup 100' "$CALLS"
 grep -q 'rule add priority 4990 iif lan-test0 from 192.0.2.30/32 lookup 100' "$CALLS"
 
 # A foreign occupant of the reserved priority blocks every mutation.

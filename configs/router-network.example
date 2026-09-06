@@ -17,7 +17,7 @@ PPPOE_PASS='<replace-me>'
 # preflight or guarded health confirmation fails.
 PPPOE_BACKEND='auto'
 PPPOE_PLUGIN='/data/adb/router-network/plugins/pppd-2.4.7/rp-pppoe.so'
-PPPOE_KERNEL_TRIAL_SECONDS='45'
+PPPOE_KERNEL_TRIAL_SECONDS='90'
 PPPOE_KERNEL_DOWN_FALLBACK_SECONDS='120'
 
 LAN_ADDRESS='192.168.2.1/24'

@@ -2,6 +2,7 @@
 
 *.sh text eol=lf
 *-run text eol=lf
+services/mihomo/mihomo-run-root text eol=lf
 *.test text eol=lf
 Dockerfile text eol=lf
 *.yaml text eol=lf
