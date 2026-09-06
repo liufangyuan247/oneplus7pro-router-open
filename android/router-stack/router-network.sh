@@ -18,6 +18,7 @@ PPPD_LOG="$BASE/pppd.log"
 DNSMASQ_LOG="$BASE/dnsmasq.log"
 CODEX_DNSMASQ_LOG="$BASE/codex-dnsmasq.log"
 RUNTIME="$BASE/runtime"
+MANAGER_LOCK="$RUNTIME/manager.lock"
 PPPD_OPTIONS="$RUNTIME/pppd.options"
 PPPOE_BACKEND_STATE="$RUNTIME/pppoe-backend"
 PPPOE_BACKEND_PID="$RUNTIME/pppoe-backend-pid"
@@ -39,6 +40,9 @@ CODEX_TARGETS="$RUNTIME/openai-targets"
 CODEX_HOSTS="$RUNTIME/openai-hosts"
 CODEX_REFRESH_AT="$RUNTIME/openai-refresh-at"
 ADMIN_INTERFACES=/data/data/com.termux/files/home/router-data/admin/active-interfaces
+LOG_MAX_BYTES="${ROUTER_LOG_MAX_BYTES:-1048576}"
+LOG_KEEP_BYTES="${ROUTER_LOG_KEEP_BYTES:-262144}"
+LOG_MAINTENANCE_LOOPS="${ROUTER_LOG_MAINTENANCE_LOOPS:-720}"
 
 PREFIX=/data/data/com.termux/files/usr
 IP="$PREFIX/bin/ip"
@@ -84,6 +88,27 @@ CODEX_DNS_UPSTREAMS="1.1.1.1 1.0.0.1"
 
 log() {
   printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"
+}
+
+trim_log_in_place() {
+  target="$1"
+  [ -f "$target" ] || return 0
+  size="$(wc -c < "$target" 2>/dev/null || echo 0)"
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$size" -le "$LOG_MAX_BYTES" ] && return 0
+  tail -c "$LOG_KEEP_BYTES" "$target" > "$target.trim.$$" 2>/dev/null || {
+    rm -f "$target.trim.$$"
+    return 0
+  }
+  # Keep the inode used by long-running children and their O_APPEND handles.
+  cat "$target.trim.$$" > "$target"
+  rm -f "$target.trim.$$"
+}
+
+trim_runtime_logs() {
+  for target in "$LOG" "$PPPD_LOG" "$DNSMASQ_LOG" "$CODEX_DNSMASQ_LOG"; do
+    trim_log_in_place "$target"
+  done
 }
 
 load_config() {
@@ -239,7 +264,111 @@ has_carrier() {
 pid_alive() {
   [ -s "$1" ] || return 1
   pid="$(cat "$1" 2>/dev/null)"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  process_alive_pid "$pid"
+}
+
+process_alive_pid() {
+  pid="$1"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ -r "/proc/$pid/stat" ] || return 1
+  [ "$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" != Z ]
+}
+
+write_pidfile() {
+  value="$1"
+  target="$2"
+  printf '%s\n' "$value" > "$target.new.$$"
+  chmod 600 "$target.new.$$" 2>/dev/null || true
+  mv -f "$target.new.$$" "$target"
+}
+
+manager_process_matches() {
+  pid="$1"
+  process_alive_pid "$pid" || return 1
+  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in *"$0 daemon"*) return 0 ;; *) return 1 ;; esac
+}
+
+release_manager_lock() {
+  if [ "$(cat "$PIDFILE" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$PIDFILE"
+  fi
+  if [ "$(cat "$MANAGER_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$MANAGER_LOCK/pid"
+    rmdir "$MANAGER_LOCK" 2>/dev/null || true
+  fi
+}
+
+acquire_manager_lock() {
+  mkdir -p "$RUNTIME"
+  existing="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if manager_process_matches "$existing"; then
+    return 1
+  fi
+  attempts=0
+  while [ "$attempts" -lt 3 ]; do
+    if mkdir "$MANAGER_LOCK" 2>/dev/null; then
+      printf '%s\n' "$$" > "$MANAGER_LOCK/pid"
+      write_pidfile "$$" "$PIDFILE"
+      return 0
+    fi
+    owner="$(cat "$MANAGER_LOCK/pid" 2>/dev/null || true)"
+    if manager_process_matches "$owner"; then
+      return 1
+    fi
+    rm -f "$MANAGER_LOCK/pid"
+    rmdir "$MANAGER_LOCK" 2>/dev/null || true
+    attempts=$((attempts + 1))
+  done
+  return 1
+}
+
+managed_dnsmasq_pid_matches() {
+  pid="$1"
+  process_alive_pid "$pid" || return 1
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in
+    "$DNSMASQ --keep-in-foreground --conf-file=$RUNTIME/dnsmasq.conf"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+find_managed_dnsmasq_pid() {
+  best=""
+  best_started=""
+  for candidate in $(pidof dnsmasq 2>/dev/null || true); do
+    managed_dnsmasq_pid_matches "$candidate" || continue
+    started="$(awk '{print $22}' "/proc/$candidate/stat" 2>/dev/null || echo 0)"
+    case "$started" in ''|*[!0-9]*) continue ;; esac
+    if [ -z "$best" ] || [ "$started" -lt "$best_started" ]; then
+      best="$candidate"
+      best_started="$started"
+    fi
+  done
+  [ -n "$best" ] || return 1
+  printf '%s\n' "$best"
+}
+
+managed_dnsmasq_alive() {
+  [ -s "$DNSMASQ_PID" ] || return 1
+  managed_dnsmasq_pid_matches "$(cat "$DNSMASQ_PID" 2>/dev/null || true)"
+}
+
+adopt_dnsmasq() {
+  tracked="$(cat "$DNSMASQ_PID" 2>/dev/null || true)"
+  if managed_dnsmasq_pid_matches "$tracked"; then
+    return 0
+  fi
+  adopted="$(find_managed_dnsmasq_pid 2>/dev/null || true)"
+  if [ -n "$adopted" ]; then
+    write_pidfile "$adopted" "$DNSMASQ_PID"
+    log "adopted existing DHCP/DNS process pid=$adopted"
+    return 0
+  fi
+  rm -f "$DNSMASQ_PID"
+  return 1
 }
 
 managed_pppd_pid_matches() {
@@ -689,7 +818,7 @@ update_static_lease() {
     echo "failed to publish static leases; previous configuration restored" >&2
     return 1
   fi
-  if pid_alive "$DNSMASQ_PID" && { ! kill -HUP "$(cat "$DNSMASQ_PID")" 2>/dev/null || ! kill -0 "$(cat "$DNSMASQ_PID")" 2>/dev/null; }; then
+  if managed_dnsmasq_alive && { ! kill -HUP "$(cat "$DNSMASQ_PID")" 2>/dev/null || ! kill -0 "$(cat "$DNSMASQ_PID")" 2>/dev/null; }; then
     cp -p "$backup" "$DNSMASQ_HOSTS_FILE"
     write_static_hosts_runtime
     kill -HUP "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
@@ -788,19 +917,30 @@ start_dnsmasq() {
   lan="$1"
   policy="$2"
   case "$policy" in mihomo|direct) ;; *) return 2 ;; esac
-  pid_alive "$DNSMASQ_PID" && return 0
+  adopt_dnsmasq && return 0
   write_dnsmasq_config "$lan" "$policy"
   "$DNSMASQ" --test --conf-file="$RUNTIME/dnsmasq.conf" >> "$DNSMASQ_LOG" 2>&1
   log "starting DHCP/DNS on $lan policy=$policy"
   "$DNSMASQ" --keep-in-foreground --conf-file="$RUNTIME/dnsmasq.conf" >> "$DNSMASQ_LOG" 2>&1 &
-  echo $! > "$DNSMASQ_PID"
-  echo $! > "$DNSMASQ_STATIC_SCHEMA_PID"
+  candidate=$!
+  # A bind failure exits almost immediately.  Never overwrite the pidfile
+  # until the candidate has survived startup and still has our exact command.
+  sleep 1
+  if ! managed_dnsmasq_pid_matches "$candidate"; then
+    wait "$candidate" 2>/dev/null || true
+    log "DHCP/DNS candidate failed before pidfile publication"
+    return 1
+  fi
+  write_pidfile "$candidate" "$DNSMASQ_PID"
+  printf '%s\n' "$candidate" > "$DNSMASQ_STATIC_SCHEMA_PID.new.$$"
+  mv -f "$DNSMASQ_STATIC_SCHEMA_PID.new.$$" "$DNSMASQ_STATIC_SCHEMA_PID"
   printf '%s\n' "$policy" > "$DNSMASQ_POLICY"
   touch "$DNSMASQ_UNIFIED_SCHEMA"
 }
 
 stop_dnsmasq() {
-  if pid_alive "$DNSMASQ_PID"; then
+  adopt_dnsmasq >/dev/null 2>&1 || true
+  if managed_dnsmasq_alive; then
     kill "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
     sleep 1
   fi
@@ -811,11 +951,12 @@ ensure_dnsmasq() {
   lan="$1"
   policy="$2"
   case "$policy" in mihomo|direct) ;; *) return 2 ;; esac
+  adopt_dnsmasq >/dev/null 2>&1 || true
   current="$(cat "$DNSMASQ_POLICY" 2>/dev/null || true)"
-  if pid_alive "$DNSMASQ_PID" && [ "$current" = "$policy" ]; then
+  if managed_dnsmasq_alive && [ "$current" = "$policy" ]; then
     return 0
   fi
-  if pid_alive "$DNSMASQ_PID"; then
+  if managed_dnsmasq_alive; then
     log "switching DHCP/DNS policy: ${current:-unknown} -> $policy"
     stop_dnsmasq
   fi
@@ -1248,7 +1389,7 @@ refresh_codex_targets() {
   mv "$targets_candidate" "$CODEX_TARGETS"
   echo $((now + CODEX_REFRESH_SECONDS)) > "$CODEX_REFRESH_AT"
 
-  if [ "$hosts_changed" = 1 ] && pid_alive "$DNSMASQ_PID"; then
+  if [ "$hosts_changed" = 1 ] && managed_dnsmasq_alive; then
     kill -HUP "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
   fi
 }
@@ -1820,17 +1961,15 @@ status() {
 }
 
 daemon() {
-  if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  if ! acquire_manager_lock; then
     exit 0
   fi
-  echo $$ > "$PIDFILE"
-  # A replacement manager may write a new PID before this shell finishes its
-  # exit trap.  Remove only our own record so an old process cannot erase the
-  # new manager's supervision state.
-  trap '[ "$(cat "$PIDFILE" 2>/dev/null || true)" != "$$" ] || rm -f "$PIDFILE"' EXIT
+  trap 'release_manager_lock' EXIT
   trap 'exit 0' INT TERM
+  trim_runtime_logs
+  adopt_dnsmasq >/dev/null 2>&1 || true
   log "network manager started"
-  if pid_alive "$DNSMASQ_PID" && {
+  if managed_dnsmasq_alive && {
        [ ! -s "$DNSMASQ_POLICY" ] ||
        [ "$(cat "$DNSMASQ_STATIC_SCHEMA_PID" 2>/dev/null || true)" != "$(cat "$DNSMASQ_PID")" ];
      }; then
@@ -1840,7 +1979,17 @@ daemon() {
     stop_dnsmasq
     log "restarting dnsmasq for current DNS/static-hosts schema"
   fi
+  maintenance_loops=0
   while :; do
+    if [ "$(cat "$MANAGER_LOCK/pid" 2>/dev/null || true)" != "$$" ]; then
+      log "manager lock ownership lost; exiting"
+      exit 0
+    fi
+    maintenance_loops=$((maintenance_loops + 1))
+    if [ "$maintenance_loops" -ge "$LOG_MAINTENANCE_LOOPS" ]; then
+      trim_runtime_logs
+      maintenance_loops=0
+    fi
     if [ ! -f "$ARMED" ]; then
       sleep 5
       continue
@@ -1854,7 +2003,7 @@ daemon() {
     wan="$(resolve_wan_iface 2>/dev/null || true)"
     lan="$(resolve_lan_iface "$wan" 2>/dev/null || true)"
     if [ -z "$wan" ] || [ -z "$lan" ]; then
-      if [ -f "$ACTIVE" ] || pid_alive "$PPPD_PID" || pid_alive "$DNSMASQ_PID"; then
+      if [ -f "$ACTIVE" ] || pid_alive "$PPPD_PID" || managed_dnsmasq_alive; then
         cleanup_runtime
         apply_ethernet_dhcp_guard
         log "router inactive: one or both USB Ethernet adapters disappeared"

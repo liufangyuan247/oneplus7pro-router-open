@@ -9,7 +9,10 @@ MANAGER_TRIAL="$BASE/router-network.trial"
 SERVICE_PENDING="$BASE/22-router-network.sh.pending"
 SERVICE_TRIAL="$BASE/22-router-network.sh.trial"
 PIDFILE="$BASE/supervisor.pid"
+LOCKDIR="$BASE/runtime/supervisor.lock"
 LOG="$BASE/service.log"
+LOG_MAX_BYTES="${ROUTER_SERVICE_LOG_MAX_BYTES:-1048576}"
+LOG_KEEP_BYTES="${ROUTER_SERVICE_LOG_KEEP_BYTES:-262144}"
 TIMEOUT_BIN=/data/data/com.termux/files/usr/bin/timeout
 HEALTH_INTERVAL="${ROUTER_HEALTH_INTERVAL:-10}"
 HEALTH_SUCCESSES="${ROUTER_HEALTH_SUCCESSES:-3}"
@@ -32,6 +35,70 @@ process_alive() {
   kill -0 "$pid" 2>/dev/null || return 1
   [ -r "/proc/$pid/stat" ] || return 1
   [ "$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" != Z ]
+}
+
+supervisor_process_matches() {
+  pid="$1"
+  process_alive "$pid" || return 1
+  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in
+    *"$SERVICE supervise"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+release_supervisor_lock() {
+  rm -f "$BASE/runtime/supervisor-status.$$"
+  if [ "$(cat "$PIDFILE" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$PIDFILE"
+  fi
+  if [ "$(cat "$LOCKDIR/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$LOCKDIR/pid"
+    rmdir "$LOCKDIR" 2>/dev/null || true
+  fi
+}
+
+acquire_supervisor_lock() {
+  mkdir -p "$BASE/runtime"
+
+  # Preserve an already-running supervisor during live file replacement.
+  # The lock below closes the check/write race between simultaneous starters.
+  existing="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if supervisor_process_matches "$existing"; then
+    return 1
+  fi
+
+  attempts=0
+  while [ "$attempts" -lt 3 ]; do
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+      printf '%s\n' "$$" > "$LOCKDIR/pid"
+      printf '%s\n' "$$" > "$PIDFILE.new.$$"
+      mv -f "$PIDFILE.new.$$" "$PIDFILE"
+      return 0
+    fi
+    owner="$(cat "$LOCKDIR/pid" 2>/dev/null || true)"
+    if supervisor_process_matches "$owner"; then
+      return 1
+    fi
+    # Remove only a stale, known lock directory; never signal an unverified PID.
+    rm -f "$LOCKDIR/pid"
+    rmdir "$LOCKDIR" 2>/dev/null || true
+    attempts=$((attempts + 1))
+  done
+  return 1
+}
+
+trim_service_log() {
+  [ -f "$LOG" ] || return 0
+  size="$(wc -c < "$LOG" 2>/dev/null || echo 0)"
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$size" -le "$LOG_MAX_BYTES" ] && return 0
+  tail -c "$LOG_KEEP_BYTES" "$LOG" > "$LOG.trim.$$" 2>/dev/null || {
+    rm -f "$LOG.trim.$$"
+    return 0
+  }
+  cat "$LOG.trim.$$" > "$LOG"
+  rm -f "$LOG.trim.$$"
 }
 
 candidate_ppp_pids() {
@@ -159,11 +226,11 @@ confirm_trials() {
   return 1
 }
 
-if [ -s "$PIDFILE" ] && process_alive "$(cat "$PIDFILE" 2>/dev/null)"; then
+if ! acquire_supervisor_lock; then
   exit 0
 fi
-echo $$ > "$PIDFILE"
-trap 'rm -f "$PIDFILE" "$BASE/runtime/supervisor-status.$$"' EXIT
+trim_service_log
+trap 'release_supervisor_lock' EXIT
 trap 'exit 0' INT TERM
 
 if [ "${ROUTER_SKIP_BOOT_WAIT:-0}" != 1 ]; then
@@ -175,6 +242,11 @@ if [ "${ROUTER_SKIP_BOOT_WAIT:-0}" != 1 ]; then
 fi
 
 while [ -x "$MANAGER" ]; do
+  [ "$(cat "$LOCKDIR/pid" 2>/dev/null || true)" = "$$" ] || {
+    log "supervisor lock ownership lost; exiting"
+    break
+  }
+  trim_service_log
   if ! /system/bin/sh -n "$MANAGER" >/dev/null 2>&1; then
     log "manager syntax check failed"
     restore_manager || break

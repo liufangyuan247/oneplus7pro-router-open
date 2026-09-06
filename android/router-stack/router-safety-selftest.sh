@@ -64,13 +64,22 @@ chmod 700 "$BASE/router-network"
 ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" ROUTER_SKIP_BOOT_WAIT=1 ROUTER_HEALTH_INTERVAL=1 ROUTER_HEALTH_SUCCESSES=2 ROUTER_HEALTH_TIMEOUT=5 /system/bin/sh "$SERVICE"
 sleep 2
 [ -s "$BASE/supervisor.pid" ]
-kill -0 "$(cat "$BASE/supervisor.pid")" 2>/dev/null
+first_supervisor="$(cat "$BASE/supervisor.pid")"
+kill -0 "$first_supervisor" 2>/dev/null
 [ -s "$BASE/manager.pid" ]
-kill -0 "$(cat "$BASE/manager.pid")" 2>/dev/null
-kill "$(cat "$BASE/supervisor.pid")" 2>/dev/null || true
-kill "$(cat "$BASE/manager.pid")" 2>/dev/null || true
+first_manager="$(cat "$BASE/manager.pid")"
+kill -0 "$first_manager" 2>/dev/null
+ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" ROUTER_SKIP_BOOT_WAIT=1 \
+  ROUTER_HEALTH_INTERVAL=1 ROUTER_HEALTH_SUCCESSES=2 ROUTER_HEALTH_TIMEOUT=5 \
+  /system/bin/sh "$SERVICE"
 sleep 1
-echo 'PASS nonblocking service entrypoint'
+[ "$(cat "$BASE/supervisor.pid")" = "$first_supervisor" ]
+[ "$(cat "$BASE/manager.pid")" = "$first_manager" ]
+kill "$first_supervisor" 2>/dev/null || true
+kill "$first_manager" 2>/dev/null || true
+sleep 1
+[ ! -e "$BASE/runtime/supervisor.lock" ]
+echo 'PASS nonblocking singleton service entrypoint'
 
 cp "$STABLE_MANAGER" "$BASE/router-network.backup"
 cp "$FAILED_MANAGER" "$BASE/router-network"
