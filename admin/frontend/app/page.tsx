@@ -17,6 +17,7 @@ type Tab =
   | "services"
   | "mihomo"
   | "storage"
+  | "logs"
   | "system"
   | "remote";
 type RemoteMode = "terminal" | "screen";
@@ -293,6 +294,29 @@ type HistoryPoint = {
   usbPower: number;
 };
 
+type LogSource =
+  | "events"
+  | "kernel"
+  | "storage"
+  | "network"
+  | "aria2"
+  | "openlist"
+  | "admin";
+type SystemLogResponse = {
+  source: LogSource;
+  label: string;
+  updatedAt: string;
+  entries: {
+    time: string;
+    level: "info" | "warning" | "error";
+    source: string;
+    message: string;
+  }[];
+  info: number;
+  warning: number;
+  error: number;
+};
+
 const navItems: { id: Tab; label: string; icon: string }[] = [
   { id: "overview", label: "总览", icon: "OV" },
   { id: "network", label: "网络", icon: "NET" },
@@ -300,6 +324,7 @@ const navItems: { id: Tab; label: string; icon: string }[] = [
   { id: "services", label: "服务", icon: "SVC" },
   { id: "mihomo", label: "代理", icon: "VPN" },
   { id: "storage", label: "存储", icon: "SSD" },
+  { id: "logs", label: "日志", icon: "LOG" },
   { id: "system", label: "系统", icon: "SYS" },
   { id: "remote", label: "远程", icon: "WEB" },
 ];
@@ -791,6 +816,7 @@ export default function Home() {
           <MihomoManager data={data} refresh={refresh} setNotice={setNotice} />
         )}
         {active === "storage" && <Storage data={data} />}
+        {active === "logs" && <SystemLogs />}
         {active === "system" && (
           <System data={data} history={history} onRefresh={() => refresh(true)} />
         )}
@@ -1486,8 +1512,8 @@ function Network({
       <article className="panel history-panel">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">最近 10 分钟</p>
-            <h2>WAN / LAN 实时吞吐</h2>
+            <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均</p>
+            <h2>WAN / LAN 吞吐</h2>
           </div>
         </div>
         <TimeSeriesChart
@@ -3505,6 +3531,188 @@ function Storage({ data }: { data: Snapshot }) {
         当前外置 Toshiba 机械硬盘以 NTFS 读写挂载，OpenList 与下载服务使用
         /mnt/usb_disk。TIH 38a2:0153 网卡虽然枚举为 USB 5Gbps，但使用通用 CDC
         ECM 驱动，当前实测存在严重的单向吞吐限制。
+      </p>
+    </div>
+  );
+}
+
+const logSources: { id: LogSource; label: string; description: string }[] = [
+  { id: "events", label: "异常事件", description: "自动筛选错误与警告" },
+  { id: "kernel", label: "内核", description: "USB、块设备与驱动" },
+  { id: "storage", label: "存储", description: "挂载和掉盘监控" },
+  { id: "network", label: "网络", description: "PPPoE、DNS 与路由" },
+  { id: "aria2", label: "aria2", description: "下载进程日志" },
+  { id: "openlist", label: "OpenList", description: "网盘与离线下载" },
+  { id: "admin", label: "管理后台", description: "Router Admin 自身" },
+];
+
+function SystemLogs() {
+  const [source, setSource] = useState<LogSource>("events");
+  const [data, setData] = useState<SystemLogResponse | null>(null);
+  const [level, setLevel] = useState<"all" | "error" | "warning" | "info">(
+    "all",
+  );
+  const [query, setQuery] = useState("");
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState("");
+
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
+    try {
+      const response = await fetch(
+        `/api/system-logs?source=${encodeURIComponent(source)}&limit=500`,
+        { cache: "no-store" },
+      );
+      const body = (await response.json()) as SystemLogResponse & {
+        error?: string;
+      };
+      if (!response.ok) throw new Error(body.error || "日志读取失败");
+      setData(body);
+      setFailure("");
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : "日志读取失败");
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }, [source]);
+
+  useEffect(() => {
+    const initial = window.setTimeout(() => void load(), 0);
+    if (!autoRefresh) return () => window.clearTimeout(initial);
+    const timer = window.setInterval(() => void load(true), 5000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, [autoRefresh, load]);
+
+  const needle = query.trim().toLowerCase();
+  const entries = (data?.entries || []).filter(
+    (entry) =>
+      (level === "all" || entry.level === level) &&
+      (!needle ||
+        entry.message.toLowerCase().includes(needle) ||
+        entry.source.toLowerCase().includes(needle) ||
+        entry.time.toLowerCase().includes(needle)),
+  );
+
+  return (
+    <div className="view log-view">
+      <div className="section-heading log-heading">
+        <div>
+          <p className="eyebrow">只读诊断 · 类 OpenWrt 日志</p>
+          <h2>系统日志与异常事件</h2>
+        </div>
+        <div className="log-heading-actions">
+          <label>
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(event) => setAutoRefresh(event.target.checked)}
+            />
+            5 秒自动刷新
+          </label>
+          <button type="button" disabled={loading} onClick={() => void load()}>
+            {loading ? "读取中…" : "立即刷新"}
+          </button>
+        </div>
+      </div>
+
+      <div className="log-source-grid">
+        {logSources.map((item) => (
+          <button
+            type="button"
+            key={item.id}
+            className={source === item.id ? "active" : ""}
+            onClick={() => {
+              setSource(item.id);
+              setLevel("all");
+            }}
+          >
+            <strong>{item.label}</strong>
+            <small>{item.description}</small>
+          </button>
+        ))}
+      </div>
+
+      <article className="panel log-console">
+        <header className="log-console-toolbar">
+          <div className="log-counters" aria-label="日志等级统计">
+            <button
+              type="button"
+              className={`log-count error ${level === "error" ? "active" : ""}`}
+              onClick={() => setLevel(level === "error" ? "all" : "error")}
+            >
+              错误 <strong>{data?.error || 0}</strong>
+            </button>
+            <button
+              type="button"
+              className={`log-count warning ${level === "warning" ? "active" : ""}`}
+              onClick={() =>
+                setLevel(level === "warning" ? "all" : "warning")
+              }
+            >
+              警告 <strong>{data?.warning || 0}</strong>
+            </button>
+            <button
+              type="button"
+              className={`log-count info ${level === "info" ? "active" : ""}`}
+              onClick={() => setLevel(level === "info" ? "all" : "info")}
+            >
+              信息 <strong>{data?.info || 0}</strong>
+            </button>
+          </div>
+          <input
+            className="log-search"
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索 I/O error、USB、aria2…"
+            aria-label="搜索日志"
+          />
+        </header>
+
+        {failure ? (
+          <div className="log-empty error">{failure}</div>
+        ) : entries.length === 0 ? (
+          <div className="log-empty">
+            {loading ? "正在读取日志…" : "当前筛选条件下没有日志"}
+          </div>
+        ) : (
+          <div className="log-table" role="log" aria-live="polite">
+            {entries.map((entry, index) => (
+              <div
+                className={`log-row ${entry.level}`}
+                key={`${entry.time}-${entry.source}-${index}`}
+              >
+                <time>{entry.time || "时间未知"}</time>
+                <span className={`log-level ${entry.level}`}>
+                  {entry.level === "error"
+                    ? "错误"
+                    : entry.level === "warning"
+                      ? "警告"
+                      : "信息"}
+                </span>
+                <span className="log-source">{entry.source}</span>
+                <code>{entry.message}</code>
+              </div>
+            ))}
+          </div>
+        )}
+        <footer className="log-console-footer">
+          <span>显示 {entries.length} 条</span>
+          <span>
+            {data?.updatedAt
+              ? `更新于 ${new Date(data.updatedAt).toLocaleTimeString()}`
+              : "尚未更新"}
+          </span>
+          <span>URL 查询参数与敏感字段已自动隐藏</span>
+        </footer>
+      </article>
+      <p className="safe-note">
+        “异常事件”会汇总内核和服务日志中的 I/O 错误、USB
+        断连、挂载失败、超时及下载错误。内核日志从本次开机开始计算，重启后会重新开始。
       </p>
     </div>
   );

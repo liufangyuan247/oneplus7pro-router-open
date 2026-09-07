@@ -8,6 +8,17 @@ The console provides authenticated live monitoring for CPU, memory, thermal
 zones, battery/PD, interfaces, clients, storage, USB and runit services. Service
 actions use a fixed allowlist. Network settings are saved as a non-applied draft
 until both Ethernet adapters have been identified by stable hardware identity.
+Interface throughput is sampled once per second by the backend and reported as
+a five-second sliding average, so multiple dashboard clients cannot disturb the
+measurement window or amplify short proxy and storage-buffer bursts.
+
+The **日志** page is a read-only OpenWrt-style diagnostic viewer. It combines
+kernel, removable-storage, network, aria2, OpenList and Router Admin logs, marks
+I/O errors and USB disconnects by severity, supports source/level/search filters
+and refreshes every five seconds. The aggregated event view also detects stale
+block-device mount records left behind after a USB disk reconnect. URL query
+strings and common secret fields are redacted before log entries reach the
+browser. Kernel history starts again after each device reboot.
 
 CLIProxyAPI (CPA) is managed as the `cpa` runit service. Its service card opens
 the bundled management center on TCP 8317 and exposes the same start, stop,
@@ -43,6 +54,7 @@ Runtime paths:
 - Browser screen control: `/api/screen` (one on-demand scrcpy session)
 - Deterministic wake/unlock and lock actions: `/api/device/power` (authenticated POST)
 - Battery guard configuration: `/api/power/battery-guard` (authenticated GET / POST)
+- Read-only system log viewer: `/api/system-logs` (authenticated GET)
 - scrcpy server: `/data/data/com.termux/files/home/router-data/remote/scrcpy-server-v3.3.1`
 
 The dashboard's Remote page provides an in-browser Termux/root terminal and

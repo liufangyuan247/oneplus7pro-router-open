@@ -84,8 +84,9 @@ type Server struct {
 	sessions                           map[string]authSession
 	lastCPU                            cpuCounters
 	lastCoreCPU                        map[int]cpuCounters
-	lastNet                            map[string]netCounter
-	lastNetAt                          time.Time
+	netSamples                         []timedNetSample
+	netStats                           map[string]netCounter
+	netRates                           map[string]netRate
 	lastUSBInputWatts                  float64
 	lastUSBInputAt                     time.Time
 	lastChargeCounter                  int64
@@ -132,6 +133,16 @@ type scrcpySession struct {
 
 type cpuCounters struct{ total, idle uint64 }
 type netCounter struct{ rx, tx uint64 }
+type netRate struct{ rx, tx float64 }
+type timedNetSample struct {
+	at    time.Time
+	stats map[string]netCounter
+}
+
+const (
+	networkSampleInterval = time.Second
+	networkRateWindow     = 5 * time.Second
+)
 
 type Snapshot struct {
 	Time         string          `json:"time"`
@@ -245,6 +256,21 @@ type StorageInfo struct {
 	UsedPercent                    float64
 	External                       bool
 }
+type SystemLogEntry struct {
+	Time    string `json:"time"`
+	Level   string `json:"level"`
+	Source  string `json:"source"`
+	Message string `json:"message"`
+}
+type SystemLogResponse struct {
+	Source    string           `json:"source"`
+	Label     string           `json:"label"`
+	UpdatedAt string           `json:"updatedAt"`
+	Entries   []SystemLogEntry `json:"entries"`
+	Info      int              `json:"info"`
+	Warning   int              `json:"warning"`
+	Error     int              `json:"error"`
+}
 type USBInfo struct{ VendorID, ProductID, Manufacturer, Product, Speed string }
 type NetworkDraft struct {
 	WANInterface, LANInterface, WANMode, LANAddress, DHCPStart, DHCPEnd, DNS string
@@ -343,7 +369,7 @@ func main() {
 		stack:   filepath.Join(home, "router-stack"),
 		data:    filepath.Join(home, "router-data"),
 		webRoot: env("ROUTER_ADMIN_WEB", filepath.Join(home, "router-admin", "web")),
-		started: time.Now(), sessions: make(map[string]authSession), lastCoreCPU: make(map[int]cpuCounters), lastNet: make(map[string]netCounter),
+		started: time.Now(), sessions: make(map[string]authSession), lastCoreCPU: make(map[int]cpuCounters), netStats: make(map[string]netCounter), netRates: make(map[string]netRate),
 	}
 	password, created, err := ensurePassword(filepath.Join(s.data, "admin", "password"))
 	if err != nil {
@@ -356,6 +382,7 @@ func main() {
 	if err := s.loadRememberedSessions(); err != nil {
 		log.Printf("load remembered sessions: %v", err)
 	}
+	s.startNetworkSampler()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.health)
@@ -365,6 +392,7 @@ func main() {
 	mux.HandleFunc("/api/clients/static-lease", s.auth(s.staticLeaseAPI))
 	mux.HandleFunc("/api/services/action", s.auth(s.serviceAction))
 	mux.HandleFunc("/api/logs", s.auth(s.logs))
+	mux.HandleFunc("/api/system-logs", s.auth(s.systemLogs))
 	mux.HandleFunc("/api/tailscale", s.auth(s.tailscaleAPI))
 	mux.HandleFunc("/api/terminal", s.auth(s.terminal))
 	mux.HandleFunc("/api/screen", s.auth(s.screen))
@@ -1452,14 +1480,7 @@ func thermalZoneNumber(name string) int {
 func (s *Server) readInterfaces() []InterfaceInfo {
 	draft := s.loadNetworkDraft()
 	wanInterface, lanInterface := s.activeNetworkInterfaces(draft)
-	stats := readNetDev()
-	now := time.Now()
-	s.mu.Lock()
-	elapsed := now.Sub(s.lastNetAt).Seconds()
-	previous := s.lastNet
-	s.lastNet = stats
-	s.lastNetAt = now
-	s.mu.Unlock()
+	stats, rates := s.networkSnapshot()
 	ifs, _ := net.Interfaces()
 	out := []InterfaceInfo{}
 	for _, iface := range ifs {
@@ -1473,12 +1494,7 @@ func (s *Server) readInterfaces() []InterfaceInfo {
 			as = append(as, a.String())
 		}
 		c := stats[name]
-		p := previous[name]
-		rxBps, txBps := 0.0, 0.0
-		if elapsed > 0 && c.rx >= p.rx && c.tx >= p.tx && s.lastNetAt.After(time.Time{}) {
-			rxBps = float64(c.rx-p.rx) / elapsed
-			txBps = float64(c.tx-p.tx) / elapsed
-		}
+		rate := rates[name]
 		role := "未分配"
 		switch {
 		case name == wanInterface:
@@ -1492,10 +1508,63 @@ func (s *Server) readInterfaces() []InterfaceInfo {
 		case name == "wlan0":
 			role = "备用管理网络"
 		}
-		out = append(out, InterfaceInfo{Name: name, MAC: iface.HardwareAddr.String(), State: strings.TrimSpace(readText("/sys/class/net/" + name + "/operstate")), Carrier: strings.TrimSpace(readText("/sys/class/net/" + name + "/carrier")), Role: role, MTU: iface.MTU, SpeedMbps: readInt("/sys/class/net/" + name + "/speed"), Addresses: as, RxBytes: c.rx, TxBytes: c.tx, RxBps: round(rxBps, 1), TxBps: round(txBps, 1)})
+		out = append(out, InterfaceInfo{Name: name, MAC: iface.HardwareAddr.String(), State: strings.TrimSpace(readText("/sys/class/net/" + name + "/operstate")), Carrier: strings.TrimSpace(readText("/sys/class/net/" + name + "/carrier")), Role: role, MTU: iface.MTU, SpeedMbps: readInt("/sys/class/net/" + name + "/speed"), Addresses: as, RxBytes: c.rx, TxBytes: c.tx, RxBps: round(rate.rx, 1), TxBps: round(rate.tx, 1)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// startNetworkSampler decouples interface-rate sampling from dashboard requests.
+// Every client therefore observes the same fixed-window metric without changing
+// the baseline used by other clients.
+func (s *Server) startNetworkSampler() {
+	s.sampleNetwork(time.Now(), readNetDev())
+	go func() {
+		ticker := time.NewTicker(networkSampleInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.sampleNetwork(time.Now(), readNetDev())
+		}
+	}()
+}
+
+func (s *Server) sampleNetwork(at time.Time, stats map[string]netCounter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.netSamples = append(s.netSamples, timedNetSample{at: at, stats: stats})
+	cutoff := at.Add(-networkRateWindow)
+	first := 0
+	for first+1 < len(s.netSamples) && !s.netSamples[first+1].at.After(cutoff) {
+		first++
+	}
+	if first > 0 {
+		s.netSamples = append([]timedNetSample(nil), s.netSamples[first:]...)
+	}
+
+	rates := make(map[string]netRate, len(stats))
+	baseline := s.netSamples[0]
+	elapsed := at.Sub(baseline.at).Seconds()
+	if elapsed > 0 {
+		for name, current := range stats {
+			previous, ok := baseline.stats[name]
+			if !ok || current.rx < previous.rx || current.tx < previous.tx {
+				continue
+			}
+			rates[name] = netRate{
+				rx: float64(current.rx-previous.rx) / elapsed,
+				tx: float64(current.tx-previous.tx) / elapsed,
+			}
+		}
+	}
+	s.netStats = stats
+	s.netRates = rates
+}
+
+func (s *Server) networkSnapshot() (map[string]netCounter, map[string]netRate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.netStats, s.netRates
 }
 
 func (s *Server) activeNetworkInterfaces(draft NetworkDraft) (string, string) {
@@ -2121,6 +2190,290 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Join(s.stack, "services", name, "log", "main", "current")
 	text := tailLines(readText(path), 160)
 	jsonOut(w, 200, map[string]string{"service": name, "log": text})
+}
+
+var (
+	kernelLogTime = regexp.MustCompile(`^\[[^]]+\]\s+\[(\d{4})(\d{2})(\d{2})_(\d{2}:\d{2}:\d{2})(?:\.\d+)?\]@\d+\s*`)
+	plainLogTime  = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ _](\d{2}:\d{2}:\d{2})(?:\.\d+)?\s*`)
+	slashLogTime  = regexp.MustCompile(`^(\d{4})/(\d{2})/(\d{2})[ _](\d{2}:\d{2}:\d{2})(?:\.\d+)?\s*`)
+	logURL        = regexp.MustCompile(`https?://[^\s"'<>]+`)
+	logSecret     = regexp.MustCompile(`(?i)(rpc-secret|authorization|password|secret|token)(\s*[=:]\s*)[^\s,;]+`)
+)
+
+var systemLogLabels = map[string]string{
+	"events":   "异常事件",
+	"kernel":   "内核日志",
+	"storage":  "存储监控",
+	"network":  "网络服务",
+	"aria2":    "aria2",
+	"openlist": "OpenList",
+	"admin":    "管理后台",
+}
+
+func (s *Server) systemLogs(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, http.MethodGet) {
+		return
+	}
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	if source == "" {
+		source = "events"
+	}
+	label, ok := systemLogLabels[source]
+	if !ok {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "无效日志来源"})
+		return
+	}
+	limit := 400
+	if requested, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && requested > 0 {
+		limit = requested
+	}
+	if limit < 50 {
+		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	entries, err := s.readSystemLogs(source, limit)
+	if err != nil {
+		log.Printf("read %s logs: %v", source, err)
+		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": "日志读取失败"})
+		return
+	}
+	response := SystemLogResponse{Source: source, Label: label, UpdatedAt: time.Now().Format(time.RFC3339), Entries: entries}
+	for _, entry := range entries {
+		switch entry.Level {
+		case "error":
+			response.Error++
+		case "warning":
+			response.Warning++
+		default:
+			response.Info++
+		}
+	}
+	jsonOut(w, http.StatusOK, response)
+}
+
+func (s *Server) readSystemLogs(source string, limit int) ([]SystemLogEntry, error) {
+	if source == "events" {
+		entries := []SystemLogEntry{}
+		for _, name := range []string{"kernel", "storage", "network", "aria2", "openlist", "admin"} {
+			var part []SystemLogEntry
+			var err error
+			if name == "kernel" {
+				part, err = s.readKernelEventLogs()
+			} else {
+				part, err = s.readSystemLogs(name, limit)
+			}
+			if err != nil {
+				continue
+			}
+			for _, entry := range part {
+				if entry.Level != "info" {
+					entries = append(entries, entry)
+				}
+			}
+		}
+		entries = deduplicateSystemLogs(entries)
+		sortSystemLogs(entries)
+		if len(entries) > limit {
+			entries = entries[:limit]
+		}
+		return entries, nil
+	}
+
+	text, err := s.readSystemLogText(source)
+	if err != nil {
+		return nil, err
+	}
+	parseText := text
+	if source != "kernel" {
+		parseText = tailLines(text, limit*4)
+	}
+	entries := parseSystemLogText(source, parseText)
+	if source == "storage" {
+		entries = append(entries, currentStorageAlerts()...)
+	}
+	sortSystemLogs(entries)
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return entries, nil
+}
+
+func (s *Server) readKernelEventLogs() ([]SystemLogEntry, error) {
+	command := "/system/bin/dmesg -T | /system/bin/grep -Ei 'I/O error|Buffer I/O|USB disconnect|DID_NO_CONNECT|read-only|corrupt|mount failed|timed out|timeout|connection reset|reset SuperSpeed|no space left|HTTP 429|failed'"
+	out, err := s.execSu(command)
+	if err != nil && len(out) == 0 {
+		return []SystemLogEntry{}, nil
+	}
+	return parseSystemLogText("kernel", string(out)), nil
+}
+
+func (s *Server) readSystemLogText(source string) (string, error) {
+	switch source {
+	case "kernel":
+		out, err := s.execSu("/system/bin/dmesg -T")
+		return string(out), err
+	case "storage":
+		out, err := s.execSu("/system/bin/cat /data/adb/router-storage/storage.log")
+		if err != nil && len(out) == 0 {
+			return "", nil
+		}
+		return string(out), nil
+	case "network":
+		var all strings.Builder
+		for _, command := range []string{
+			"/system/bin/cat /data/adb/router-network/service.log",
+			"/system/bin/cat /data/adb/router-network/router-network.log",
+			"/system/bin/cat /data/adb/router-network/pppd.log",
+		} {
+			out, _ := s.execSu(command)
+			if len(out) > 0 {
+				all.Write(out)
+				if out[len(out)-1] != '\n' {
+					all.WriteByte('\n')
+				}
+			}
+		}
+		return all.String(), nil
+	case "aria2", "openlist", "admin":
+		service := source
+		if source == "admin" {
+			service = "router-admin"
+		}
+		return readText(filepath.Join(s.stack, "services", service, "log", "main", "current")), nil
+	default:
+		return "", errors.New("unsupported log source")
+	}
+}
+
+func parseSystemLogText(source, text string) []SystemLogEntry {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	entries := make([]SystemLogEntry, 0, len(lines))
+	for index := len(lines) - 1; index >= 0; index-- {
+		message := strings.TrimSpace(lines[index])
+		if message == "" {
+			continue
+		}
+		stamp := ""
+		if match := kernelLogTime.FindStringSubmatch(message); len(match) == 5 {
+			stamp = fmt.Sprintf("%s-%s-%s %s", match[1], match[2], match[3], match[4])
+			message = strings.TrimSpace(kernelLogTime.ReplaceAllString(message, ""))
+		} else if match := plainLogTime.FindStringSubmatch(message); len(match) == 3 {
+			stamp = match[1] + " " + match[2]
+			message = strings.TrimSpace(plainLogTime.ReplaceAllString(message, ""))
+		} else if match := slashLogTime.FindStringSubmatch(message); len(match) == 5 {
+			stamp = fmt.Sprintf("%s-%s-%s %s", match[1], match[2], match[3], match[4])
+			message = strings.TrimSpace(slashLogTime.ReplaceAllString(message, ""))
+		}
+		message = redactSystemLog(message)
+		entries = append(entries, SystemLogEntry{Time: stamp, Level: systemLogLevel(message), Source: systemLogLabels[source], Message: message})
+	}
+	return entries
+}
+
+func redactSystemLog(message string) string {
+	message = logSecret.ReplaceAllString(message, "$1$2[已隐藏]")
+	return logURL.ReplaceAllStringFunc(message, func(raw string) string {
+		if cut := strings.IndexAny(raw, "?#"); cut >= 0 {
+			return raw[:cut] + "?[查询参数已隐藏]"
+		}
+		return raw
+	})
+}
+
+func systemLogLevel(message string) string {
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "driver failed to report") || strings.Contains(lower, "avc: denied") {
+		return "info"
+	}
+	for _, marker := range []string{
+		"i/o error", "buffer i/o", "input/output error", "read-only file system",
+		"no space left", "corrupt", "synchronize cache(10) failed", "did_no_connect",
+		"errorcode=", "http 429", "status=429",
+	} {
+		if strings.Contains(lower, marker) {
+			return "error"
+		}
+	}
+	for _, marker := range []string{
+		"usb disconnect", "mount failed", "disk absent", "not mounted", "device or resource busy",
+		"timed out", "timeout", "connection reset", "reset super", "failed", "failure", "retry",
+	} {
+		if strings.Contains(lower, marker) {
+			return "warning"
+		}
+	}
+	return "info"
+}
+
+func currentStorageAlerts() []SystemLogEntry {
+	now := time.Now().In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02 15:04:05")
+	byMount := make(map[string][]mountInfo)
+	for _, mount := range parseMounts() {
+		if strings.HasPrefix(mount.mount, "/mnt/media_rw/") {
+			byMount[mount.mount] = append(byMount[mount.mount], mount)
+		}
+	}
+	alerts := []SystemLogEntry{}
+	for mount, records := range byMount {
+		seenSource := make(map[string]bool)
+		for _, record := range records {
+			if seenSource[record.source] {
+				continue
+			}
+			seenSource[record.source] = true
+			if strings.HasPrefix(record.source, "/dev/block/sd") {
+				if _, err := os.Stat(record.source); err != nil {
+					alerts = append(alerts, SystemLogEntry{Time: now, Level: "error", Source: systemLogLabels["storage"], Message: fmt.Sprintf("挂载记录 %s 指向已不存在的设备 %s，可能是掉盘后遗留挂载", mount, record.source)})
+				}
+			}
+		}
+		if len(seenSource) > 1 {
+			sources := make([]string, 0, len(seenSource))
+			for source := range seenSource {
+				sources = append(sources, source)
+			}
+			sort.Strings(sources)
+			alerts = append(alerts, SystemLogEntry{Time: now, Level: "warning", Source: systemLogLabels["storage"], Message: fmt.Sprintf("挂载点 %s 同时存在多个设备来源：%s", mount, strings.Join(sources, "、"))})
+		}
+	}
+	return alerts
+}
+
+func deduplicateSystemLogs(entries []SystemLogEntry) []SystemLogEntry {
+	seen := make(map[string]bool, len(entries))
+	out := make([]SystemLogEntry, 0, len(entries))
+	for _, entry := range entries {
+		key := entry.Time + "\x00" + entry.Level + "\x00" + entry.Source + "\x00" + entry.Message
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, entry)
+	}
+	return out
+}
+
+func sortSystemLogs(entries []SystemLogEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Time == entries[j].Time {
+			return logLevelWeight(entries[i].Level) > logLevelWeight(entries[j].Level)
+		}
+		return entries[i].Time > entries[j].Time
+	})
+}
+
+func logLevelWeight(level string) int {
+	switch level {
+	case "error":
+		return 2
+	case "warning":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func parseTailscaleState(text string) TailscaleState {
