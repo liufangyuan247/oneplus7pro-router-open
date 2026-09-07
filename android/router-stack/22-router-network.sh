@@ -115,6 +115,20 @@ candidate_ppp_pids() {
 }
 
 quiesce_candidate_ppp() {
+  # Preserve a PPPoE session that predates this live manager trial. The
+  # pending manifest records it at staging time; a different PID still means
+  # the candidate selected/replaced a backend and must be quiesced.
+  baseline_pid="$(sed -n 's/^pppd_pid=//p' "$MANAGER_PENDING" 2>/dev/null | head -n 1)"
+  current_pid="$(cat "$BASE/pppd.pid" 2>/dev/null || true)"
+  case "$baseline_pid:$current_pid" in
+    *[!0-9:]*|:*) ;;
+    *)
+      if [ "$baseline_pid" = "$current_pid" ] && kill -0 "$current_pid" 2>/dev/null; then
+        log "preserving adopted PPPoE pid=$current_pid during manager rollback"
+        return 0
+      fi
+      ;;
+  esac
   # A manager that never selected a new backend has no state marker and keeps
   # the pre-upgrade PPPoE session intact.  If it did select one, rollback must
   # also remove its pppd/helper processes before the stable manager restarts.

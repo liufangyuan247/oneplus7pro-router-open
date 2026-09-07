@@ -8,8 +8,10 @@ FAILED_MANAGER=/data/local/tmp/router-safety-fake-failed.sh
 ROOT="$(mktemp -d /data/local/tmp/router-safety-test.XXXXXX)"
 BASE="$ROOT/base"
 SERVICE="$ROOT/22-router-network.sh"
+FAKE_PPP_PID=
 
 cleanup() {
+  [ -z "$FAKE_PPP_PID" ] || kill "$FAKE_PPP_PID" 2>/dev/null || true
   if [ -s "$BASE/supervisor.pid" ]; then
     kill "$(cat "$BASE/supervisor.pid" 2>/dev/null)" 2>/dev/null || true
   fi
@@ -27,13 +29,21 @@ chmod 755 "$SERVICE"
 cp "$STABLE_MANAGER" "$BASE/router-network.backup"
 cp "$FAILED_MANAGER" "$BASE/router-network"
 chmod 700 "$BASE/router-network.backup" "$BASE/router-network"
-: > "$BASE/router-network.pending"
+/system/bin/sleep 30 &
+FAKE_PPP_PID=$!
+printf '%s\n' "$FAKE_PPP_PID" > "$BASE/pppd.pid"
+printf 'pppd_pid=%s\n' "$FAKE_PPP_PID" > "$BASE/router-network.pending"
+: > "$BASE/runtime/pppoe-backend"
 : > "$BASE/router-network.trial"
 ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" /system/bin/sh "$GUARD"
 cmp -s "$BASE/router-network" "$BASE/router-network.backup"
 [ ! -e "$BASE/router-network.pending" ]
 [ ! -e "$BASE/router-network.trial" ]
-echo 'PASS previous-boot rollback'
+kill -0 "$FAKE_PPP_PID"
+kill "$FAKE_PPP_PID"
+wait "$FAKE_PPP_PID" 2>/dev/null || true
+FAKE_PPP_PID=
+echo 'PASS previous-boot rollback preserves adopted PPPoE'
 
 cp "$FAILED_MANAGER" "$BASE/router-network"
 chmod 700 "$BASE/router-network"

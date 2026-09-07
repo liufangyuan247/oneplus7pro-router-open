@@ -38,6 +38,20 @@ candidate_ppp_pids() {
 }
 
 quiesce_candidate_ppp() {
+  # A live manager update normally adopts the existing PPPoE session. Do not
+  # tear that session down merely because the control-plane trial timed out.
+  # Only quiesce PPP when the candidate actually replaced the recorded PID.
+  baseline_pid="$(sed -n 's/^pppd_pid=//p' "$MANAGER_PENDING" 2>/dev/null | head -n 1)"
+  current_pid="$(cat "$BASE/pppd.pid" 2>/dev/null || true)"
+  case "$baseline_pid:$current_pid" in
+    *[!0-9:]*|:*) ;;
+    *)
+      if [ "$baseline_pid" = "$current_pid" ] && kill -0 "$current_pid" 2>/dev/null; then
+        log "preserving adopted PPPoE pid=$current_pid during manager rollback"
+        return 0
+      fi
+      ;;
+  esac
   [ -s "$PPPOE_BACKEND_STATE" ] || return 0
   pids="$(candidate_ppp_pids)"
   for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done

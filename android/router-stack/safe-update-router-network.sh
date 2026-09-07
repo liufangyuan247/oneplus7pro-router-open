@@ -91,6 +91,7 @@ stage() {
     echo "installed=$(date '+%F %T')"
     echo "active_sha256=$candidate_hash"
     echo "backup_sha256=$active_hash"
+    echo "pppd_pid=$(cat "$BASE/pppd.pid" 2>/dev/null || true)"
   } > "$PENDING.new"
   chmod 600 "$PENDING.new"
   mv -f "$PENDING.new" "$PENDING"
