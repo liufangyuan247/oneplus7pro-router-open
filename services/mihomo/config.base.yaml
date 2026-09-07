@@ -47,6 +47,11 @@ listeners:
     port: 17891
     proxy: AI
     udp: true
+  - name: lan-transparent
+    type: tproxy
+    listen: 0.0.0.0
+    port: 17893
+    udp: true
 
 proxy-groups:
   - name: 家庭RULE自动

@@ -5,6 +5,8 @@
 :OP7_INPUT - [0:0]
 :OP7_FORWARD - [0:0]
 :OP7_OUTPUT - [0:0]
+-A OP7_INPUT -i eth1 -p tcp --dport 17893 -m mark ! --mark 0x20000000/0x20000000 -j REJECT
+-A OP7_INPUT -i eth1 -p udp --dport 17893 -m mark ! --mark 0x20000000/0x20000000 -j DROP
 -A OP7_INPUT -i eth1 -j ACCEPT
 -A OP7_INPUT -i ppp0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 -A OP7_INPUT -i ppp0 -j DROP

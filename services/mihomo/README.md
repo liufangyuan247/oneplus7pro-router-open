@@ -6,6 +6,10 @@ This directory contains the standalone Mihomo service used by the OnePlus 7 Pro 
 
 - Core: Mihomo `v1.19.30`
 - Native TUN: `op7tun`, Mixed stack with GSO, route table `2022`, rules `8100-8110`
+- LAN TCP/UDP: Mihomo `tproxy` listener on `17893`; policy table `2023` and
+  mark `0x20000000` avoid the forwarded-packet/single-queue TUN bottleneck.
+  The local-route rule is restricted to LAN ingress so the mark cannot loop
+  Mihomo's own DIRECT sockets back into the listener.
 - Physical egress: `ppp0`; root UID 0 bypasses the TUN to prevent proxy loops,
   while priority `8099` returns Mixed's internal `198.18.0.0/30` TCP path to `op7tun`
 - Generic local listener: `127.0.0.1:17890`, follows `rule` / `global` / `direct`

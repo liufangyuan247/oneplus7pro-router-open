@@ -189,6 +189,11 @@ available.
   exact kernel ABI used by the pinned performance modules.
 - `ppp0` uses `txqueuelen=1024` and `fq_codel`. USB autosuspend is disabled and
   the router keeper holds the `oneplus7-router` suspend blocker.
+- Rule/global mode sends all LAN TCP and UDP to Mihomo's managed TPROXY
+  listener. Phone-local applications retain Mixed TUN, while LAN connections
+  avoid the extra forwarded-packet pass through `op7tun`. Private/LAN control
+  destinations remain on the kernel path, and a missing listener fails back
+  to the existing TUN/direct state machine.
 - On the exact verified `4.14.190-perf+` build, the performance service loads
   checksum-pinned `fq`, BBR, IFB and TBF modules, selects BBR for
   router-originated TCP, and applies RPS/RFS/XPS to recreated Ethernet/PPP
@@ -208,6 +213,8 @@ available.
   infrared regulator imbalance warning during display wake.
 - The boot rollback guard is installed. Manager and supervisor candidates must
   pass three health checks before their pending/trial markers are cleared.
+  Live-update manifests record the pre-trial pppd PID, so rolling back only the
+  control script preserves an adopted PPPoE session instead of redialing it.
 
 ## Benchmarks
 

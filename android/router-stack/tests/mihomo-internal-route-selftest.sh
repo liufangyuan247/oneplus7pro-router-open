@@ -83,6 +83,7 @@ grep -q '^8099: from all fwmark 0x1 lookup 77$' "$MIHOMO_RULE_STATE"
 printf '%s\n' '8099: from all to 198.18.0.0/30 lookup 2022' > "$MIHOMO_RULE_STATE"
 desired_data_plane_state() { echo direct; }
 ensure_dnsmasq() { :; }
+remove_mihomo_tproxy_policy() { :; }
 reconcile_lan_data_plane eth1
 ! grep -q '^8099:' "$MIHOMO_RULE_STATE"
 

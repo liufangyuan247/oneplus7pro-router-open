@@ -161,6 +161,11 @@ function emit_ai_listener() {
     print "    port: 17892"
     print "    proxy: \"Antigravity\""
     print "    udp: true"
+    print "  - name: lan-transparent"
+    print "    type: tproxy"
+    print "    listen: 0.0.0.0"
+    print "    port: 17893"
+    print "    udp: true"
 }
 function emit_sniffer() {
     print "sniffer:"

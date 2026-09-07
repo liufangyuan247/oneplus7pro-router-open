@@ -27,6 +27,7 @@ DNSMASQ_STATIC_HOSTS="$RUNTIME/dnsmasq-static-hosts"
 DNSMASQ_STATIC_SCHEMA_PID="$RUNTIME/dnsmasq-static-hosts-v1.pid"
 DNSMASQ_LEASE_FILES="${ROUTER_DNSMASQ_LEASE_FILES:-/data/data/com.termux/files/home/router-data/dnsmasq/dnsmasq.leases /data/misc/dhcp/dnsmasq.leases}"
 DATA_PLANE_STATE="$RUNTIME/lan-data-plane"
+TPROXY_STATE="$RUNTIME/lan-tproxy"
 ADMIN_INTERFACES=/data/data/com.termux/files/home/router-data/admin/active-interfaces
 LOG_MAX_BYTES="${ROUTER_LOG_MAX_BYTES:-1048576}"
 LOG_KEEP_BYTES="${ROUTER_LOG_KEEP_BYTES:-262144}"
@@ -51,6 +52,13 @@ PPPOE_PLUGIN_DEFAULT="$BASE/plugins/pppd-2.4.7/rp-pppoe.so"
 TABLE_WAN=100
 TABLE_MIHOMO=2022
 RULE_MIHOMO_LAN=5000
+TABLE_TPROXY=2023
+RULE_TPROXY=4995
+# Keep the transparent-proxy bit outside Android netd's low netId bits and its
+# 0xff0000 VPN/tethering mark range.
+TPROXY_MARK=0x20000000
+TPROXY_MASK=0x20000000
+MIHOMO_TPROXY_PORT=17893
 MIHOMO_INTERNAL_CIDR=198.18.0.0/30
 RULE_MIHOMO_INTERNAL=8099
 RULE_WAN=9000
@@ -986,6 +994,13 @@ apply_firewall() {
   apply_android_dns_guard
   ensure_jump nat POSTROUTING OP7_POSTROUTING
 
+  # The transparent listener is not a public LAN proxy. TPROXY packets retain
+  # their original destination port and carry our mark; reject only an
+  # unmarked client that explicitly connects to the implementation port.
+  "$IPTABLES" -A OP7_INPUT -i "$lan" -p tcp --dport "$MIHOMO_TPROXY_PORT" \
+    -m mark ! --mark "$TPROXY_MARK/$TPROXY_MASK" -j REJECT
+  "$IPTABLES" -A OP7_INPUT -i "$lan" -p udp --dport "$MIHOMO_TPROXY_PORT" \
+    -m mark ! --mark "$TPROXY_MARK/$TPROXY_MASK" -j DROP
   "$IPTABLES" -A OP7_INPUT -i "$lan" -j ACCEPT
   "$IPTABLES" -A OP7_INPUT -i tailscale0 -j ACCEPT 2>/dev/null || true
   "$IPTABLES" -A OP7_INPUT -i "$ppp" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
@@ -1095,6 +1110,72 @@ remove_mihomo_lan_policy() {
   "$IP" rule del priority "$RULE_MIHOMO_LAN" 2>/dev/null || true
 }
 
+remove_mihomo_tproxy_policy() {
+  # The hook carries interface/source matches, so the generic remove_jump
+  # helper cannot identify it. Remove every exact managed hook first.
+  for net_path in "$NET_CLASS"/*; do
+    [ -e "$net_path" ] || continue
+    iface="${net_path##*/}"
+    while "$IPTABLES" -w 2 -t mangle -C PREROUTING -i "$iface" -s "$LAN_SUBNET" -j OP7_TPROXY 2>/dev/null; do
+      "$IPTABLES" -w 2 -t mangle -D PREROUTING -i "$iface" -s "$LAN_SUBNET" -j OP7_TPROXY 2>/dev/null || break
+    done
+  done
+  remove_jump mangle PREROUTING OP7_TPROXY
+  "$IP" rule del priority "$RULE_TPROXY" 2>/dev/null || true
+  "$IP" route flush table "$TABLE_TPROXY" 2>/dev/null || true
+  rm -f "$TPROXY_STATE"
+}
+
+mihomo_tproxy_listener_ready() {
+  "$SS" -lntu 2>/dev/null | grep -q ":${MIHOMO_TPROXY_PORT} "
+}
+
+mihomo_tproxy_policy_ready() {
+  lan="$1"
+  [ "$(cat "$TPROXY_STATE" 2>/dev/null || true)" = "$lan" ] || return 1
+  "$IP" rule show priority "$RULE_TPROXY" 2>/dev/null | \
+    grep -Eq "^${RULE_TPROXY}:.*fwmark ${TPROXY_MARK}(/${TPROXY_MASK})?.*iif ${lan}.*lookup ${TABLE_TPROXY}([[:space:]]|$)" || return 1
+  "$IP" route show table "$TABLE_TPROXY" 2>/dev/null | grep -q '^local default dev lo' || return 1
+  "$IPTABLES" -w 2 -t mangle -C PREROUTING -i "$lan" -s "$LAN_SUBNET" -j OP7_TPROXY 2>/dev/null || return 1
+  "$IPTABLES" -w 2 -t mangle -C OP7_TPROXY -p tcp -j TPROXY \
+    --on-ip 127.0.0.1 --on-port "$MIHOMO_TPROXY_PORT" \
+    --tproxy-mark "$TPROXY_MARK/$TPROXY_MASK" 2>/dev/null || return 1
+  "$IPTABLES" -w 2 -t mangle -C OP7_TPROXY -p udp -j TPROXY \
+    --on-ip 127.0.0.1 --on-port "$MIHOMO_TPROXY_PORT" \
+    --tproxy-mark "$TPROXY_MARK/$TPROXY_MASK" 2>/dev/null
+}
+
+apply_mihomo_tproxy_policy() {
+  lan="$1"
+  mihomo_tproxy_policy_ready "$lan" && return 0
+
+  # Install route/rule before the netfilter jump, so there is no interval in
+  # which marked packets can escape into Android's unrelated routing tables.
+  remove_mihomo_tproxy_policy
+  "$IP" route replace local default dev lo table "$TABLE_TPROXY" || return 1
+  # Restrict the local-route rule to intercepted LAN ingress. Some transparent
+  # sockets retain the packet mark; without iif, Mihomo's own DIRECT dial can
+  # be routed back to its listener and time out in a loop.
+  "$IP" rule add priority "$RULE_TPROXY" iif "$lan" \
+    fwmark "$TPROXY_MARK/$TPROXY_MASK" lookup "$TABLE_TPROXY" || return 1
+  "$IPTABLES" -w 2 -t mangle -N OP7_TPROXY 2>/dev/null || true
+  "$IPTABLES" -w 2 -t mangle -F OP7_TPROXY
+  for subnet in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 \
+    169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4; do
+    "$IPTABLES" -w 2 -t mangle -A OP7_TPROXY -d "$subnet" -j RETURN
+  done
+  "$IPTABLES" -w 2 -t mangle -A OP7_TPROXY -p tcp -j TPROXY \
+    --on-ip 127.0.0.1 --on-port "$MIHOMO_TPROXY_PORT" \
+    --tproxy-mark "$TPROXY_MARK/$TPROXY_MASK"
+  "$IPTABLES" -w 2 -t mangle -A OP7_TPROXY -p udp -j TPROXY \
+    --on-ip 127.0.0.1 --on-port "$MIHOMO_TPROXY_PORT" \
+    --tproxy-mark "$TPROXY_MARK/$TPROXY_MASK"
+  "$IPTABLES" -w 2 -t mangle -A OP7_TPROXY -j RETURN
+  "$IPTABLES" -w 2 -t mangle -I PREROUTING 1 -i "$lan" -s "$LAN_SUBNET" -j OP7_TPROXY
+  printf '%s\n' "$lan" > "$TPROXY_STATE"
+  log "enabled LAN Mihomo TPROXY: $LAN_SUBNET iif $lan port $MIHOMO_TPROXY_PORT"
+}
+
 sync_mihomo_lan_policy() {
   lan="$1"
   policy="$2"
@@ -1128,6 +1209,14 @@ reconcile_lan_data_plane() {
     log "Mihomo internal return route unavailable; keeping LAN on direct data plane"
   fi
   sync_mihomo_lan_policy "$lan" "$desired"
+  if [ "$desired" = mihomo ] && mihomo_tproxy_listener_ready; then
+    if ! apply_mihomo_tproxy_policy "$lan"; then
+      remove_mihomo_tproxy_policy
+      log 'LAN Mihomo TPROXY unavailable; retaining TUN forwarding path'
+    fi
+  else
+    remove_mihomo_tproxy_policy
+  fi
   [ "$desired" = mihomo ] || remove_mihomo_internal_policy
   ensure_dnsmasq "$lan" "$desired"
   if [ "$(cat "$DATA_PLANE_STATE" 2>/dev/null || true)" != "$desired" ]; then
@@ -1301,6 +1390,7 @@ apply_routes() {
 }
 
 remove_routes() {
+  remove_mihomo_tproxy_policy
   remove_mihomo_lan_policy
   "$IP" rule del priority "$RULE_WAN" 2>/dev/null || true
   "$IP" route flush table "$TABLE_WAN" 2>/dev/null || true
@@ -1434,6 +1524,7 @@ status() {
   echo "mihomo_tun=$(mihomo_tun_ready && echo up || echo down)"
   echo "mihomo_internal_route=$("$IP" rule show priority "$RULE_MIHOMO_INTERNAL" 2>/dev/null | grep -Eq "^${RULE_MIHOMO_INTERNAL}:.*to ${MIHOMO_INTERNAL_CIDR} lookup ${TABLE_MIHOMO}([[:space:]]|$)" && echo active || echo inactive)"
   echo "lan_tun_policy=$([ "$(cat "$DATA_PLANE_STATE" 2>/dev/null || echo direct)" = mihomo ] && "$IP" rule show priority "$RULE_MIHOMO_LAN" 2>/dev/null | grep -q "lookup $TABLE_MIHOMO" && echo active || echo inactive)"
+  echo "lan_transparent_proxy=$(mihomo_tproxy_listener_ready && mihomo_tproxy_policy_ready "${lan:-missing}" && echo active || echo inactive)"
   echo "proxy_tun=$(mihomo_tun_ready && echo up || echo down)"
   echo "local_app_proxy=$(mihomo_tun_ready && echo active || echo inactive)"
   echo "codex_selective_proxy=unified"
