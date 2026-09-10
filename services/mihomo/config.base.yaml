@@ -71,7 +71,7 @@ proxy-groups:
     type: url-test
     include-all-proxies: true
     filter: "(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)"
-    exclude-filter: "(?i)日本.*(03|04|05)"
+    exclude-filter: "(?i)剩余|到期|官网|重置"
     url: https://www.gstatic.com/generate_204
     interval: 60
     tolerance: 250
@@ -83,7 +83,7 @@ proxy-groups:
     proxies: [AI-日本自动, DIRECT]
     include-all-proxies: true
     filter: "(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)"
-    exclude-filter: "(?i)日本.*(03|04|05)"
+    exclude-filter: "(?i)剩余|到期|官网|重置"
 
 rules:
   - MATCH,DIRECT

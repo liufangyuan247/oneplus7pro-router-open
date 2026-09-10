@@ -31,9 +31,9 @@ excluded from the TUN. The root network manager only maintains PPPoE, DHCP,
 firewalling and the physical fail-open route; it no longer launches the
 `op7proxy` / `op7codex` sing-box instances or policy tables 101/102.
 
-`AI-日本自动` latency-tests Japanese nodes and excludes the known-bad
-`日本 | 03`, `日本 | 04` and `日本 | 05` entries. The `AI` group exposes only
-that automatic choice, `DIRECT`, and healthy Japanese subscription nodes.
+`AI-日本自动` latency-tests all Japanese subscription nodes and selects the
+fastest healthy exit. The `AI` group exposes that automatic choice, `DIRECT`,
+and all individual Japanese subscription nodes.
 `Antigravity` is a separate selector containing only US subscription nodes. An
 update preserves the currently selected Antigravity node by default; set
 `ANTIGRAVITY_NODE` to override it. This prevents Google location policy from
