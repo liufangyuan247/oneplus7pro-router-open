@@ -5,6 +5,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -117,6 +118,10 @@ type Snapshot = {
     Expires: number;
     StaticLease: boolean;
     StaticIP: string;
+    RxBytes?: number;
+    TxBytes?: number;
+    RxBps?: number;
+    TxBps?: number;
   }[];
   services: {
     Name: string;
@@ -404,32 +409,46 @@ const demo: Snapshot = {
   ],
   interfaces: [
     {
-      Name: "wlan0",
+      Name: "ppp0",
+      MAC: "46:1f:c3:0b:89:d0",
+      State: "up",
+      Carrier: "1",
+      Role: "WAN / 宽带拨号",
+      MTU: 1492,
+      SpeedMbps: 1000,
+      Addresses: ["100.64.12.88/32"],
+      RxBytes: 18_420_000_000,
+      TxBytes: 4_230_000_000,
+      RxBps: 8_450_000,
+      TxBps: 920_000,
+    },
+    {
+      Name: "eth1",
       MAC: "46:1f:c3:0b:89:d1",
+      State: "up",
+      Carrier: "1",
+      Role: "LAN / AP 桥接",
+      MTU: 1500,
+      SpeedMbps: 1000,
+      Addresses: ["192.168.2.1/24"],
+      RxBytes: 4_890_000_000,
+      TxBytes: 19_150_000_000,
+      RxBps: 1_280_000,
+      TxBps: 8_620_000,
+    },
+    {
+      Name: "wlan0",
+      MAC: "46:1f:c3:0b:89:d2",
       State: "up",
       Carrier: "1",
       Role: "管理网络",
       MTU: 1500,
       SpeedMbps: 0,
-      Addresses: ["192.168.2.107/24"],
-      RxBytes: 5_420_000_000,
-      TxBytes: 1_860_000_000,
-      RxBps: 32_660_000,
-      TxBps: 1_200_000,
-    },
-    {
-      Name: "eth0",
-      MAC: "2c:16:db:a8:e7:20",
-      State: "down",
-      Carrier: "0",
-      Role: "未分配",
-      MTU: 1500,
-      SpeedMbps: -1,
-      Addresses: [],
-      RxBytes: 0,
-      TxBytes: 0,
-      RxBps: 0,
-      TxBps: 0,
+      Addresses: ["192.168.10.107/24"],
+      RxBytes: 520_000_000,
+      TxBytes: 180_000_000,
+      RxBps: 12_000,
+      TxBps: 5_000,
     },
   ],
   clients: [
@@ -437,23 +456,46 @@ const demo: Snapshot = {
       IP: "192.168.2.151",
       MAC: "02:00:00:00:00:01",
       Hostname: "演示手机",
-      Interface: "wlan0",
-      State: "已发现",
-      Source: "邻居缓存",
-      Expires: 0,
+      Interface: "eth1",
+      State: "在线",
+      Source: "DHCP",
+      Expires: 3600,
       StaticLease: false,
       StaticIP: "",
+      RxBytes: 1_420_000_000,
+      TxBytes: 14_850_000_000,
+      RxBps: 245_000,
+      TxBps: 7_120_000,
     },
     {
       IP: "192.168.2.200",
       MAC: "02:00:00:00:00:02",
       Hostname: "演示摄像头",
-      Interface: "wlan0",
-      State: "已发现",
-      Source: "邻居缓存",
+      Interface: "eth1",
+      State: "在线",
+      Source: "静态 DHCP",
       Expires: 0,
       StaticLease: true,
       StaticIP: "192.168.2.200",
+      RxBytes: 3_450_000_000,
+      TxBytes: 180_000_000,
+      RxBps: 1_020_000,
+      TxBps: 25_000,
+    },
+    {
+      IP: "192.168.2.105",
+      MAC: "02:00:00:00:00:03",
+      Hostname: "办公笔记本",
+      Interface: "eth1",
+      State: "在线",
+      Source: "DHCP",
+      Expires: 7200,
+      StaticLease: false,
+      StaticIP: "",
+      RxBytes: 20_000_000,
+      TxBytes: 4_120_000_000,
+      RxBps: 15_000,
+      TxBps: 1_475_000,
     },
   ],
   services: [
@@ -609,8 +651,8 @@ export default function Home() {
         memory,
         wanDown: wan?.RxBps || 0,
         wanUp: wan?.TxBps || 0,
-        lanDown: lan?.RxBps || 0,
-        lanUp: lan?.TxBps || 0,
+        lanDown: lan?.TxBps || 0,
+        lanUp: lan?.RxBps || 0,
         ariaDown: next.aria2?.downloadSpeed || 0,
         ariaUp: next.aria2?.uploadSpeed || 0,
         batteryVoltage: next.power.Voltage,
@@ -642,10 +684,10 @@ export default function Home() {
             cpu: demo.cpu.usage,
             temperature: demo.cpu.temperature,
             memory: (demo.memory.Used / demo.memory.Total) * 100,
-            wanDown: 0,
-            wanUp: 0,
-            lanDown: 0,
-            lanUp: 0,
+            wanDown: demo.interfaces[0]?.RxBps || 0,
+            wanUp: demo.interfaces[0]?.TxBps || 0,
+            lanDown: demo.interfaces[1]?.TxBps || 0,
+            lanUp: demo.interfaces[1]?.RxBps || 0,
             ariaDown: demo.aria2.downloadSpeed,
             ariaUp: 0,
             batteryVoltage: demo.power.Voltage,
@@ -792,7 +834,12 @@ export default function Home() {
           <Network data={data} history={history} onNotice={setNotice} />
         )}
         {active === "clients" && (
-          <Clients data={data} refresh={refresh} setNotice={setNotice} />
+          <Clients
+            data={data}
+            history={history}
+            refresh={refresh}
+            setNotice={setNotice}
+          />
         )}
         {active === "services" && (
           <Services
@@ -1666,10 +1713,12 @@ function Network({
 
 function Clients({
   data,
+  history,
   refresh,
   setNotice,
 }: {
   data: Snapshot;
+  history: HistoryPoint[];
   refresh: (quiet?: boolean) => Promise<void>;
   setNotice: (value: string) => void;
 }) {
@@ -1677,6 +1726,31 @@ function Clients({
   const [staticIP, setStaticIP] = useState("");
   const [pendingMac, setPendingMac] = useState("");
   const [error, setError] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterType, setFilterType] = useState<"all" | "online" | "active" | "static">("all");
+  type SortField = "hostname" | "ip" | "txBps" | "rxBps" | "txBytes" | "rxBytes";
+  type SortDirection = "asc" | "desc";
+
+  const [sortField, setSortField] = useState<SortField>("hostname");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      if (
+        field === "txBps" ||
+        field === "rxBps" ||
+        field === "txBytes" ||
+        field === "rxBytes"
+      ) {
+        setSortDirection("desc");
+      } else {
+        setSortDirection("asc");
+      }
+    }
+  };
 
   const beginEdit = (client: Snapshot["clients"][number]) => {
     setEditingMac(client.MAC);
@@ -1760,27 +1834,408 @@ function Clients({
     }
   };
 
+  // 接口识别：WAN (互联网出入口) 与 LAN (局域网 AP 桥接)
+  const wan =
+    data.interfaces.find((i) => i.Name.startsWith("ppp")) ||
+    data.interfaces.find((i) => i.Role.includes("WAN")) ||
+    data.interfaces.find((i) => i.Name === data.networkDraft.WANInterface);
+  const lan =
+    data.interfaces.find((i) => i.Role.includes("LAN")) ||
+    data.interfaces.find((i) => i.Name === data.networkDraft.LANInterface) ||
+    data.interfaces.find((i) => i.Name === "eth1");
+
+  // 客户端聚合流量
+  const clientUploadTotal = data.clients.reduce((acc, c) => acc + (c.RxBytes || 0), 0);
+  const clientDownloadTotal = data.clients.reduce((acc, c) => acc + (c.TxBytes || 0), 0);
+  const clientUploadRate = data.clients.reduce((acc, c) => acc + (c.RxBps || 0), 0);
+  const clientDownloadRate = data.clients.reduce((acc, c) => acc + (c.TxBps || 0), 0);
+
+  // LAN 局域网总计：
+  // 软路由发送至 LAN = 客户端下行 (Client Download)
+  // 软路由从 LAN 接收 = 客户端上行 (Client Upload)
+  const lanDownloadSpeed = lan?.TxBps ?? clientDownloadRate;
+  const lanUploadSpeed = lan?.RxBps ?? clientUploadRate;
+  const lanDownloadTotal = lan?.TxBytes ?? clientDownloadTotal;
+  const lanUploadTotal = lan?.RxBytes ?? clientUploadTotal;
+  const lanTotalTraffic = lanDownloadTotal + lanUploadTotal;
+
+  // WAN 外网总计：
+  // 软路由从 WAN 接收 = 互联网下载 (WAN Download)
+  // 软路由向 WAN 发送 = 互联网上传 (WAN Upload)
+  const wanDownSpeed = wan?.RxBps ?? 0;
+  const wanUpSpeed = wan?.TxBps ?? 0;
+  const wanDownTotal = wan?.RxBytes ?? 0;
+  const wanUpTotal = wan?.TxBytes ?? 0;
+  const wanTotalTraffic = wanDownTotal + wanUpTotal;
+
+  // 状态统计
+  const onlineCount = data.clients.filter(
+    (c) => c.State === "在线" || (c.RxBps || 0) > 0 || (c.TxBps || 0) > 0,
+  ).length;
+  const activeTrafficCount = data.clients.filter(
+    (c) => (c.RxBps || 0) > 500 || (c.TxBps || 0) > 500,
+  ).length;
+  const staticLeaseCount = data.clients.filter((c) => c.StaticLease).length;
+
+  const filteredClients = useMemo(() => {
+    let list = [...data.clients];
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (c) =>
+          (c.Hostname || "").toLowerCase().includes(q) ||
+          (c.IP || "").toLowerCase().includes(q) ||
+          (c.MAC || "").toLowerCase().includes(q),
+      );
+    }
+    if (filterType === "online") {
+      list = list.filter(
+        (c) => c.State === "在线" || (c.RxBps || 0) > 0 || (c.TxBps || 0) > 0,
+      );
+    } else if (filterType === "active") {
+      list = list.filter((c) => (c.RxBps || 0) > 0 || (c.TxBps || 0) > 0);
+    } else if (filterType === "static") {
+      list = list.filter((c) => c.StaticLease);
+    }
+
+    const parseIP = (ip: string) => {
+      const parts = (ip || "").split(".").map((p) => parseInt(p, 10) || 0);
+      return (
+        ((parts[0] || 0) << 24) +
+        ((parts[1] || 0) << 16) +
+        ((parts[2] || 0) << 8) +
+        (parts[3] || 0)
+      );
+    };
+
+    list.sort((a, b) => {
+      let cmp = 0;
+      switch (sortField) {
+        case "hostname": {
+          const nameA = a.Hostname || a.MAC || "";
+          const nameB = b.Hostname || b.MAC || "";
+          cmp = nameA.localeCompare(nameB, "zh-CN");
+          break;
+        }
+        case "ip":
+          cmp = parseIP(a.IP) - parseIP(b.IP);
+          break;
+        case "txBps":
+          cmp = (a.TxBps || 0) - (b.TxBps || 0);
+          break;
+        case "rxBps":
+          cmp = (a.RxBps || 0) - (b.RxBps || 0);
+          break;
+        case "txBytes":
+          cmp = (a.TxBytes || 0) - (b.TxBytes || 0);
+          break;
+        case "rxBytes":
+          cmp = (a.RxBytes || 0) - (b.RxBytes || 0);
+          break;
+        default:
+          cmp = 0;
+      }
+      if (cmp !== 0) {
+        return sortDirection === "asc" ? cmp : -cmp;
+      }
+      return parseIP(a.IP) - parseIP(b.IP);
+    });
+    return list;
+  }, [data.clients, searchQuery, filterType, sortField, sortDirection]);
+
   return (
     <div className="view">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">eth1 · AP 桥接局域网</p>
-          <h2>LAN 客户端</h2>
+          <p className="eyebrow">eth1 · AP 桥接局域网与流量监控</p>
+          <h2>LAN 客户端与流量统计</h2>
         </div>
-        <strong className="count-badge">{data.clients.length} 台</strong>
+        <div className="clients-header-badges">
+          <strong className="count-badge">{data.clients.length} 台设备</strong>
+          <span className="live-badge">{onlineCount} 台在线</span>
+          {activeTrafficCount > 0 && (
+            <span className="traffic-active-badge">
+              {activeTrafficCount} 台传输中
+            </span>
+          )}
+        </div>
       </div>
+
+      {/* WAN vs LAN 双域流量统计看板 */}
+      <div className="client-traffic-overview">
+        {/* WAN 外网看板 */}
+        <article className="panel client-traffic-card wan-card">
+          <header className="traffic-card-header">
+            <div>
+              <p className="eyebrow wan-eyebrow">互联网出入 · 外网流量</p>
+              <h3>
+                {wan?.Name
+                  ? `${wan.Name} · ${wan.Role || "WAN"}`
+                  : "WAN 外网链路"}
+              </h3>
+            </div>
+            <span className="domain-pill wan-pill">WAN 链路</span>
+          </header>
+          <div className="traffic-metric-grid">
+            <div className="metric-box">
+              <small>WAN 实时下行 (外网下载)</small>
+              <strong className="rate-val wan-down">
+                ↓ {rate(wanDownSpeed)}
+              </strong>
+              <span>累计下载: {bytes(wanDownTotal)}</span>
+            </div>
+            <div className="metric-box">
+              <small>WAN 实时上行 (外网上载)</small>
+              <strong className="rate-val wan-up">↑ {rate(wanUpSpeed)}</strong>
+              <span>累计上传: {bytes(wanUpTotal)}</span>
+            </div>
+            <div className="metric-box total">
+              <small>外网累计总流量</small>
+              <strong className="total-val">{bytes(wanTotalTraffic)}</strong>
+              <span>
+                链路:{" "}
+                {wan?.Carrier === "1" || wan?.State === "up"
+                  ? "已连接"
+                  : "未连接"}
+              </span>
+            </div>
+          </div>
+        </article>
+
+        {/* LAN 内网看板 */}
+        <article className="panel client-traffic-card lan-card">
+          <header className="traffic-card-header">
+            <div>
+              <p className="eyebrow lan-eyebrow">局域网设备 · 内网流量</p>
+              <h3>
+                {lan?.Name
+                  ? `${lan.Name} · ${lan.Role || "LAN"}`
+                  : "LAN 局域网 AP"}
+              </h3>
+            </div>
+            <span className="domain-pill lan-pill">LAN 内网</span>
+          </header>
+          <div className="traffic-metric-grid">
+            <div className="metric-box">
+              <small>LAN 实时下行 (路由发往设备)</small>
+              <strong className="rate-val lan-down">
+                ↓ {rate(lanDownloadSpeed)}
+              </strong>
+              <span>局域网累计下发: {bytes(lanDownloadTotal)}</span>
+            </div>
+            <div className="metric-box">
+              <small>LAN 实时上行 (设备发往路由)</small>
+              <strong className="rate-val lan-up">
+                ↑ {rate(lanUploadSpeed)}
+              </strong>
+              <span>局域网累计接收: {bytes(lanUploadTotal)}</span>
+            </div>
+            <div className="metric-box total">
+              <small>内网累计总吞吐</small>
+              <strong className="total-val">{bytes(lanTotalTraffic)}</strong>
+              <span>已分配 {staticLeaseCount} 条静态租约</span>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      {/* WAN 与 LAN 实时吞吐趋势折线图 */}
+      <article className="panel history-panel client-chart-panel">
+        <div className="panel-title">
+          <div>
+            <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均 · WAN vs LAN 双域对比</p>
+            <h2>外网 / 内网实时吞吐走势</h2>
+          </div>
+          <div className="chart-legend-row">
+            <span className="legend-item wan-down">
+              <i />
+              WAN 下行 (外网下载)
+            </span>
+            <span className="legend-item wan-up">
+              <i />
+              WAN 上行 (外网上载)
+            </span>
+            <span className="legend-item lan-down">
+              <i />
+              LAN 下行 (内网发送)
+            </span>
+            <span className="legend-item lan-up">
+              <i />
+              LAN 上传 (内网接收)
+            </span>
+          </div>
+        </div>
+        <TimeSeriesChart
+          history={history}
+          series={[
+            { label: "WAN 下行", color: "#30c7d8", value: (p) => p.wanDown },
+            { label: "WAN 上传", color: "#52d395", value: (p) => p.wanUp },
+            { label: "LAN 下行", color: "#a897ff", value: (p) => p.lanDown },
+            { label: "LAN 上传", color: "#f6ad55", value: (p) => p.lanUp },
+          ]}
+          format={rate}
+        />
+      </article>
+
+      {/* 客户端列表与交互工具栏 */}
       <article className="panel clients-panel">
+        <div className="panel-title clients-list-heading">
+          <div>
+            <p className="eyebrow">局域网设备连接与流量明细</p>
+            <h2>已发现客户端</h2>
+          </div>
+          <span className="filtered-count">
+            显示 {filteredClients.length} / 共 {data.clients.length} 台
+          </span>
+        </div>
+
+        {/* 筛选与搜索工具条 */}
+        <div className="clients-toolbar">
+          <div className="clients-search-box">
+            <input
+              type="text"
+              placeholder="按主机名、IP、MAC 地址过滤..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="clear-search-btn"
+                onClick={() => setSearchQuery("")}
+                title="清空搜索"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          <div className="clients-filter-tabs">
+            <button
+              type="button"
+              className={filterType === "all" ? "active" : ""}
+              onClick={() => setFilterType("all")}
+            >
+              全部 ({data.clients.length})
+            </button>
+            <button
+              type="button"
+              className={filterType === "online" ? "active" : ""}
+              onClick={() => setFilterType("online")}
+            >
+              在线 ({onlineCount})
+            </button>
+            <button
+              type="button"
+              className={filterType === "active" ? "active" : ""}
+              onClick={() => setFilterType("active")}
+            >
+              传输中 ({activeTrafficCount})
+            </button>
+            <button
+              type="button"
+              className={filterType === "static" ? "active" : ""}
+              onClick={() => setFilterType("static")}
+            >
+              静态租约 ({staticLeaseCount})
+            </button>
+          </div>
+          <div className="clients-sort-box">
+            <label htmlFor="client-sort-select">排序：</label>
+            <select
+              id="client-sort-select"
+              value={`${sortField}-${sortDirection}`}
+              onChange={(e) => {
+                const [f, d] = e.target.value.split("-") as [SortField, SortDirection];
+                setSortField(f);
+                setSortDirection(d);
+              }}
+            >
+              <option value="hostname-asc">设备名称 (A→Z)</option>
+              <option value="hostname-desc">设备名称 (Z→A)</option>
+              <option value="ip-asc">IP 地址 (升序)</option>
+              <option value="ip-desc">IP 地址 (降序)</option>
+              <option value="txBps-desc">实时下载速率 (高→低)</option>
+              <option value="txBps-asc">实时下载速率 (低→高)</option>
+              <option value="rxBps-desc">实时上传速率 (高→低)</option>
+              <option value="rxBps-asc">实时上传速率 (低→高)</option>
+              <option value="txBytes-desc">累计下载流量 (多→少)</option>
+              <option value="txBytes-asc">累计下载流量 (少→多)</option>
+              <option value="rxBytes-desc">累计上传流量 (多→少)</option>
+              <option value="rxBytes-asc">累计上传流量 (少→多)</option>
+            </select>
+          </div>
+        </div>
+
         {error && !editingMac && (
           <p className="static-lease-page-error" role="alert">
             {error}
           </p>
         )}
+
         <div className="table-wrap">
           <table className="clients-table">
             <thead>
               <tr>
-                <th>设备</th>
-                <th>IP 地址</th>
+                <th
+                  className={`sortable-th ${sortField === "hostname" ? "sorted" : ""}`}
+                  onClick={() => handleSort("hostname")}
+                  title={`点击按设备名称${sortField === "hostname" && sortDirection === "asc" ? "降序" : "升序"}排序`}
+                >
+                  <div className="th-content">
+                    <span>设备</span>
+                    <span className="sort-icon">{sortField === "hostname" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}</span>
+                  </div>
+                </th>
+                <th
+                  className={`sortable-th ${sortField === "ip" ? "sorted" : ""}`}
+                  onClick={() => handleSort("ip")}
+                  title={`点击按 IP 地址${sortField === "ip" && sortDirection === "asc" ? "降序" : "升序"}排序`}
+                >
+                  <div className="th-content">
+                    <span>IP 地址</span>
+                    <span className="sort-icon">{sortField === "ip" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}</span>
+                  </div>
+                </th>
+                <th
+                  className={`sortable-th th-rate down ${sortField === "txBps" ? "sorted" : ""}`}
+                  onClick={() => handleSort("txBps")}
+                  title={`点击按实时下载速率${sortField === "txBps" && sortDirection === "desc" ? "升序" : "降序"}排序`}
+                >
+                  <div className="th-content">
+                    <span>实时下载</span>
+                    <span className="sort-icon">{sortField === "txBps" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}</span>
+                  </div>
+                </th>
+                <th
+                  className={`sortable-th th-rate up ${sortField === "rxBps" ? "sorted" : ""}`}
+                  onClick={() => handleSort("rxBps")}
+                  title={`点击按实时上传速率${sortField === "rxBps" && sortDirection === "desc" ? "升序" : "降序"}排序`}
+                >
+                  <div className="th-content">
+                    <span>实时上传</span>
+                    <span className="sort-icon">{sortField === "rxBps" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}</span>
+                  </div>
+                </th>
+                <th
+                  className={`sortable-th th-traffic down ${sortField === "txBytes" ? "sorted" : ""}`}
+                  onClick={() => handleSort("txBytes")}
+                  title={`点击按累计下载流量${sortField === "txBytes" && sortDirection === "desc" ? "升序" : "降序"}排序`}
+                >
+                  <div className="th-content">
+                    <span>累计下载</span>
+                    <span className="sort-icon">{sortField === "txBytes" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}</span>
+                  </div>
+                </th>
+                <th
+                  className={`sortable-th th-traffic up ${sortField === "rxBytes" ? "sorted" : ""}`}
+                  onClick={() => handleSort("rxBytes")}
+                  title={`点击按累计上传流量${sortField === "rxBytes" && sortDirection === "desc" ? "升序" : "降序"}排序`}
+                >
+                  <div className="th-content">
+                    <span>累计上传</span>
+                    <span className="sort-icon">{sortField === "rxBytes" ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}</span>
+                  </div>
+                </th>
                 <th>MAC 地址</th>
                 <th>接口</th>
                 <th>来源</th>
@@ -1790,9 +2245,15 @@ function Clients({
               </tr>
             </thead>
             <tbody>
-              {data.clients.map((client) => {
+              {filteredClients.map((client) => {
                 const busy = pendingMac === client.MAC;
                 const editing = editingMac === client.MAC;
+                const isDownActive = (client.TxBps || 0) > 1000;
+                const isUpActive = (client.RxBps || 0) > 1000;
+                const isDownZero = (client.TxBps || 0) === 0;
+                const isUpZero = (client.RxBps || 0) === 0;
+                const isTxBytesZero = (client.TxBytes || 0) === 0;
+                const isRxBytesZero = (client.RxBytes || 0) === 0;
                 return (
                   <Fragment key={`${client.MAC}-${client.IP}`}>
                     <tr className={editing ? "client-row editing" : "client-row"}>
@@ -1801,10 +2262,48 @@ function Clients({
                           <span>
                             {(client.Hostname || "?").slice(0, 2).toUpperCase()}
                           </span>
-                          <strong>{client.Hostname || "未知设备"}</strong>
+                          <div>
+                            <strong>{client.Hostname || "未知设备"}</strong>
+                          </div>
                         </div>
                       </td>
-                      <td data-label="当前 IP">{client.IP}</td>
+                      <td data-label="当前 IP" className="mono">{client.IP}</td>
+                      <td data-label="实时下载">
+                        <span
+                          className={`live-rate-cell down ${isDownActive ? "active" : ""} ${isDownZero ? "zero" : ""}`}
+                          title="局域网下载速率 (路由器发给此设备)"
+                        >
+                          <span className="dir-arrow">↓</span>
+                          {rate(client.TxBps || 0)}
+                        </span>
+                      </td>
+                      <td data-label="实时上传">
+                        <span
+                          className={`live-rate-cell up ${isUpActive ? "active" : ""} ${isUpZero ? "zero" : ""}`}
+                          title="局域网上传速率 (此设备发给路由器)"
+                        >
+                          <span className="dir-arrow">↑</span>
+                          {rate(client.RxBps || 0)}
+                        </span>
+                      </td>
+                      <td data-label="累计下载">
+                        <span
+                          className={`live-traffic-cell down ${isTxBytesZero ? "zero" : ""}`}
+                          title="局域网累计下载流量"
+                        >
+                          <span className="dir-arrow">↓</span>
+                          {bytes(client.TxBytes || 0)}
+                        </span>
+                      </td>
+                      <td data-label="累计上传">
+                        <span
+                          className={`live-traffic-cell up ${isRxBytesZero ? "zero" : ""}`}
+                          title="局域网累计上传流量"
+                        >
+                          <span className="dir-arrow">↑</span>
+                          {bytes(client.RxBytes || 0)}
+                        </span>
+                      </td>
                       <td data-label="MAC 地址" className="mono">
                         {client.MAC}
                       </td>
@@ -1861,7 +2360,7 @@ function Clients({
                     </tr>
                     {editing && (
                       <tr className="client-editor-row">
-                        <td colSpan={8}>
+                        <td colSpan={12}>
                           <form
                             className="static-lease-editor"
                             onSubmit={(event) => {
@@ -1922,15 +2421,16 @@ function Clients({
             </tbody>
           </table>
         </div>
-        {data.clients.length === 0 && (
+        {filteredClients.length === 0 && (
           <p className="empty-copy">
-            当前 eth1 局域网没有有效 DHCP 租约或在线邻居。
+            {searchQuery
+              ? `未找到与 “${searchQuery}” 匹配的客户端设备。`
+              : "当前 eth1 局域网没有有效 DHCP 租约或在线邻居。"}
           </p>
         )}
       </article>
       <p className="safe-note">
-        列表现在只统计 LAN 网口 eth1 /
-        192.168.2.0/24，已排除光猫上联、路由器自身地址和过期租约。“在线”来自当前邻居表，“租约”表示设备曾获取地址但此刻未必活跃。设置固定地址后，设备可能需要重新连接网络或续租才会切换到新地址。
+        说明：已明确区分 WAN 外网流量与 LAN 内网流量。顶部图表可观察外网互联网出入（青/绿）与内网局域网吞吐（紫/橙）的实时走势。每台客户端的“LAN 实时速率”与“LAN 累计流量”统计其通过软路由转发的上下行流量。列表仅统计 LAN 网口 eth1 / 192.168.2.0/24，已排除光猫上联与自身地址。
       </p>
     </div>
   );

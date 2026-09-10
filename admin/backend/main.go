@@ -87,6 +87,10 @@ type Server struct {
 	netSamples                         []timedNetSample
 	netStats                           map[string]netCounter
 	netRates                           map[string]netRate
+	clientTrafficMu                    sync.Mutex
+	clientTrafficStats                 map[string]netCounter
+	clientTrafficRates                 map[string]netRate
+	clientTrafficSamples               []timedClientSample
 	lastUSBInputWatts                  float64
 	lastUSBInputAt                     time.Time
 	lastChargeCounter                  int64
@@ -135,6 +139,10 @@ type cpuCounters struct{ total, idle uint64 }
 type netCounter struct{ rx, tx uint64 }
 type netRate struct{ rx, tx float64 }
 type timedNetSample struct {
+	at    time.Time
+	stats map[string]netCounter
+}
+type timedClientSample struct {
 	at    time.Time
 	stats map[string]netCounter
 }
@@ -223,6 +231,8 @@ type ClientInfo struct {
 	Expires                                     int64
 	StaticLease                                 bool
 	StaticIP                                    string
+	RxBytes, TxBytes                            uint64
+	RxBps, TxBps                                float64
 }
 
 type StaticLease struct {
@@ -369,7 +379,7 @@ func main() {
 		stack:   filepath.Join(home, "router-stack"),
 		data:    filepath.Join(home, "router-data"),
 		webRoot: env("ROUTER_ADMIN_WEB", filepath.Join(home, "router-admin", "web")),
-		started: time.Now(), sessions: make(map[string]authSession), lastCoreCPU: make(map[int]cpuCounters), netStats: make(map[string]netCounter), netRates: make(map[string]netRate),
+		started: time.Now(), sessions: make(map[string]authSession), lastCoreCPU: make(map[int]cpuCounters), netStats: make(map[string]netCounter), netRates: make(map[string]netRate), clientTrafficStats: make(map[string]netCounter), clientTrafficRates: make(map[string]netRate),
 	}
 	password, created, err := ensurePassword(filepath.Join(s.data, "admin", "password"))
 	if err != nil {
@@ -1870,12 +1880,173 @@ func (s *Server) readClients() []ClientInfo {
 			}
 		}
 	}
+	clientStats := s.collectClientTrafficStats()
+	s.updateClientTraffic(time.Now(), clientStats)
+	trafficStats, trafficRates := s.getClientTrafficSnapshot()
+
 	out := make([]ClientInfo, 0, len(byIP))
 	for _, c := range byIP {
+		if stat, ok := trafficStats[c.IP]; ok {
+			c.RxBytes = stat.rx
+			c.TxBytes = stat.tx
+		}
+		if rate, ok := trafficRates[c.IP]; ok {
+			c.RxBps = round(rate.rx, 1)
+			c.TxBps = round(rate.tx, 1)
+		}
+		if c.RxBps > 0 || c.TxBps > 0 {
+			c.State = "在线"
+		}
 		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].IP < out[j].IP })
 	return out
+}
+
+func parseConntrackClientTraffic(text string, stats map[string]netCounter) {
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.Contains(line, "bytes=") {
+			continue
+		}
+		fields := strings.Fields(line)
+		var srcIP string
+		var origBytes, replyBytes uint64
+		foundOrigBytes := false
+
+		for _, f := range fields {
+			if strings.HasPrefix(f, "src=") && srcIP == "" {
+				srcIP = strings.TrimPrefix(f, "src=")
+			} else if strings.HasPrefix(f, "bytes=") {
+				b, _ := strconv.ParseUint(strings.TrimPrefix(f, "bytes="), 10, 64)
+				if !foundOrigBytes {
+					origBytes = b
+					foundOrigBytes = true
+				} else {
+					replyBytes = b
+				}
+			}
+		}
+
+		if srcIP != "" && strings.HasPrefix(srcIP, "192.168.") {
+			curr := stats[srcIP]
+			if origBytes > curr.rx {
+				curr.rx = origBytes
+			}
+			if replyBytes > curr.tx {
+				curr.tx = replyBytes
+			}
+			stats[srcIP] = curr
+		}
+	}
+}
+
+func (s *Server) collectClientTrafficStats() map[string]netCounter {
+	stats := make(map[string]netCounter)
+
+	var data struct {
+		Connections []struct {
+			Metadata struct {
+				SourceIP string `json:"sourceIP"`
+			} `json:"metadata"`
+			Upload   uint64 `json:"upload"`
+			Download uint64 `json:"download"`
+		} `json:"connections"`
+	}
+	client := &http.Client{Timeout: 600 * time.Millisecond}
+	req, err := http.NewRequest("GET", mihomoController+"/connections", nil)
+	if err == nil {
+		if resp, err := client.Do(req); err == nil {
+			if resp.StatusCode == http.StatusOK {
+				_ = json.NewDecoder(resp.Body).Decode(&data)
+			}
+			resp.Body.Close()
+		}
+	}
+	for _, c := range data.Connections {
+		ip := c.Metadata.SourceIP
+		if ip == "" || ip == "127.0.0.1" {
+			continue
+		}
+		curr := stats[ip]
+		curr.rx += c.Upload
+		curr.tx += c.Download
+		stats[ip] = curr
+	}
+
+	if conntrackText := readText("/proc/net/nf_conntrack"); conntrackText != "" {
+		parseConntrackClientTraffic(conntrackText, stats)
+	}
+
+	return stats
+}
+
+func (s *Server) updateClientTraffic(at time.Time, stats map[string]netCounter) {
+	s.clientTrafficMu.Lock()
+	defer s.clientTrafficMu.Unlock()
+
+	if s.clientTrafficStats == nil {
+		s.clientTrafficStats = make(map[string]netCounter)
+	}
+	if s.clientTrafficRates == nil {
+		s.clientTrafficRates = make(map[string]netRate)
+	}
+
+	for ip, counter := range stats {
+		prev := s.clientTrafficStats[ip]
+		if counter.rx < prev.rx {
+			counter.rx = prev.rx
+		}
+		if counter.tx < prev.tx {
+			counter.tx = prev.tx
+		}
+		s.clientTrafficStats[ip] = counter
+	}
+
+	s.clientTrafficSamples = append(s.clientTrafficSamples, timedClientSample{at: at, stats: stats})
+	cutoff := at.Add(-networkRateWindow)
+	first := 0
+	for first+1 < len(s.clientTrafficSamples) && !s.clientTrafficSamples[first+1].at.After(cutoff) {
+		first++
+	}
+	if first > 0 {
+		s.clientTrafficSamples = append([]timedClientSample(nil), s.clientTrafficSamples[first:]...)
+	}
+
+	rates := make(map[string]netRate, len(stats))
+	if len(s.clientTrafficSamples) > 1 {
+		baseline := s.clientTrafficSamples[0]
+		elapsed := at.Sub(baseline.at).Seconds()
+		if elapsed > 0 {
+			for ip, current := range stats {
+				previous, ok := baseline.stats[ip]
+				if !ok || current.rx < previous.rx || current.tx < previous.tx {
+					continue
+				}
+				rates[ip] = netRate{
+					rx: float64(current.rx-previous.rx) / elapsed,
+					tx: float64(current.tx-previous.tx) / elapsed,
+				}
+			}
+		}
+	}
+	s.clientTrafficRates = rates
+}
+
+func (s *Server) getClientTrafficSnapshot() (map[string]netCounter, map[string]netRate) {
+	s.clientTrafficMu.Lock()
+	defer s.clientTrafficMu.Unlock()
+
+	stats := make(map[string]netCounter, len(s.clientTrafficStats))
+	for k, v := range s.clientTrafficStats {
+		stats[k] = v
+	}
+	rates := make(map[string]netRate, len(s.clientTrafficRates))
+	for k, v := range s.clientTrafficRates {
+		rates[k] = v
+	}
+	return stats, rates
 }
 
 func (s *Server) readServices() []ServiceInfo {
