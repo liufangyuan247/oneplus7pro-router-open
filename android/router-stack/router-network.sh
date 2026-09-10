@@ -28,6 +28,7 @@ DNSMASQ_STATIC_SCHEMA_PID="$RUNTIME/dnsmasq-static-hosts-v1.pid"
 DNSMASQ_LEASE_FILES="${ROUTER_DNSMASQ_LEASE_FILES:-/data/data/com.termux/files/home/router-data/dnsmasq/dnsmasq.leases /data/misc/dhcp/dnsmasq.leases}"
 DATA_PLANE_STATE="$RUNTIME/lan-data-plane"
 TPROXY_STATE="$RUNTIME/lan-tproxy"
+TPROXY_BYPASS_STATE="$RUNTIME/lan-tproxy-bypass"
 ADMIN_INTERFACES=/data/data/com.termux/files/home/router-data/admin/active-interfaces
 LOG_MAX_BYTES="${ROUTER_LOG_MAX_BYTES:-1048576}"
 LOG_KEEP_BYTES="${ROUTER_LOG_KEEP_BYTES:-262144}"
@@ -1123,16 +1124,30 @@ remove_mihomo_tproxy_policy() {
   remove_jump mangle PREROUTING OP7_TPROXY
   "$IP" rule del priority "$RULE_TPROXY" 2>/dev/null || true
   "$IP" route flush table "$TABLE_TPROXY" 2>/dev/null || true
-  rm -f "$TPROXY_STATE"
+  rm -f "$TPROXY_STATE" "$TPROXY_BYPASS_STATE"
 }
 
 mihomo_tproxy_listener_ready() {
   "$SS" -lntu 2>/dev/null | grep -q ":${MIHOMO_TPROXY_PORT} "
 }
 
+mihomo_tproxy_bypass_ready() {
+  bypass_file="$MIHOMO_DATA/client-bypass-ipv4.txt"
+  current_bypass=""
+  if [ -r "$bypass_file" ]; then
+    current_bypass="$("$GAWK" '{ sub(/#.*/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); if ($0 != "") print }' "$bypass_file" 2>/dev/null | sort -u || true)"
+  fi
+  active_bypass="$(cat "$TPROXY_BYPASS_STATE" 2>/dev/null || true)"
+  [ "$current_bypass" = "$active_bypass" ] || return 1
+  for bypass_ip in $current_bypass; do
+    "$IPTABLES" -w 2 -t mangle -C OP7_TPROXY -s "$bypass_ip" -j RETURN 2>/dev/null || return 1
+  done
+}
+
 mihomo_tproxy_policy_ready() {
   lan="$1"
   [ "$(cat "$TPROXY_STATE" 2>/dev/null || true)" = "$lan" ] || return 1
+  mihomo_tproxy_bypass_ready || return 1
   "$IP" rule show priority "$RULE_TPROXY" 2>/dev/null | \
     grep -Eq "^${RULE_TPROXY}:.*fwmark ${TPROXY_MARK}(/${TPROXY_MASK})?.*iif ${lan}.*lookup ${TABLE_TPROXY}([[:space:]]|$)" || return 1
   "$IP" route show table "$TABLE_TPROXY" 2>/dev/null | grep -q '^local default dev lo' || return 1
@@ -1160,6 +1175,13 @@ apply_mihomo_tproxy_policy() {
     fwmark "$TPROXY_MARK/$TPROXY_MASK" lookup "$TABLE_TPROXY" || return 1
   "$IPTABLES" -w 2 -t mangle -N OP7_TPROXY 2>/dev/null || true
   "$IPTABLES" -w 2 -t mangle -F OP7_TPROXY
+  bypass_list=""
+  if [ -r "$MIHOMO_DATA/client-bypass-ipv4.txt" ]; then
+    bypass_list="$("$GAWK" '{ sub(/#.*/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); if ($0 != "") print }' "$MIHOMO_DATA/client-bypass-ipv4.txt" 2>/dev/null | sort -u || true)"
+    for bypass_ip in $bypass_list; do
+      "$IPTABLES" -w 2 -t mangle -A OP7_TPROXY -s "$bypass_ip" -j RETURN
+    done
+  fi
   for subnet in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 \
     169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4; do
     "$IPTABLES" -w 2 -t mangle -A OP7_TPROXY -d "$subnet" -j RETURN
@@ -1173,6 +1195,7 @@ apply_mihomo_tproxy_policy() {
   "$IPTABLES" -w 2 -t mangle -A OP7_TPROXY -j RETURN
   "$IPTABLES" -w 2 -t mangle -I PREROUTING 1 -i "$lan" -s "$LAN_SUBNET" -j OP7_TPROXY
   printf '%s\n' "$lan" > "$TPROXY_STATE"
+  printf '%s\n' "$bypass_list" > "$TPROXY_BYPASS_STATE"
   log "enabled LAN Mihomo TPROXY: $LAN_SUBNET iif $lan port $MIHOMO_TPROXY_PORT"
 }
 
