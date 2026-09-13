@@ -30,11 +30,19 @@ uses the common log, start, stop and restart controls.
 
 The **代理** page manages the standalone Mihomo core, multiple subscriptions,
 proxy groups, node delay tests, connections, persistent mode/listener settings,
-whole-home transparent routing and CPA integration. The whole-home switch
-covers both LAN clients and local Android/Termux application traffic; there is
-no separate Android system-proxy switch. MetaCubeXD is reached through an
-authenticated reverse proxy, while Mihomo's controller remains bound to
-loopback.
+whole-home transparent routing, CPA integration, and real-time universal traffic
+accounting. The whole-home switch covers both LAN clients and local Android/Termux
+application traffic; there is no separate Android system-proxy switch. MetaCubeXD
+is reached through an authenticated reverse proxy, while Mihomo's controller
+remains bound to loopback.
+
+Traffic accounting polls Mihomo connection deltas every second, attributing
+uplink and downlink bytes to LAN/host client devices, subscription IDs, proxy
+nodes, proxy groups, destination targets, and hourly/daily time series.
+Configurable billing multipliers (0.1x–100x, per-subscription defaults and
+per-node overrides) calculate estimated billing traffic. Traffic not matching any
+active subscription is isolated as unassigned proxy traffic without distortion.
+All accounting ledgers and settings are atomically persisted with mode `0600`.
 
 The **服务** page also contains a protected Tailscale control panel. It reports
 the node state, Tailscale IP and `192.168.2.0/24` subnet-route status, and offers
@@ -50,6 +58,11 @@ Runtime paths:
   (hashed session identifiers only, mode `0600`; explicit logout revokes them)
 - Network draft: `/data/data/com.termux/files/home/router-data/admin/network-draft.json`
 - Service: `/data/data/com.termux/files/home/router-stack/services/router-admin`
+- Traffic accounting ledger: `/data/data/com.termux/files/home/router-data/mihomo/traffic-accounting.json` (mode `0600`)
+- Traffic accounting settings: `/data/data/com.termux/files/home/router-data/mihomo/traffic-accounting-settings.json` (mode `0600`)
+- Traffic accounting snapshot API: `/api/mihomo/traffic-accounting` (authenticated GET)
+- Traffic accounting reset API: `/api/mihomo/traffic-accounting/reset` (authenticated POST, requires `{"confirm": true}`)
+- Traffic accounting settings API: `/api/mihomo/traffic-accounting/settings` (authenticated GET / PUT)
 - Browser terminal: `/api/terminal` (authenticated WebSocket, at most two sessions)
 - Browser screen control: `/api/screen` (one on-demand scrcpy session)
 - Deterministic wake/unlock and lock actions: `/api/device/power` (authenticated POST)

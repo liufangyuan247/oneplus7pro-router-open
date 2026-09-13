@@ -79,6 +79,8 @@ invariants remain immediately actionable.
 - Listener overrides: `~/router-data/mihomo/runtime-settings.yaml`
 - Persistent mode: `~/router-data/mihomo/runtime-mode`
 - Benchmark results: `~/router-data/mihomo/speedtest-results.json`
+- Traffic accounting ledger: `~/router-data/mihomo/traffic-accounting.json` (mode `0600`)
+- Traffic accounting settings: `~/router-data/mihomo/traffic-accounting-settings.json` (mode `0600`)
 - Service: `~/router-stack/services/mihomo`
 - Update service: `~/router-stack/services/mihomo-updater`
 - Data-plane probe: `~/router-stack/bin/mihomo-health-probe`
@@ -156,6 +158,29 @@ non-mainland/default queries use trusted DoH through `家庭RULE`. Keeping
 unlisted answers real is important for source-IP clients that bypass `op7tun`,
 because a fake `198.18/16` answer cannot be translated after the kernel sends
 that client directly to physical table 100.
+
+## Traffic accounting and billing attribution
+
+The Mihomo management engine integrates a universal, non-blocking traffic
+accounting collector that samples live connection delta statistics every second.
+
+- **Multi-dimensional tracking**: Traffic is categorized and tracked across
+  terminal devices (IP and resolved hostname), routing kinds (`direct`, `reject`,
+  `proxy`), subscription IDs, egress nodes, proxy groups, destination targets,
+  and hourly/daily time intervals.
+- **Billing multipliers**: Configurable subscription default multipliers and
+  node-level override multipliers (0.1x to 100x) estimate billed usage
+  (`weightedBytes`). Any traffic missing multiplier settings is tracked as
+  `unpricedRawBytes`.
+- **Isolation and safety**:
+  - Router benchmark traffic (`家庭测速`, port 17894) continues to be accounted into
+    subscription, node, terminal device, and total proxy figures, while also being
+    tracked separately on a dedicated breakdown line.
+  - Proxy connections unassociated with known subscriptions are quarantined under
+    `unassignedProxy` and surfaced with visual alerts.
+- **Persistent storage**: State is atomically saved to
+  `~/router-data/mihomo/traffic-accounting.json` and
+  `~/router-data/mihomo/traffic-accounting-settings.json` with mode `0600`.
 
 ## Management and verification
 

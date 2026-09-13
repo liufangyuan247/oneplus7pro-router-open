@@ -109,6 +109,8 @@ type Server struct {
 	speedTestHTTP                      func(ctx context.Context, proxyURL, targetURL string, sampleBytes int64) (int64, time.Duration, time.Duration, int, error)
 	speedTestSampleWAN                 func(ctx context.Context) (float64, error)
 	speedTestCheckListener             func() bool
+	trafficAccounting                  *TrafficAccountingManager
+	accountingCancel                   context.CancelFunc
 }
 
 const (
@@ -402,6 +404,7 @@ func main() {
 	}
 	s.startNetworkSampler()
 	s.initSpeedTest()
+	s.initTrafficAccounting()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.health)
@@ -428,6 +431,10 @@ func main() {
 	mux.HandleFunc("/api/mihomo/connections", s.auth(s.mihomoConnections))
 	mux.HandleFunc("/api/mihomo/subscription", s.auth(s.mihomoSubscription))
 	mux.HandleFunc("/api/mihomo/subscriptions", s.auth(s.mihomoSubscriptions))
+	mux.HandleFunc("GET /api/mihomo/traffic-accounting", s.auth(s.mihomoTrafficAccounting))
+	mux.HandleFunc("POST /api/mihomo/traffic-accounting/reset", s.auth(s.mihomoTrafficAccountingReset))
+	mux.HandleFunc("GET /api/mihomo/traffic-accounting/settings", s.auth(s.mihomoTrafficAccountingSettings))
+	mux.HandleFunc("PUT /api/mihomo/traffic-accounting/settings", s.auth(s.mihomoTrafficAccountingSettings))
 	mux.HandleFunc(mihomoDashboardPrefix, s.auth(s.mihomoDashboard))
 	mux.HandleFunc(mihomoAPIPrefix, s.auth(s.mihomoAPIProxy))
 	mux.HandleFunc("/_nuxt/", s.auth(s.mihomoDashboardAssets))
@@ -2814,7 +2821,7 @@ func (s *Server) mihomoSubscription(w http.ResponseWriter, r *http.Request) {
 		updater := filepath.Join(s.stack, "bin", "mihomo-update-subscription")
 		out, err := exec.Command(updater).CombinedOutput()
 		if err != nil {
-			log.Printf("mihomo subscription update failed: %s", tailLines(string(out), 30))
+			log.Printf("mihomo subscription update failed: %s", sanitizeLogSecrets(tailLines(string(out), 30)))
 			jsonOut(w, 500, map[string]string{"error": "订阅更新失败，旧配置已保留；可查看 Mihomo 日志"})
 			return
 		}
@@ -3506,6 +3513,18 @@ func maskedSubscriptionSource(raw string) string {
 	return parsed.Scheme + "://" + parsed.Host + "/…"
 }
 
+var (
+	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)(token|password|secret|key|auth|signature)=([^\s&"'<>]+)`)
+	secretURLRegex           = regexp.MustCompile(`https?://[^\s"'<>]+`)
+)
+
+func sanitizeLogSecrets(s string) string {
+	redacted := sensitiveQueryParamRegex.ReplaceAllString(s, "$1=[REDACTED]")
+	return secretURLRegex.ReplaceAllStringFunc(redacted, func(raw string) string {
+		return maskedSubscriptionSource(raw)
+	})
+}
+
 func (s *Server) publicSubscriptions(store SubscriptionStore) map[string]any {
 	items := make([]PublicSubscription, 0, len(store.Items))
 	activeUpdated := ""
@@ -3558,7 +3577,7 @@ func (s *Server) updateAndActivateSubscription(raw string) error {
 	} else {
 		_ = s.writeActiveSubscriptionURL("")
 	}
-	log.Printf("mihomo subscription activation failed: %s", tailLines(string(out), 30))
+	log.Printf("mihomo subscription activation failed: %s", sanitizeLogSecrets(tailLines(string(out), 30)))
 	return errors.New("订阅下载或校验失败，当前配置未改变")
 }
 
@@ -3820,3 +3839,305 @@ func tailLines(s string, n int) string {
 }
 
 var _ = runtime.GOOS
+
+func (s *Server) mihomoRequestWithTimeout(ctx context.Context, method, path string, payload any, target any, timeout time.Duration, maxBytes int64) error {
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, s.mihomoBaseURL()+"/"+strings.TrimPrefix(path, "/"), body)
+	if err != nil {
+		return err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("mihomo returned HTTP %d", resp.StatusCode)
+	}
+	if target != nil {
+		if maxBytes <= 0 {
+			maxBytes = maxAccountingResponseBytes
+		}
+		return json.NewDecoder(io.LimitReader(resp.Body, maxBytes)).Decode(target)
+	}
+	return nil
+}
+
+func (s *Server) readClientHostnames() map[string]string {
+	mapping := make(map[string]string)
+	mapping["127.0.0.1"] = "路由器本机 / CPA"
+	mapping["198.18.0.1"] = "Mihomo TUN 本机"
+	mapping[""] = "路由器本机 / 来源未知"
+
+	now := time.Now().Unix()
+	leasePaths := []string{
+		filepath.Join(s.data, "dnsmasq", "dnsmasq.leases"),
+		"/data/misc/dhcp/dnsmasq.leases",
+	}
+	for _, p := range leasePaths {
+		text := readText(p)
+		if text == "" {
+			continue
+		}
+		for _, line := range strings.Split(text, "\n") {
+			f := strings.Fields(line)
+			if len(f) >= 4 {
+				exp, _ := strconv.ParseInt(f[0], 10, 64)
+				if exp > 0 && exp < now {
+					continue
+				}
+				ip := strings.TrimSpace(f[2])
+				if ip == "" || net.ParseIP(ip) == nil {
+					continue
+				}
+				hostname := strings.TrimSpace(f[3])
+				if hostname == "OnePlus-7Pro" || hostname == "*" || hostname == "未知设备" {
+					continue
+				}
+				if hostname != "" {
+					mapping[ip] = hostname
+				}
+			}
+		}
+	}
+
+	for _, lease := range s.readStaticLeases() {
+		ip := strings.TrimSpace(lease.IP)
+		hostname := strings.TrimSpace(lease.Hostname)
+		if ip != "" && hostname != "" && hostname != "未知设备" {
+			mapping[ip] = hostname
+		}
+	}
+
+	return mapping
+}
+
+func (s *Server) resolveClientHostname(ip string) string {
+	trimmed := strings.TrimSpace(ip)
+	if trimmed == "127.0.0.1" {
+		return "路由器本机 / CPA"
+	}
+	if trimmed == "198.18.0.1" {
+		return "Mihomo TUN 本机"
+	}
+	if trimmed == "" {
+		return "路由器本机 / 来源未知"
+	}
+	mapping := s.readClientHostnames()
+	if name, ok := mapping[trimmed]; ok && name != "" && name != "未知设备" {
+		return name
+	}
+	return trimmed
+}
+
+func (s *Server) initTrafficAccounting() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.trafficAccounting != nil {
+		return
+	}
+
+	mgr := NewTrafficAccountingManager(TrafficAccountingConfig{
+		DataDir:      filepath.Join(s.data, "mihomo"),
+		PollInterval: defaultAccountingPollInterval,
+		SaveInterval: defaultAccountingSaveInterval,
+		FetchConnections: func(ctx context.Context) (*mihomoRawConnectionsResponse, error) {
+			var resp mihomoRawConnectionsResponse
+			err := s.mihomoRequestWithTimeout(ctx, "GET", "/connections", nil, &resp, maxAccountingPollTimeout, maxAccountingResponseBytes)
+			return &resp, err
+		},
+		GetActiveSubscription: func() (string, string) {
+			s.subscriptionMu.Lock()
+			defer s.subscriptionMu.Unlock()
+			store, err := s.loadSubscriptionStore()
+			if err != nil || store.ActiveID == "" {
+				return "", ""
+			}
+			for _, it := range store.Items {
+				if it.ID == store.ActiveID {
+					return it.ID, it.Name
+				}
+			}
+			return store.ActiveID, ""
+		},
+		GetValidSubscriptionIDs: func() []string {
+			s.subscriptionMu.Lock()
+			defer s.subscriptionMu.Unlock()
+			store, err := s.loadSubscriptionStore()
+			if err != nil {
+				return nil
+			}
+			ids := make([]string, 0, len(store.Items))
+			for _, it := range store.Items {
+				ids = append(ids, it.ID)
+			}
+			return ids
+		},
+		GetClientHostnames: func() map[string]string {
+			return s.readClientHostnames()
+		},
+		GetKnownNodes: func() []string {
+			var data struct {
+				Proxies map[string]struct {
+					All []string `json:"all"`
+				} `json:"proxies"`
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+			defer cancel()
+			err := s.mihomoRequestWithTimeout(ctx, "GET", "/proxies", nil, &data, 800*time.Millisecond, maxAccountingResponseBytes)
+			if err != nil || data.Proxies == nil {
+				return nil
+			}
+			benchGroup, ok := data.Proxies[speedTestBenchmarkGroup]
+			if !ok {
+				return nil
+			}
+			return benchGroup.All
+		},
+	})
+
+	s.trafficAccounting = mgr
+	ctx, cancel := context.WithCancel(context.Background())
+	s.accountingCancel = cancel
+	go mgr.Start(ctx)
+}
+
+func (s *Server) mihomoTrafficAccounting(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET") {
+		return
+	}
+	if s.trafficAccounting == nil {
+		jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": "流量审计模块未初始化"})
+		return
+	}
+	jsonOut(w, http.StatusOK, s.trafficAccounting.GetSnapshot())
+}
+
+func (s *Server) mihomoTrafficAccountingReset(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	if s.trafficAccounting == nil {
+		jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": "流量审计模块未初始化"})
+		return
+	}
+	const maxResetBodyBytes = 4096
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxResetBodyBytes+1))
+	if err != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体读取失败"})
+		return
+	}
+	if int64(len(bodyBytes)) > maxResetBodyBytes {
+		jsonOut(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "请求体大小超过限制 (最大 4096 字节)"})
+		return
+	}
+	if len(strings.TrimSpace(string(bodyBytes))) == 0 {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "重置请求体不能为空，必须确认 confirm=true"})
+		return
+	}
+	var body struct {
+		Confirm *bool `json:"confirm"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(bodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误: " + err.Error()})
+		return
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体包含多余的内容"})
+		return
+	}
+	if body.Confirm == nil || !*body.Confirm {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "重置操作必须明确确认 confirm=true"})
+		return
+	}
+	startedAt, err := s.trafficAccounting.Reset()
+	if err != nil {
+		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "startedAt": startedAt})
+}
+
+func (s *Server) mihomoTrafficAccountingSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.mihomoTrafficAccountingGetSettings(w, r)
+	case http.MethodPut:
+		s.mihomoTrafficAccountingPutSettings(w, r)
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		jsonOut(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (s *Server) mihomoTrafficAccountingGetSettings(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET") {
+		return
+	}
+	if s.trafficAccounting == nil {
+		jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": "流量审计模块未初始化"})
+		return
+	}
+	jsonOut(w, http.StatusOK, s.trafficAccounting.GetSettings())
+}
+
+func (s *Server) mihomoTrafficAccountingPutSettings(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "PUT") {
+		return
+	}
+	if s.trafficAccounting == nil {
+		jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": "流量审计模块未初始化"})
+		return
+	}
+	const maxSettingsBodyBytes = 65536
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxSettingsBodyBytes+1))
+	if err != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体读取失败"})
+		return
+	}
+	if int64(len(bodyBytes)) > maxSettingsBodyBytes {
+		jsonOut(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "请求体大小超过限制 (最大 65536 字节)"})
+		return
+	}
+	if len(strings.TrimSpace(string(bodyBytes))) == 0 {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体不能为空"})
+		return
+	}
+	var body UpdateTrafficSettingsRequest
+	dec := json.NewDecoder(bytes.NewReader(bodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误: " + err.Error()})
+		return
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体包含多余的内容"})
+		return
+	}
+	updated, err := s.trafficAccounting.UpdateSettings(body)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "保存配置失败") {
+			status = http.StatusInternalServerError
+		}
+		jsonOut(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonOut(w, http.StatusOK, updated)
+}

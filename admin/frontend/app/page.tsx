@@ -319,6 +319,101 @@ type SubscriptionInfo = {
   lastUpdated: string;
   autoUpdateHours: number;
 };
+type TrafficStats = {
+  uploadBytes: number;
+  downloadBytes: number;
+  rawBytes: number;
+  weightedUploadBytes: number;
+  weightedDownloadBytes: number;
+  weightedBytes: number;
+  unpricedRawBytes: number;
+  connectionCount: number;
+  lastSeenAt?: string;
+};
+type ProxyRate = {
+  uploadBps: number;
+  downloadBps: number;
+};
+type DeviceAccounting = TrafficStats & {
+  ip: string;
+  hostname: string;
+};
+type SubscriptionAccounting = TrafficStats & {
+  id: string;
+  name: string;
+};
+type NodeAccounting = TrafficStats & {
+  node: string;
+  subscriptionId?: string;
+  subscriptionName?: string;
+  multiplierMilli?: number;
+  pricingStatus: "node_override" | "subscription_default" | "unpriced" | string;
+};
+type GroupAccounting = TrafficStats & {
+  group: string;
+};
+type TargetAccounting = TrafficStats & {
+  target: string;
+};
+type DeviceRouteAccounting = TrafficStats & {
+  ip: string;
+  hostname: string;
+  routeKind: "direct" | "reject" | "proxy" | string;
+  subscriptionId?: string;
+  subscriptionName?: string;
+  node?: string;
+  group?: string;
+};
+type TimeAccounting = TrafficStats & {
+  time: string;
+};
+type TrafficAccountingSnapshot = {
+  online: boolean;
+  startedAt: string;
+  updatedAt: string;
+  lastSuccessfulPollAt: string;
+  pollSuccessCount: number;
+  pollFailCount: number;
+  consecutiveFailures: number;
+  rejectedSnapshots: number;
+  warning?: string;
+  persistenceError?: string;
+  currentProxyRate: ProxyRate;
+  totalObserved: TrafficStats;
+  direct: TrafficStats;
+  proxy: TrafficStats;
+  reject: TrafficStats;
+  unassignedProxy: TrafficStats;
+  speedtest: TrafficStats;
+  devices: DeviceAccounting[];
+  subscriptions: SubscriptionAccounting[];
+  nodes: NodeAccounting[];
+  groups: GroupAccounting[];
+  targets: TargetAccounting[];
+  deviceRoutes: DeviceRouteAccounting[];
+  hourly: TimeAccounting[];
+  daily: TimeAccounting[];
+};
+type SubscriptionAccountingConfig = {
+  defaultMultiplierMilli: number | null;
+  nodeMultipliersMilli: Record<string, number>;
+  knownNodes: string[];
+};
+type TrafficAccountingSettings = {
+  version: number;
+  enabled: boolean;
+  subscriptions: Record<string, SubscriptionAccountingConfig>;
+};
+type UpdateTrafficSettingsRequest = {
+  enabled?: boolean;
+  subscriptions?: Record<
+    string,
+    {
+      defaultMultiplierMilli: number | null;
+      nodeMultipliersMilli: Record<string, number>;
+    }
+  >;
+};
 type HistoryPoint = {
   at: number;
   cpu: number;
@@ -2671,6 +2766,1338 @@ function MihomoManagerLegacy({
   );
 }
 
+const formatBps = (bps: number) => {
+  if (!bps || bps <= 0) return "0 bps";
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(2)} Gbps`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(2)} Mbps`;
+  if (bps >= 1e3) return `${(bps / 1e3).toFixed(1)} Kbps`;
+  return `${Math.round(bps)} bps`;
+};
+
+const formatMultiplier = (milli?: number | null) => {
+  if (milli == null) return "—";
+  return `${(milli / 1000).toFixed(2)}x`;
+};
+
+const formatAccountingTime = (iso?: string) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString("zh-CN", { hour12: false });
+};
+
+type TrafficTabId =
+  | "deviceRoutes"
+  | "subscriptions"
+  | "nodes"
+  | "groups"
+  | "targets"
+  | "time";
+
+function TrafficAccountingSection({
+  subscriptions,
+  setNotice,
+}: {
+  subscriptions: SubscriptionList;
+  setNotice: (value: string) => void;
+}) {
+  const [snapshot, setSnapshot] = useState<TrafficAccountingSnapshot | null>(null);
+  const [settings, setSettings] = useState<TrafficAccountingSettings | null>(null);
+  const [activeTab, setActiveTab] = useState<TrafficTabId>("deviceRoutes");
+  const [routeFilter, setRouteFilter] = useState<"all" | "proxy" | "direct" | "reject">("all");
+  const [timeMode, setTimeMode] = useState<"hourly" | "daily">("hourly");
+  const [sortField, setSortField] = useState<string>("rawBytes");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [editEnabled, setEditEnabled] = useState(true);
+  const [editSubs, setEditSubs] = useState<
+    Record<
+      string,
+      {
+        defaultMultiplier: string;
+        nodeMultipliers: Record<string, string>;
+        knownNodes: string[];
+        newNodeName: string;
+        newNodeMultiplier: string;
+      }
+    >
+  >({});
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  // Independent 5s non-blocking polling
+  useEffect(() => {
+    let timer: number | undefined;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const [snapRes, settingsRes] = await Promise.all([
+          fetch("/api/mihomo/traffic-accounting", { cache: "no-store" }),
+          fetch("/api/mihomo/traffic-accounting/settings", { cache: "no-store" }),
+        ]);
+        if (cancelled) return;
+        if (snapRes.ok) {
+          const snap = (await snapRes.json()) as TrafficAccountingSnapshot;
+          if (!cancelled) setSnapshot(snap);
+        }
+        if (settingsRes.ok) {
+          const cfg = (await settingsRes.json()) as TrafficAccountingSettings;
+          if (!cancelled) setSettings(cfg);
+        }
+      } catch {
+        // Non-blocking
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(poll, 5000);
+        }
+      }
+    };
+
+    poll();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  const openSettings = () => {
+    if (!settings) return;
+    setEditEnabled(settings.enabled);
+    const map: typeof editSubs = {};
+    for (const item of subscriptions.items) {
+      const cfg = settings?.subscriptions ? settings.subscriptions[item.id] : undefined;
+      const defStr =
+        cfg?.defaultMultiplierMilli != null
+          ? (cfg.defaultMultiplierMilli / 1000).toString()
+          : "";
+      const nodeMap: Record<string, string> = {};
+      if (cfg?.nodeMultipliersMilli) {
+        for (const [node, milli] of Object.entries(cfg.nodeMultipliersMilli)) {
+          nodeMap[node] = (milli / 1000).toString();
+        }
+      }
+      const knownList = cfg?.knownNodes ? [...cfg.knownNodes] : [];
+      for (const node of Object.keys(nodeMap)) {
+        if (knownList.indexOf(node) === -1) knownList.push(node);
+      }
+      knownList.sort();
+
+      map[item.id] = {
+        defaultMultiplier: defStr,
+        nodeMultipliers: nodeMap,
+        knownNodes: knownList,
+        newNodeName: "",
+        newNodeMultiplier: "",
+      };
+    }
+    setEditSubs(map);
+    setShowSettingsModal(true);
+  };
+
+  const handleSaveSettings = async () => {
+    const payload: UpdateTrafficSettingsRequest = {
+      enabled: editEnabled,
+      subscriptions: {},
+    };
+
+    for (const item of subscriptions.items) {
+      const sub = editSubs[item.id];
+      if (!sub) continue;
+
+      let defMilli: number | null = null;
+      const defStr = sub.defaultMultiplier.trim();
+      if (defStr !== "") {
+        const num = parseFloat(defStr);
+        if (isNaN(num) || num < 0.1 || num > 100) {
+          setNotice(`订阅 “${item.name}” 的默认倍率无效（需在 0.1 ~ 100 之间）`);
+          return;
+        }
+        defMilli = Math.round(num * 1000);
+      }
+
+      const nodeMultsMilli: Record<string, number> = {};
+      for (const [nodeName, val] of Object.entries(sub.nodeMultipliers)) {
+        const valTrimmed = val.trim();
+        if (valTrimmed === "") continue;
+        const num = parseFloat(valTrimmed);
+        if (isNaN(num) || num < 0.1 || num > 100) {
+          setNotice(`节点 “${nodeName}” 的倍率无效（需在 0.1 ~ 100 之间）`);
+          return;
+        }
+        nodeMultsMilli[nodeName] = Math.round(num * 1000);
+      }
+
+      payload.subscriptions![item.id] = {
+        defaultMultiplierMilli: defMilli,
+        nodeMultipliersMilli: nodeMultsMilli,
+      };
+    }
+
+    setSavingSettings(true);
+    try {
+      const res = await fetch("/api/mihomo/traffic-accounting/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = (await res.json()) as TrafficAccountingSettings & { error?: string };
+      if (!res.ok) {
+        throw new Error(body.error || "保存倍率配置失败");
+      }
+      setSettings(body);
+      setShowSettingsModal(false);
+      setNotice("流量审计倍率配置已保存（提示：仅影响未来流量，不追溯历史账本）");
+      const snapRes = await fetch("/api/mihomo/traffic-accounting", { cache: "no-store" });
+      if (snapRes.ok) {
+        setSnapshot((await snapRes.json()) as TrafficAccountingSnapshot);
+      }
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "保存倍率配置失败");
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (
+      !window.confirm(
+        "确定清空本地流量审计账本吗？\n\n此操作将重置所有终端、订阅、节点、代理组与目标的本地累计统计，以当前连接为基准重新计算，且不可撤销。"
+      )
+    ) {
+      return;
+    }
+    if (
+      !window.confirm(
+        "请再次确认：\n\n本操作仅清空手机路由器本地账本，无法修改服务商侧数据。请确认服务商侧流量也已重置或处于新计费周期。确定立即清空？"
+      )
+    ) {
+      return;
+    }
+
+    setResetting(true);
+    try {
+      const res = await fetch("/api/mihomo/traffic-accounting/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const body = (await res.json()) as { ok?: boolean; error?: string; startedAt?: string };
+      if (!res.ok) {
+        throw new Error(body.error || "清空账本失败");
+      }
+      setNotice(
+        `本地流量审计账本已清空，新统计起点：${
+          body.startedAt ? formatAccountingTime(body.startedAt) : "当前时间"
+        }`
+      );
+      const snapRes = await fetch("/api/mihomo/traffic-accounting", { cache: "no-store" });
+      if (snapRes.ok) {
+        setSnapshot((await snapRes.json()) as TrafficAccountingSnapshot);
+      }
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "清空账本失败");
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const handleHeaderSort = (field: string) => {
+    if (sortField === field) {
+      setSortOrder(sortOrder === "desc" ? "asc" : "desc");
+    } else {
+      setSortField(field);
+      setSortOrder("desc");
+    }
+  };
+
+  const sortItems = <T extends Record<string, unknown>>(list: T[] | undefined): T[] => {
+    if (!list || list.length === 0) return [];
+    return [...list].sort((a, b) => {
+      const valA = a[sortField];
+      const valB = b[sortField];
+      if (typeof valA === "string" && typeof valB === "string") {
+        const cmp = valA.localeCompare(valB);
+        return sortOrder === "asc" ? cmp : -cmp;
+      }
+      const numA = typeof valA === "number" ? valA : 0;
+      const numB = typeof valB === "number" ? valB : 0;
+      return sortOrder === "asc" ? numA - numB : numB - numA;
+    });
+  };
+
+  const sortIcon = (field: string) => {
+    if (sortField !== field) return null;
+    return sortOrder === "desc" ? " ▼" : " ▲";
+  };
+
+  const renderTabContent = () => {
+    if (!snapshot) {
+      return <p className="empty-copy">正在连接流量审计引擎…</p>;
+    }
+
+    switch (activeTab) {
+      case "deviceRoutes": {
+        let routes = snapshot.deviceRoutes || [];
+        if (routeFilter !== "all") {
+          routes = routes.filter((r) => r.routeKind === routeFilter);
+        }
+        const sorted = sortItems(routes);
+
+        return (
+          <div className="speedtest-table-wrap traffic-table-wrap">
+            <table className="speedtest-table traffic-table">
+              <thead>
+                <tr>
+                  <th onClick={() => handleHeaderSort("hostname")} className="sortable-th">
+                    终端 (IP / 主机名){sortIcon("hostname")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("routeKind")} className="sortable-th">
+                    路由类型与归属{sortIcon("routeKind")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("uploadBytes")} className="sortable-th num-col">
+                    上行{sortIcon("uploadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("downloadBytes")} className="sortable-th num-col">
+                    下行{sortIcon("downloadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("rawBytes")} className="sortable-th num-col">
+                    原始流量{sortIcon("rawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("weightedBytes")} className="sortable-th num-col">
+                    预计计费{sortIcon("weightedBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("unpricedRawBytes")} className="sortable-th num-col">
+                    未计价{sortIcon("unpricedRawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("connectionCount")} className="sortable-th num-col">
+                    连接数{sortIcon("connectionCount")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="empty-cell">当前筛选条件下暂无终端路由记录</td>
+                  </tr>
+                ) : (
+                  sorted.map((r, idx) => {
+                    const isUnpriced = r.unpricedRawBytes > 0;
+                    const isProxy = r.routeKind === "proxy";
+                    const isUnassigned = isProxy && !r.subscriptionId;
+
+                    return (
+                      <tr key={`${r.ip}-${r.routeKind}-${r.node || ""}-${r.group || ""}-${idx}`}>
+                        <td>
+                          <strong className="mono">{r.hostname || r.ip}</strong>
+                          {r.hostname && <small className="mono sub-ip">({r.ip})</small>}
+                        </td>
+                        <td>
+                          {r.routeKind === "direct" && (
+                            <span className="badge-tag route-direct">DIRECT 直连</span>
+                          )}
+                          {r.routeKind === "reject" && (
+                            <span className="badge-tag route-reject">REJECT 拒绝</span>
+                          )}
+                          {isProxy && (
+                            <div className="route-desc-cell">
+                              {isUnassigned ? (
+                                <span className="badge-tag route-unassigned">⚠️ 未归属订阅</span>
+                              ) : (
+                                <span className="badge-tag route-proxy">代理</span>
+                              )}
+                              <strong className="route-sub-text">
+                                {r.subscriptionName || r.subscriptionId || "未归属"}
+                              </strong>
+                              <span className="route-node-text">
+                                {r.node || "—"} <small>({r.group || "—"})</small>
+                              </span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="num-col">{bytes(r.uploadBytes || 0)}</td>
+                        <td className="num-col">{bytes(r.downloadBytes || 0)}</td>
+                        <td className="num-col">
+                          <strong>{bytes(r.rawBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          {isProxy ? (
+                            <strong className="text-weighted">{bytes(r.weightedBytes || 0)}</strong>
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </td>
+                        <td className="num-col">
+                          {isUnpriced ? (
+                            <span className="unpriced-badge">⚠️ {bytes(r.unpricedRawBytes)}</span>
+                          ) : (
+                            <span className="text-muted">0</span>
+                          )}
+                        </td>
+                        <td className="num-col">{r.connectionCount}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      case "subscriptions": {
+        const sorted = sortItems(snapshot.subscriptions || []);
+        const hasUnassigned = snapshot.unassignedProxy && snapshot.unassignedProxy.rawBytes > 0;
+
+        return (
+          <div className="speedtest-table-wrap traffic-table-wrap">
+            <table className="speedtest-table traffic-table">
+              <thead>
+                <tr>
+                  <th onClick={() => handleHeaderSort("name")} className="sortable-th">
+                    订阅名称{sortIcon("name")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("uploadBytes")} className="sortable-th num-col">
+                    上行{sortIcon("uploadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("downloadBytes")} className="sortable-th num-col">
+                    下行{sortIcon("downloadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("rawBytes")} className="sortable-th num-col">
+                    原始流量{sortIcon("rawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("weightedBytes")} className="sortable-th num-col">
+                    预计计费{sortIcon("weightedBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("unpricedRawBytes")} className="sortable-th num-col">
+                    未计价{sortIcon("unpricedRawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("connectionCount")} className="sortable-th num-col">
+                    连接数{sortIcon("connectionCount")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.length === 0 && !hasUnassigned ? (
+                  <tr>
+                    <td colSpan={7} className="empty-cell">暂无订阅流量审计记录</td>
+                  </tr>
+                ) : (
+                  <>
+                    {sorted.map((item) => {
+                      const isUnpriced = item.unpricedRawBytes > 0;
+                      return (
+                        <tr key={item.id}>
+                          <td>
+                            <strong>{item.name || item.id}</strong>
+                            {item.name && item.id !== item.name && (
+                              <small className="mono sub-ip">({item.id})</small>
+                            )}
+                          </td>
+                          <td className="num-col">{bytes(item.uploadBytes || 0)}</td>
+                          <td className="num-col">{bytes(item.downloadBytes || 0)}</td>
+                          <td className="num-col">
+                            <strong>{bytes(item.rawBytes || 0)}</strong>
+                          </td>
+                          <td className="num-col">
+                            <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
+                          </td>
+                          <td className="num-col">
+                            {isUnpriced ? (
+                              <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes)}</span>
+                            ) : (
+                              <span className="text-muted">0</span>
+                            )}
+                          </td>
+                          <td className="num-col">{item.connectionCount}</td>
+                        </tr>
+                      );
+                    })}
+                    {hasUnassigned && (
+                      <tr className="unassigned-row">
+                        <td>
+                          <span className="badge-tag route-unassigned">⚠️ 未归属订阅代理</span>
+                          <small className="sub-ip">未匹配任何订阅配置的孤儿连接</small>
+                        </td>
+                        <td className="num-col">{bytes(snapshot.unassignedProxy.uploadBytes || 0)}</td>
+                        <td className="num-col">{bytes(snapshot.unassignedProxy.downloadBytes || 0)}</td>
+                        <td className="num-col">
+                          <strong>{bytes(snapshot.unassignedProxy.rawBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          <span className="text-muted">—</span>
+                        </td>
+                        <td className="num-col">
+                          <span className="unpriced-badge">⚠️ {bytes(snapshot.unassignedProxy.rawBytes || 0)}</span>
+                        </td>
+                        <td className="num-col">{snapshot.unassignedProxy.connectionCount}</td>
+                      </tr>
+                    )}
+                  </>
+                )}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      case "nodes": {
+        const sorted = sortItems(snapshot.nodes || []);
+
+        return (
+          <div className="speedtest-table-wrap traffic-table-wrap">
+            <table className="speedtest-table traffic-table">
+              <thead>
+                <tr>
+                  <th onClick={() => handleHeaderSort("node")} className="sortable-th">
+                    节点名称{sortIcon("node")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("subscriptionName")} className="sortable-th">
+                    所属订阅{sortIcon("subscriptionName")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("pricingStatus")} className="sortable-th">
+                    当前倍率和计价状态{sortIcon("pricingStatus")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("uploadBytes")} className="sortable-th num-col">
+                    上行{sortIcon("uploadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("downloadBytes")} className="sortable-th num-col">
+                    下行{sortIcon("downloadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("rawBytes")} className="sortable-th num-col">
+                    原始流量{sortIcon("rawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("weightedBytes")} className="sortable-th num-col">
+                    预计计费{sortIcon("weightedBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("unpricedRawBytes")} className="sortable-th num-col">
+                    未计价{sortIcon("unpricedRawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("connectionCount")} className="sortable-th num-col">
+                    连接数{sortIcon("connectionCount")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="empty-cell">暂无节点流量审计记录</td>
+                  </tr>
+                ) : (
+                  sorted.map((item, idx) => {
+                    const isUnpriced =
+                      item.unpricedRawBytes > 0 || item.pricingStatus === "unpriced";
+                    return (
+                      <tr key={`${item.node}-${item.subscriptionId || ""}-${idx}`}>
+                        <td>
+                          <strong>{item.node}</strong>
+                        </td>
+                        <td>
+                          {item.subscriptionName || item.subscriptionId || (
+                            <span className="unassigned-badge">未归属</span>
+                          )}
+                        </td>
+                        <td>
+                          {item.pricingStatus === "node_override" && (
+                            <span className="badge-tag pricing-override">
+                              覆盖 {formatMultiplier(item.multiplierMilli)}
+                            </span>
+                          )}
+                          {item.pricingStatus === "subscription_default" && (
+                            <span className="badge-tag pricing-default">
+                              默认 {formatMultiplier(item.multiplierMilli)}
+                            </span>
+                          )}
+                          {item.pricingStatus === "unpriced" && (
+                            <span className="badge-tag pricing-unpriced">⚠️ 未计价</span>
+                          )}
+                        </td>
+                        <td className="num-col">{bytes(item.uploadBytes || 0)}</td>
+                        <td className="num-col">{bytes(item.downloadBytes || 0)}</td>
+                        <td className="num-col">
+                          <strong>{bytes(item.rawBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          {isUnpriced ? (
+                            <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes || 0)}</span>
+                          ) : (
+                            <span className="text-muted">0</span>
+                          )}
+                        </td>
+                        <td className="num-col">{item.connectionCount}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      case "groups": {
+        const sorted = sortItems(snapshot.groups || []);
+
+        return (
+          <div className="speedtest-table-wrap traffic-table-wrap">
+            <table className="speedtest-table traffic-table">
+              <thead>
+                <tr>
+                  <th onClick={() => handleHeaderSort("group")} className="sortable-th">
+                    代理组{sortIcon("group")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("uploadBytes")} className="sortable-th num-col">
+                    上行{sortIcon("uploadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("downloadBytes")} className="sortable-th num-col">
+                    下行{sortIcon("downloadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("rawBytes")} className="sortable-th num-col">
+                    原始流量{sortIcon("rawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("weightedBytes")} className="sortable-th num-col">
+                    预计计费{sortIcon("weightedBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("unpricedRawBytes")} className="sortable-th num-col">
+                    未计价{sortIcon("unpricedRawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("connectionCount")} className="sortable-th num-col">
+                    连接数{sortIcon("connectionCount")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="empty-cell">暂无代理组流量审计记录</td>
+                  </tr>
+                ) : (
+                  sorted.map((item) => {
+                    const isUnpriced = item.unpricedRawBytes > 0;
+                    return (
+                      <tr key={item.group}>
+                        <td>
+                          <strong>{item.group}</strong>
+                        </td>
+                        <td className="num-col">{bytes(item.uploadBytes || 0)}</td>
+                        <td className="num-col">{bytes(item.downloadBytes || 0)}</td>
+                        <td className="num-col">
+                          <strong>{bytes(item.rawBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          {isUnpriced ? (
+                            <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes)}</span>
+                          ) : (
+                            <span className="text-muted">0</span>
+                          )}
+                        </td>
+                        <td className="num-col">{item.connectionCount}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      case "targets": {
+        const sorted = sortItems(snapshot.targets || []);
+
+        return (
+          <div className="speedtest-table-wrap traffic-table-wrap">
+            <table className="speedtest-table traffic-table">
+              <thead>
+                <tr>
+                  <th onClick={() => handleHeaderSort("target")} className="sortable-th">
+                    目标地址 / 域名{sortIcon("target")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("uploadBytes")} className="sortable-th num-col">
+                    上行{sortIcon("uploadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("downloadBytes")} className="sortable-th num-col">
+                    下行{sortIcon("downloadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("rawBytes")} className="sortable-th num-col">
+                    原始流量{sortIcon("rawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("weightedBytes")} className="sortable-th num-col">
+                    预计计费{sortIcon("weightedBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("unpricedRawBytes")} className="sortable-th num-col">
+                    未计价{sortIcon("unpricedRawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("connectionCount")} className="sortable-th num-col">
+                    连接数{sortIcon("connectionCount")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="empty-cell">暂无目标流量审计记录</td>
+                  </tr>
+                ) : (
+                  sorted.map((item) => {
+                    const isUnpriced = item.unpricedRawBytes > 0;
+                    return (
+                      <tr key={item.target}>
+                        <td>
+                          <strong className="mono">{item.target}</strong>
+                        </td>
+                        <td className="num-col">{bytes(item.uploadBytes || 0)}</td>
+                        <td className="num-col">{bytes(item.downloadBytes || 0)}</td>
+                        <td className="num-col">
+                          <strong>{bytes(item.rawBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          {isUnpriced ? (
+                            <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes)}</span>
+                          ) : (
+                            <span className="text-muted">0</span>
+                          )}
+                        </td>
+                        <td className="num-col">{item.connectionCount}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      case "time": {
+        const list = timeMode === "hourly" ? snapshot.hourly || [] : snapshot.daily || [];
+        const sorted = sortItems(list);
+
+        return (
+          <div className="speedtest-table-wrap traffic-table-wrap">
+            <table className="speedtest-table traffic-table">
+              <thead>
+                <tr>
+                  <th onClick={() => handleHeaderSort("time")} className="sortable-th">
+                    时间点 ({timeMode === "hourly" ? "小时" : "日期"}){sortIcon("time")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("uploadBytes")} className="sortable-th num-col">
+                    上行{sortIcon("uploadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("downloadBytes")} className="sortable-th num-col">
+                    下行{sortIcon("downloadBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("rawBytes")} className="sortable-th num-col">
+                    原始流量{sortIcon("rawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("weightedBytes")} className="sortable-th num-col">
+                    预计计费{sortIcon("weightedBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("unpricedRawBytes")} className="sortable-th num-col">
+                    未计价{sortIcon("unpricedRawBytes")}
+                  </th>
+                  <th onClick={() => handleHeaderSort("connectionCount")} className="sortable-th num-col">
+                    连接数{sortIcon("connectionCount")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="empty-cell">暂无时间维度审计记录</td>
+                  </tr>
+                ) : (
+                  sorted.map((item) => {
+                    const isUnpriced = item.unpricedRawBytes > 0;
+                    return (
+                      <tr key={item.time}>
+                        <td>
+                          <strong className="mono">{item.time}</strong>
+                        </td>
+                        <td className="num-col">{bytes(item.uploadBytes || 0)}</td>
+                        <td className="num-col">{bytes(item.downloadBytes || 0)}</td>
+                        <td className="num-col">
+                          <strong>{bytes(item.rawBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
+                        </td>
+                        <td className="num-col">
+                          {isUnpriced ? (
+                            <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes)}</span>
+                          ) : (
+                            <span className="text-muted">0</span>
+                          )}
+                        </td>
+                        <td className="num-col">{item.connectionCount}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+    }
+  };
+
+  return (
+    <article className="panel mihomo-section traffic-accounting-panel">
+      <div className="section-heading small">
+        <div>
+          <p className="eyebrow">流量审计与计费核算</p>
+          <h2>通用流量审计</h2>
+        </div>
+        <div className="traffic-header-actions">
+          {snapshot && (
+            <span
+              className={`traffic-health-badge ${
+                snapshot.online ? "online" : "offline"
+              }`}
+            >
+              {snapshot.online ? "● 采集正常" : "○ 采集异常/离线"}
+            </span>
+          )}
+          <button
+            type="button"
+            className="section-action primary"
+            disabled={!settings}
+            onClick={openSettings}
+          >
+            {settings ? "⚙️ 倍率设置" : "⚙️ 倍率加载中…"}
+          </button>
+          <button
+            type="button"
+            className="section-action danger"
+            disabled={resetting}
+            onClick={handleReset}
+          >
+            {resetting ? "重置中…" : "🗑️ 清空账本"}
+          </button>
+        </div>
+      </div>
+
+      <p className="traffic-accounting-desc">
+        按秒级采集连接增量并归属至终端与代理节点，持续估算全屋上网流量与机场计费倍率。本地统计基于 Mihomo 逻辑载荷，短连接、协议封装、TCP 重传及服务商计量口径可能产生合理误差，结果仅供对账参考。
+      </p>
+
+      {/* Persistence and health alerts */}
+      {snapshot?.persistenceError && (
+        <div className="speedtest-notice error" style={{ marginBottom: "10px" }}>
+          <span>⚠️ 持久化错误：{snapshot.persistenceError}</span>
+        </div>
+      )}
+      {(() => {
+        if (!snapshot?.warning) return null;
+        if (snapshot?.persistenceError) {
+          const pErr = snapshot.persistenceError.trim();
+          if (snapshot.warning.trim() === pErr) return null;
+          const remaining = snapshot.warning
+            .split(";")
+            .map((s) => s.trim())
+            .filter((s) => s && !pErr.includes(s) && !s.includes("持久化失败"))
+            .join("; ");
+          if (!remaining) return null;
+          return (
+            <div className="speedtest-notice warning" style={{ marginBottom: "10px" }}>
+              <span>⚠️ 采集告警：{remaining}</span>
+            </div>
+          );
+        }
+        return (
+          <div className="speedtest-notice warning" style={{ marginBottom: "10px" }}>
+            <span>⚠️ 采集告警：{snapshot.warning}</span>
+          </div>
+        );
+      })()}
+      {settings && !settings.enabled && (
+        <div className="speedtest-notice warning" style={{ marginBottom: "10px" }}>
+          <span>
+            ⚠️ 流量审计采集已暂停：当前连接不会累积至账本中。点击右上角【倍率设置】可重新启用。
+          </span>
+        </div>
+      )}
+      {snapshot?.proxy && snapshot.proxy.unpricedRawBytes > 0 && (
+        <div className="speedtest-notice warning" style={{ marginBottom: "10px" }}>
+          <span>
+            ⚠️ 存在未计价代理流量：累计 {bytes(snapshot.proxy.unpricedRawBytes)}。因节点尚未配置计费倍率，预计计费中不含该部分流量，请前往【倍率设置】补充倍率。
+          </span>
+        </div>
+      )}
+      {snapshot?.unassignedProxy && snapshot.unassignedProxy.rawBytes > 0 && (
+        <div className="speedtest-notice warning" style={{ marginBottom: "10px" }}>
+          <span>
+            ⚠️ 检测到未归属订阅的代理流量：累计 {bytes(snapshot.unassignedProxy.rawBytes)}，连接未匹配任何活动订阅，已隔离未计入机场折算。
+          </span>
+        </div>
+      )}
+
+      {/* KPI Overview Grid */}
+      <div className="traffic-overview-grid">
+        <div className="traffic-card">
+          <span className="traffic-card-label">统计起点</span>
+          <strong className="traffic-card-value mono">
+            {formatAccountingTime(snapshot?.startedAt)}
+          </strong>
+          <small className="traffic-card-sub">
+            更新于 {snapshot?.updatedAt ? formatAccountingTime(snapshot.updatedAt) : "—"}
+          </small>
+        </div>
+
+        <div className="traffic-card">
+          <span className="traffic-card-label">观察流量</span>
+          <strong className="traffic-card-value">
+            {bytes(snapshot?.totalObserved?.rawBytes || 0)}
+          </strong>
+          <small className="traffic-card-sub">
+            ↑ {bytes(snapshot?.totalObserved?.uploadBytes || 0)} · ↓{" "}
+            {bytes(snapshot?.totalObserved?.downloadBytes || 0)}
+          </small>
+        </div>
+
+        <div className="traffic-card highlight-proxy">
+          <span className="traffic-card-label">代理原始</span>
+          <strong className="traffic-card-value">
+            {bytes(snapshot?.proxy?.rawBytes || 0)}
+          </strong>
+          <small className="traffic-card-sub">
+            ↑ {bytes(snapshot?.proxy?.uploadBytes || 0)} · ↓{" "}
+            {bytes(snapshot?.proxy?.downloadBytes || 0)}
+          </small>
+        </div>
+
+        <div className="traffic-card highlight-weighted">
+          <span className="traffic-card-label">预计计费</span>
+          <strong className="traffic-card-value">
+            {bytes(snapshot?.proxy?.weightedBytes || 0)}
+          </strong>
+          <small className="traffic-card-sub">
+            折算比{" "}
+            {snapshot?.proxy?.rawBytes
+              ? (snapshot.proxy.weightedBytes / snapshot.proxy.rawBytes).toFixed(2) + "x"
+              : "—"}
+            {snapshot?.proxy && snapshot.proxy.unpricedRawBytes > 0 && (
+              <span style={{ display: "block", color: "#e59095", marginTop: "2px" }}>
+                ⚠️ 含 {bytes(snapshot.proxy.unpricedRawBytes)} 未计价（不含在预计计费内）
+              </span>
+            )}
+          </small>
+        </div>
+
+        <div className="traffic-card">
+          <span className="traffic-card-label">DIRECT 直连</span>
+          <strong className="traffic-card-value">
+            {bytes(snapshot?.direct?.rawBytes || 0)}
+          </strong>
+          <small className="traffic-card-sub">
+            连接数 {snapshot?.direct?.connectionCount || 0}
+          </small>
+        </div>
+
+        <div className="traffic-card">
+          <span className="traffic-card-label">家庭测速</span>
+          <strong className="traffic-card-value">
+            {bytes(snapshot?.speedtest?.rawBytes || 0)}
+          </strong>
+          <small className="traffic-card-sub">
+            计费折算 {bytes(snapshot?.speedtest?.weightedBytes || 0)}
+          </small>
+        </div>
+
+        <div className="traffic-card">
+          <span className="traffic-card-label">当前代理速率</span>
+          <strong className="traffic-card-value mono">
+            ↑ {rate((snapshot?.currentProxyRate?.uploadBps || 0) / 8)}
+          </strong>
+          <small className="traffic-card-sub mono">
+            ↓ {rate((snapshot?.currentProxyRate?.downloadBps || 0) / 8)} (
+            {formatBps(snapshot?.currentProxyRate?.downloadBps || 0)})
+          </small>
+        </div>
+
+        <div className="traffic-card">
+          <span className="traffic-card-label">采集健康</span>
+          <strong
+            className="traffic-card-value"
+            style={{
+              color:
+                snapshot?.consecutiveFailures && snapshot.consecutiveFailures > 0
+                  ? "#e59095"
+                  : "#79e5b8",
+            }}
+          >
+            {snapshot?.consecutiveFailures && snapshot.consecutiveFailures > 0
+              ? `连续失败 ${snapshot.consecutiveFailures} 次`
+              : snapshot?.online
+              ? "健康采集"
+              : "采集异常"}
+          </strong>
+          <small className="traffic-card-sub">
+            成功 {snapshot?.pollSuccessCount || 0} / 失败 {snapshot?.pollFailCount || 0}
+            {snapshot?.rejectedSnapshots ? ` · 拒绝 ${snapshot.rejectedSnapshots}` : ""}
+          </small>
+        </div>
+      </div>
+
+      {/* Toolbar: Navigation Tabs & Subfilters */}
+      <div className="traffic-toolbar">
+        <div className="traffic-nav-tabs">
+          <button
+            type="button"
+            className={activeTab === "deviceRoutes" ? "active" : ""}
+            onClick={() => setActiveTab("deviceRoutes")}
+          >
+            终端明细 ({snapshot?.deviceRoutes?.length || 0})
+          </button>
+          <button
+            type="button"
+            className={activeTab === "subscriptions" ? "active" : ""}
+            onClick={() => setActiveTab("subscriptions")}
+          >
+            订阅 ({snapshot?.subscriptions?.length || 0})
+          </button>
+          <button
+            type="button"
+            className={activeTab === "nodes" ? "active" : ""}
+            onClick={() => setActiveTab("nodes")}
+          >
+            节点 ({snapshot?.nodes?.length || 0})
+          </button>
+          <button
+            type="button"
+            className={activeTab === "groups" ? "active" : ""}
+            onClick={() => setActiveTab("groups")}
+          >
+            代理组 ({snapshot?.groups?.length || 0})
+          </button>
+          <button
+            type="button"
+            className={activeTab === "targets" ? "active" : ""}
+            onClick={() => setActiveTab("targets")}
+          >
+            目标 ({snapshot?.targets?.length || 0})
+          </button>
+          <button
+            type="button"
+            className={activeTab === "time" ? "active" : ""}
+            onClick={() => setActiveTab("time")}
+          >
+            时间走势
+          </button>
+        </div>
+
+        {activeTab === "deviceRoutes" && (
+          <div className="traffic-subfilter-group">
+            <span className="subfilter-label">分流筛选：</span>
+            {(["all", "proxy", "direct", "reject"] as const).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                className={`traffic-subfilter-btn ${routeFilter === kind ? "active" : ""}`}
+                onClick={() => setRouteFilter(kind)}
+              >
+                {kind === "all"
+                  ? "全部"
+                  : kind === "proxy"
+                  ? "仅代理"
+                  : kind === "direct"
+                  ? "仅直连"
+                  : "仅拒绝"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {activeTab === "time" && (
+          <div className="traffic-subfilter-group">
+            <span className="subfilter-label">统计尺度：</span>
+            <button
+              type="button"
+              className={`traffic-subfilter-btn ${timeMode === "hourly" ? "active" : ""}`}
+              onClick={() => setTimeMode("hourly")}
+            >
+              按小时 (最近24小时)
+            </button>
+            <button
+              type="button"
+              className={`traffic-subfilter-btn ${timeMode === "daily" ? "active" : ""}`}
+              onClick={() => setTimeMode("daily")}
+            >
+              按日期 (最近90天)
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Main Tab Content Table */}
+      {renderTabContent()}
+
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <div className="modal-backdrop" onClick={() => setShowSettingsModal(false)}>
+          <section
+            className="log-modal traffic-settings-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header>
+              <div>
+                <strong>流量审计倍率配置</strong>
+                <p className="modal-header-desc">
+                  配置订阅默认倍率及各节点覆盖倍率（范围 0.1 ~ 100）。
+                </p>
+              </div>
+              <div>
+                <button type="button" onClick={() => setShowSettingsModal(false)}>
+                  关闭
+                </button>
+              </div>
+            </header>
+
+            <div className="traffic-settings-content">
+              <div className="speedtest-notice warning" style={{ marginBottom: "14px" }}>
+                <span>⚠️ 提示：倍率修改仅对未来产生的新流量生效，不会追溯重算历史账本。</span>
+              </div>
+
+              <label className="lan-toggle whole-home-proxy-toggle" style={{ marginBottom: "16px" }}>
+                <input
+                  type="checkbox"
+                  checked={editEnabled}
+                  onChange={(e) => setEditEnabled(e.target.checked)}
+                />
+                <span>
+                  <strong>启用流量审计采集</strong>
+                  <small>后台非阻塞按秒采集连接增量并持久化记录，关闭后暂停统计。</small>
+                </span>
+              </label>
+
+              {subscriptions.items.length === 0 ? (
+                <div className="subscription-empty">
+                  <strong>暂无配置的订阅</strong>
+                  <span>请先在订阅管理中添加机场订阅。</span>
+                </div>
+              ) : (
+                subscriptions.items.map((item) => {
+                  const subEdit = editSubs[item.id] || {
+                    defaultMultiplier: "",
+                    nodeMultipliers: {},
+                    knownNodes: [],
+                    newNodeName: "",
+                    newNodeMultiplier: "",
+                  };
+
+                  return (
+                    <div key={item.id} className="traffic-sub-setting-card">
+                      <div className="sub-setting-header">
+                        <div>
+                          <strong>{item.name || item.id}</strong>
+                          <span className="mono sub-id-badge">ID: {item.id}</span>
+                        </div>
+                        <div className="sub-default-mult-wrap">
+                          <label>
+                            <span>订阅默认倍率：</span>
+                            <input
+                              type="number"
+                              step="0.05"
+                              min="0.1"
+                              max="100"
+                              placeholder="例如: 1.0 (留空为未计价)"
+                              value={subEdit.defaultMultiplier}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setEditSubs((old) => ({
+                                  ...old,
+                                  [item.id]: {
+                                    ...old[item.id],
+                                    defaultMultiplier: val,
+                                  },
+                                }));
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="sub-nodes-setting-section">
+                        <span className="sub-nodes-title">
+                          节点覆盖倍率 (留空则继承订阅默认)：
+                        </span>
+                        {subEdit.knownNodes.length === 0 &&
+                        Object.keys(subEdit.nodeMultipliers).length === 0 ? (
+                          <small className="text-muted" style={{ display: "block", margin: "6px 0" }}>
+                            尚未发现节点，可手动在下方添加覆盖
+                          </small>
+                        ) : (
+                          <div className="traffic-node-multipliers-grid">
+                            {subEdit.knownNodes.map((node) => {
+                              const multVal = subEdit.nodeMultipliers[node] || "";
+                              return (
+                                <div key={node} className="node-multiplier-item">
+                                  <span className="node-name-label" title={node}>
+                                    {node}
+                                  </span>
+                                  <div className="node-mult-input-wrap">
+                                    <input
+                                      type="number"
+                                      step="0.05"
+                                      min="0.1"
+                                      max="100"
+                                      placeholder="默认"
+                                      value={multVal}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setEditSubs((old) => ({
+                                          ...old,
+                                          [item.id]: {
+                                            ...old[item.id],
+                                            nodeMultipliers: {
+                                              ...old[item.id].nodeMultipliers,
+                                              [node]: val,
+                                            },
+                                          },
+                                        }));
+                                      }}
+                                    />
+                                    {multVal && (
+                                      <button
+                                        type="button"
+                                        className="btn-clear-mult"
+                                        title="清除覆盖倍率，恢复默认"
+                                        onClick={() => {
+                                          setEditSubs((old) => {
+                                            const nextMap = {
+                                              ...old[item.id].nodeMultipliers,
+                                            };
+                                            delete nextMap[node];
+                                            return {
+                                              ...old,
+                                              [item.id]: {
+                                                ...old[item.id],
+                                                nodeMultipliers: nextMap,
+                                              },
+                                            };
+                                          });
+                                        }}
+                                      >
+                                        ×
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        <div className="add-node-override-row">
+                          <input
+                            type="text"
+                            placeholder="节点全称（例如: 香港 01 [x1.5]）"
+                            value={subEdit.newNodeName}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setEditSubs((old) => ({
+                                ...old,
+                                [item.id]: {
+                                  ...old[item.id],
+                                  newNodeName: val,
+                                },
+                              }));
+                            }}
+                          />
+                          <input
+                            type="number"
+                            step="0.05"
+                            min="0.1"
+                            max="100"
+                            placeholder="倍率 (0.1~100)"
+                            value={subEdit.newNodeMultiplier}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setEditSubs((old) => ({
+                                ...old,
+                                [item.id]: {
+                                  ...old[item.id],
+                                  newNodeMultiplier: val,
+                                },
+                              }));
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const node = subEdit.newNodeName.trim();
+                              if (!node) return;
+                              const mult = subEdit.newNodeMultiplier.trim();
+                              setEditSubs((old) => {
+                                const curKnown = old[item.id].knownNodes;
+                                const nextKnown =
+                                  curKnown.indexOf(node) === -1
+                                    ? [...curKnown, node]
+                                    : curKnown;
+                                return {
+                                  ...old,
+                                  [item.id]: {
+                                    ...old[item.id],
+                                    knownNodes: nextKnown,
+                                    nodeMultipliers: mult
+                                      ? {
+                                          ...old[item.id].nodeMultipliers,
+                                          [node]: mult,
+                                        }
+                                      : old[item.id].nodeMultipliers,
+                                    newNodeName: "",
+                                    newNodeMultiplier: "",
+                                  },
+                                };
+                              });
+                            }}
+                          >
+                            + 添加节点覆盖
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <footer className="traffic-settings-footer">
+              <button
+                type="button"
+                disabled={savingSettings}
+                onClick={() => setShowSettingsModal(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={savingSettings}
+                onClick={handleSaveSettings}
+              >
+                {savingSettings ? "正在保存…" : "保存倍率配置"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+    </article>
+  );
+}
+
 function MihomoManager({
   data,
   refresh,
@@ -3824,6 +5251,11 @@ function MihomoManager({
           </div>
         )}
       </article>
+
+      <TrafficAccountingSection
+        subscriptions={subscriptions}
+        setNotice={setNotice}
+      />
 
       <article className="panel mihomo-section">
         <div className="section-heading small">
