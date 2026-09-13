@@ -241,6 +241,49 @@ type WholeHomeProxy = {
   tunDevice: string;
   listener: string;
 };
+type MihomoSpeedTestRun = {
+  stage: "preliminary" | "confirmation";
+  requestedBytes: number;
+  receivedBytes: number;
+  durationMs: number;
+  ttfbMs: number;
+  mbps: number;
+  httpStatus: number;
+  success: boolean;
+  errorCode?: string;
+};
+type MihomoSpeedTestNodeResult = {
+  node: string;
+  protocol: string;
+  delayMs: number;
+  runs: MihomoSpeedTestRun[];
+  medianMbps: number;
+  minimumMbps: number;
+  effectiveMbps: number;
+  eligible: boolean;
+  videoBadge: string;
+  errorCode?: string;
+};
+type MihomoSpeedTestJob = {
+  id: string;
+  mode: "quick" | "deep" | "";
+  state: "idle" | "running" | "completed" | "cancelled" | "failed" | "interrupted";
+  phase: "idle" | "discovering" | "sampling_wan" | "preliminary" | "confirming" | "completed" | "cancelled" | "failed" | "interrupted";
+  startedAt?: string;
+  finishedAt?: string;
+  currentNode?: string;
+  completedRuns: number;
+  totalRuns: number;
+  bytesUsed: number;
+  dataBudgetBytes: number;
+  contaminated: boolean;
+  initialProductionNode?: string;
+  recommendedNode?: string;
+  candidateFingerprint?: string;
+  errorMessage?: string;
+  errorCode?: string;
+  results: MihomoSpeedTestNodeResult[];
+};
 type TailscaleState = {
   installed: boolean;
   enabled: boolean;
@@ -2697,6 +2740,12 @@ function MihomoManager({
   const [subscriptionName, setSubscriptionName] = useState("");
   const [subscriptionUrl, setSubscriptionUrl] = useState("");
   const [busy, setBusy] = useState("");
+  const [speedTestJob, setSpeedTestJob] = useState<MihomoSpeedTestJob | null>(null);
+  const [speedTestNow, setSpeedTestNow] = useState<number>(0);
+  const [speedTestBusy, setSpeedTestBusy] = useState<string | null>(null);
+  const [speedTestError, setSpeedTestError] = useState<string | null>(null);
+  const [speedTestApplying, setSpeedTestApplying] = useState<string | null>(null);
+  const [speedTestSuccessMsg, setSpeedTestSuccessMsg] = useState<string | null>(null);
   const trafficPrevious = useRef({ download: 0, upload: 0, at: 0 });
   const running = Boolean(
     data.services.find((item) => item.Name === "mihomo")?.PID,
@@ -2709,12 +2758,14 @@ function MihomoManager({
       settingsResponse,
       groupsResponse,
       wholeHomeProxyResponse,
+      speedTestResponse,
     ] = await Promise.all([
       fetch("/api/mihomo/status", { cache: "no-store" }),
       fetch("/api/mihomo/subscriptions", { cache: "no-store" }),
       fetch("/api/mihomo/settings", { cache: "no-store" }),
       fetch("/api/mihomo/proxies", { cache: "no-store" }),
       fetch("/api/mihomo/whole-home-proxy", { cache: "no-store" }),
+      fetch("/api/mihomo/speedtest", { cache: "no-store" }),
     ]);
     if (statusResponse.ok)
       setStatus((await statusResponse.json()) as MihomoStatus);
@@ -2733,6 +2784,11 @@ function MihomoManager({
       setWholeHomeProxy(
         (await wholeHomeProxyResponse.json()) as WholeHomeProxy,
       );
+    if (speedTestResponse.ok) {
+      const st = (await speedTestResponse.json()) as MihomoSpeedTestJob;
+      setSpeedTestJob(st.id ? st : null);
+      setSpeedTestNow(Date.now());
+    }
   }, []);
 
   useEffect(() => {
@@ -2758,6 +2814,10 @@ function MihomoManager({
         cache: "no-store",
         signal: controller.signal,
       }),
+      fetch("/api/mihomo/speedtest", {
+        cache: "no-store",
+        signal: controller.signal,
+      }),
     ])
       .then(
         async ([
@@ -2766,6 +2826,7 @@ function MihomoManager({
           settingsResponse,
           groupsResponse,
           wholeHomeProxyResponse,
+          speedTestResponse,
         ]) => {
           if (statusResponse.ok)
             setStatus((await statusResponse.json()) as MihomoStatus);
@@ -2784,11 +2845,36 @@ function MihomoManager({
             setWholeHomeProxy(
               (await wholeHomeProxyResponse.json()) as WholeHomeProxy,
             );
+          if (speedTestResponse.ok) {
+            const st = (await speedTestResponse.json()) as MihomoSpeedTestJob;
+            setSpeedTestJob(st.id ? st : null);
+            setSpeedTestNow(Date.now());
+          }
         },
       )
       .catch(() => undefined);
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    if (speedTestJob?.state !== "running") return;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch("/api/mihomo/speedtest", { cache: "no-store" });
+        if (res.ok) {
+          const data = (await res.json()) as MihomoSpeedTestJob;
+          setSpeedTestJob(data.id ? data : null);
+          setSpeedTestNow(Date.now());
+          if (data.state !== "running") {
+            setSpeedTestBusy(null);
+          }
+        }
+      } catch {
+        // ignore polling error
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [speedTestJob?.state]);
 
   useEffect(() => {
     let stopped = false;
@@ -3006,6 +3092,132 @@ function MihomoManager({
       setNotice("节点延迟测试失败");
     } finally {
       setBusy("");
+    }
+  };
+
+  const phaseLabels: Record<string, string> = {
+    idle: "空闲",
+    discovering: "发现节点与测延迟",
+    sampling_wan: "检测背景流量",
+    preliminary: "初筛下载测速",
+    confirming: "深度复测中",
+    completed: "测速完成",
+    cancelled: "已取消",
+    failed: "测速失败",
+    interrupted: "测速中断",
+  };
+
+  const getVideoBadgeClass = (badge: string) => {
+    switch (badge) {
+      case "4K candidate":
+        return "badge-tag video-4k";
+      case "1440p60":
+        return "badge-tag video-1440p60";
+      case "1440p":
+        return "badge-tag video-1440p";
+      case "1080p":
+        return "badge-tag video-1080p";
+      default:
+        return "badge-tag video-unstable";
+    }
+  };
+
+  const resolveConcreteNode = useCallback(
+    (initialTarget: string, groupsList: MihomoProxyGroup[]): string => {
+      let curr = initialTarget;
+      const visited = new Set<string>();
+      while (curr && visited.size < 16) {
+        if (visited.has(curr)) break;
+        visited.add(curr);
+        const grp = groupsList.find((g) => g.name === curr);
+        if (!grp || !grp.now) {
+          return curr;
+        }
+        curr = grp.now;
+      }
+      return curr;
+    },
+    [],
+  );
+
+  const startSpeedTest = async (mode: "quick" | "deep", allowBusyNetwork = false) => {
+    setSpeedTestBusy(mode);
+    setSpeedTestError(null);
+    setSpeedTestSuccessMsg(null);
+    try {
+      const response = await fetch("/api/mihomo/speedtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, allowBusyNetwork }),
+      });
+      const data = (await response.json()) as MihomoSpeedTestJob & { error?: string };
+      if (!response.ok) {
+        setSpeedTestError(data.error || "启动测速失败");
+      } else {
+        setSpeedTestJob(data);
+        setSpeedTestNow(Date.now());
+        setNotice(mode === "quick" ? "快速真实测速已启动" : "深度真实测速已启动");
+      }
+    } catch (err) {
+      setSpeedTestError(err instanceof Error ? err.message : "请求失败");
+    } finally {
+      setSpeedTestBusy(null);
+    }
+  };
+
+  const cancelSpeedTest = async () => {
+    if (speedTestBusy === "cancelling") return;
+    setSpeedTestBusy("cancelling");
+    setSpeedTestError(null);
+    try {
+      const response = await fetch("/api/mihomo/speedtest", { method: "DELETE" });
+      const data = (await response.json()) as { error?: string; ok?: boolean };
+      if (!response.ok) {
+        setSpeedTestError(data.error || "取消测速失败");
+        setSpeedTestBusy(null);
+      } else {
+        setNotice("正在停止测速并恢复网络配置…");
+        const pollRes = await fetch("/api/mihomo/speedtest", { cache: "no-store" });
+        if (pollRes.ok) {
+          const pollData = (await pollRes.json()) as MihomoSpeedTestJob;
+          setSpeedTestJob(pollData.id ? pollData : null);
+          if (pollData.state !== "running") {
+            setSpeedTestBusy(null);
+            setNotice("测速已取消");
+          }
+        }
+      }
+    } catch (err) {
+      setSpeedTestError(err instanceof Error ? err.message : "取消失败");
+      setSpeedTestBusy(null);
+    }
+  };
+
+  const applySpeedTestNode = async (node: string) => {
+    if (!speedTestJob) return;
+    setSpeedTestApplying(node);
+    setSpeedTestError(null);
+    setSpeedTestSuccessMsg(null);
+    try {
+      const response = await fetch("/api/mihomo/speedtest/apply", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: speedTestJob.id, node }),
+      });
+      const data = (await response.json()) as { error?: string; ok?: boolean };
+      if (!response.ok) {
+        setSpeedTestError(data.error || "应用节点失败");
+      } else {
+        setSpeedTestSuccessMsg(
+          `已将家庭出口切换为 [${node}]。长连接应用（如正在播放的 YouTube 视频）可能需要刷新网页或重连以生效。`,
+        );
+        setNotice(`家庭代理已切换至“${node}”`);
+        await loadMihomo();
+      }
+    } catch (err) {
+      setSpeedTestError(err instanceof Error ? err.message : "应用失败");
+    } finally {
+      setSpeedTestApplying(null);
     }
   };
 
@@ -3302,7 +3514,7 @@ function MihomoManager({
             disabled={!status.online || Boolean(busy) || !groups.length}
             onClick={testDelays}
           >
-            {busy === "delay" ? "测速中…" : "节点测速"}
+            {busy === "delay" ? "测延迟中…" : "测延迟"}
           </button>
         </div>
         <div className="proxy-group-grid">
@@ -3331,6 +3543,285 @@ function MihomoManager({
           <p className="empty-copy">
             核心未运行，或当前配置中没有可选择的代理组。
           </p>
+        )}
+      </article>
+
+      <article className="panel mihomo-section speedtest-panel">
+        <div className="section-heading small">
+          <div>
+            <p className="eyebrow">测速与推荐</p>
+            <h2>真实体验测速</h2>
+          </div>
+          {speedTestJob?.state === "running" && (
+            <span className="speedtest-phase-tag running">
+              ● {speedTestBusy === "cancelling" ? "正在取消…" : (phaseLabels[speedTestJob.phase] || speedTestJob.phase)}
+            </span>
+          )}
+        </div>
+
+        <p className="speedtest-desc">
+          在手机路由器本机直接向 Google 测速源发起真实下载测速，不经过电脑 Wi-Fi 链路、不切换家庭当前节点。
+          测速会消耗代理流量并与家庭上网共享带宽，建议空闲时运行。
+        </p>
+
+        <div className="speedtest-actions">
+          {speedTestJob?.state === "running" ? (
+            <button
+              type="button"
+              className="danger"
+              disabled={speedTestBusy === "cancelling"}
+              onClick={cancelSpeedTest}
+            >
+              {speedTestBusy === "cancelling" ? "停止中…" : "停止测速"}
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="primary"
+                disabled={!status.online || Boolean(busy) || Boolean(speedTestBusy)}
+                onClick={() => startSpeedTest("quick")}
+              >
+                {speedTestBusy === "quick" ? "启动中…" : "⚡ 快速测速"}
+              </button>
+              <button
+                type="button"
+                className="deep"
+                disabled={!status.online || Boolean(busy) || Boolean(speedTestBusy)}
+                onClick={() => startSpeedTest("deep")}
+              >
+                {speedTestBusy === "deep" ? "启动中…" : "🔍 深度测速"}
+              </button>
+            </>
+          )}
+          <span
+            className="speedtest-budget-hint"
+            title="测速安全保护边界：总流量上限、单节点流量上限与整任务时间上限"
+          >
+            保护边界：总流量（快速 100 MiB / 深度 300 MiB）· 单节点（快速 25 MiB / 深度 35 MiB）· 超时（快速 10 分钟 / 深度 30 分钟）
+          </span>
+        </div>
+
+        {(() => {
+          const displayError =
+            speedTestError ||
+            (speedTestJob?.state === "failed" ? speedTestJob.errorMessage || "测速任务执行失败" : null);
+          const isBusyNetwork =
+            speedTestJob?.errorCode === "busy_network" ||
+            (speedTestJob?.errorMessage && speedTestJob.errorMessage.includes("WAN 流量超过"));
+
+          if (!displayError) return null;
+          return (
+            <div className="speedtest-notice error">
+              <span>{displayError}</span>
+              {isBusyNetwork && (
+                <button
+                  type="button"
+                  className="section-action"
+                  style={{ marginLeft: "auto" }}
+                  onClick={() => startSpeedTest("deep", true)}
+                >
+                  忽略背景流量继续测速
+                </button>
+              )}
+            </div>
+          );
+        })()}
+
+        {speedTestJob?.state === "interrupted" && (
+          <div className="speedtest-notice warning">
+            <span>⚠️ 上次测速因核心重启或系统原因中断，已保留中断前完成的节点数据。</span>
+          </div>
+        )}
+
+        {speedTestSuccessMsg && (
+          <div className="speedtest-notice success">
+            <span>{speedTestSuccessMsg}</span>
+          </div>
+        )}
+
+        {speedTestJob?.contaminated && (
+          <div className="speedtest-notice warning">
+            <span>
+              ⚠️ 提示：测速前检测到家庭 WAN 有较大背景流量（&gt;5 Mbit/s），测速结果可能偏低。
+            </span>
+          </div>
+        )}
+
+        {speedTestJob && speedTestJob.state !== "idle" && (
+          <div className="speedtest-progress-box">
+            <div className="speedtest-progress-header">
+              <span className={`speedtest-phase-tag ${speedTestJob.state === "running" ? "running" : ""}`}>
+                {phaseLabels[speedTestJob.phase] || speedTestJob.phase}
+              </span>
+              {speedTestJob.currentNode && speedTestJob.state === "running" && (
+                <span style={{ fontSize: "10px", color: "#85dce3" }}>
+                  当前测试: <strong>{speedTestJob.currentNode}</strong>
+                </span>
+              )}
+            </div>
+
+            <div className="speedtest-bar-track">
+              <div
+                className="speedtest-bar-fill"
+                style={{
+                  width: `${
+                    speedTestJob.state === "completed"
+                      ? 100
+                      : speedTestJob.totalRuns > 0
+                      ? Math.min(100, Math.round((speedTestJob.completedRuns / speedTestJob.totalRuns) * 100))
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+
+            <div className="speedtest-progress-metrics">
+              <div className="speedtest-metric">
+                <span>测试轮次</span>
+                <strong>
+                  {speedTestJob.state === "completed"
+                    ? `${speedTestJob.completedRuns} / ${speedTestJob.completedRuns}`
+                    : `${speedTestJob.completedRuns} / ${speedTestJob.totalRuns || "-"}`}
+                </strong>
+              </div>
+              <div className="speedtest-metric">
+                <span>消耗流量</span>
+                <strong>
+                  {(speedTestJob.bytesUsed / (1024 * 1024)).toFixed(1)} MB /{" "}
+                  {(speedTestJob.dataBudgetBytes / (1024 * 1024)).toFixed(0)} MB
+                </strong>
+              </div>
+              <div className="speedtest-metric">
+                <span>测试模式</span>
+                <strong>{speedTestJob.mode === "deep" ? "深度测速" : "快速测速"}</strong>
+              </div>
+              <div className="speedtest-metric">
+                <span>已用时间</span>
+                <strong>
+                  {(() => {
+                    if (!speedTestJob.startedAt) return "-";
+                    const start = new Date(speedTestJob.startedAt).getTime();
+                    if (isNaN(start)) return "-";
+                    const end = speedTestJob.finishedAt
+                      ? new Date(speedTestJob.finishedAt).getTime()
+                      : speedTestNow > 0
+                      ? speedTestNow
+                      : start;
+                    const sec = Math.max(0, Math.floor((end - start) / 1000));
+                    const m = Math.floor(sec / 60);
+                    const s = sec % 60;
+                    return `${m}分${s < 10 ? "0" : ""}${s}秒`;
+                  })()}
+                </strong>
+              </div>
+              {speedTestJob.recommendedNode && (
+                <div className="speedtest-metric">
+                  <span>推荐优胜</span>
+                  <strong style={{ color: "#5bf0bf" }}>{speedTestJob.recommendedNode}</strong>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {speedTestJob && speedTestJob.results && speedTestJob.results.length > 0 && (
+          <div className="speedtest-results-card">
+            <div className="speedtest-table-wrap">
+              <table className="speedtest-table">
+                <thead>
+                  <tr>
+                    <th>推荐/状态</th>
+                    <th>节点名称</th>
+                    <th>协议</th>
+                    <th>延迟</th>
+                    <th>复测表现 (Mbps)</th>
+                    <th>最低保障</th>
+                    <th>综合体验分</th>
+                    <th>体验评级</th>
+                    <th style={{ textAlign: "right" }}>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {speedTestJob.results.map((r) => {
+                    const currentProductionNode = resolveConcreteNode("家庭RULE", groups);
+                    const isWinner = speedTestJob.recommendedNode === r.node;
+                    const isCurrent = r.node === currentProductionNode;
+                    const prelimRun = r.runs?.find((run) => run.stage === "preliminary");
+                    const confirmRuns = r.runs?.filter((run) => run.stage === "confirmation") || [];
+
+                    return (
+                      <tr
+                        key={r.node}
+                        className={`${isWinner ? "winner-row" : ""} ${isCurrent ? "current-row" : ""}`}
+                      >
+                        <td>
+                          {isWinner && <span className="badge-tag winner">★ 推荐出口</span>}
+                          {isCurrent && <span className="badge-tag current">当前家庭</span>}
+                          {!isWinner && !isCurrent && !r.eligible && (
+                            <span style={{ color: "#6c8896", fontSize: "8px" }}>
+                              {r.errorCode || (r.runs?.length === 0 ? "未测试" : "未达标")}
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <strong style={{ color: isWinner ? "#6bf0ff" : "#e0f0f5" }}>{r.node}</strong>
+                        </td>
+                        <td>
+                          <span style={{ color: "#7493a3", fontSize: "9px" }}>{r.protocol || "-"}</span>
+                        </td>
+                        <td>{r.delayMs > 0 ? `${r.delayMs} ms` : "-"}</td>
+                        <td>
+                          {confirmRuns.length > 0 ? (
+                            confirmRuns.map((cr, idx) => (
+                              <span key={idx} style={{ marginRight: "6px" }}>
+                                {cr.success ? `${cr.mbps.toFixed(1)}` : "失败"}
+                              </span>
+                            ))
+                          ) : prelimRun ? (
+                            <span style={{ color: "#7c9baa" }}>初筛 {prelimRun.mbps.toFixed(1)}</span>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                        <td>
+                          <strong style={{ color: r.minimumMbps >= 8 ? "#94ecd5" : "#e59095" }}>
+                            {r.minimumMbps > 0 ? `${r.minimumMbps.toFixed(1)} M` : "-"}
+                          </strong>
+                        </td>
+                        <td>
+                          <strong style={{ color: "#9ee6f5" }}>
+                            {r.effectiveMbps > 0 ? `${r.effectiveMbps.toFixed(1)} M` : "-"}
+                          </strong>
+                        </td>
+                        <td>
+                          <span className={getVideoBadgeClass(r.videoBadge)}>{r.videoBadge}</span>
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          {isCurrent ? (
+                            <span className="btn-speedtest-apply active-current">✓ 生效中</span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn-speedtest-apply"
+                              disabled={
+                                !r.eligible ||
+                                speedTestJob.state !== "completed" ||
+                                Boolean(speedTestApplying)
+                              }
+                              onClick={() => applySpeedTestNode(r.node)}
+                            >
+                              {speedTestApplying === r.node ? "应用中…" : "应用"}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
       </article>
 

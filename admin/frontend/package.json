@@ -7,8 +7,8 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
-    "export": "next build && node scripts/compat-chrome87.mjs",
+    "build": "next build --webpack",
+    "export": "next build --webpack && node scripts/compat-chrome87.mjs",
     "start": "next dev",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },

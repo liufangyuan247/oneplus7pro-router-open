@@ -53,6 +53,65 @@ grep -q '^[[:space:]]*- DOMAIN-SUFFIX,antigravity-unleash.goog,Antigravity$' "$C
 grep -q '^[[:space:]]*port: 17892$' "$CANDIDATE"
 grep -q '^[[:space:]]*proxy: "Antigravity"$' "$CANDIDATE"
 
+[ "$(grep -E -c '^unified-delay:[[:space:]]*true[[:space:]]*$' "$CANDIDATE")" -eq 1 ] || {
+    echo "candidate missing or non-unique top-level unified-delay: true" >&2
+    exit 1
+}
+[ "$(grep -E -c '^tcp-concurrent:[[:space:]]*true[[:space:]]*$' "$CANDIDATE")" -eq 1 ] || {
+    echo "candidate missing or non-unique top-level tcp-concurrent: true" >&2
+    exit 1
+}
+[ "$(grep -E -c '^[[:space:]]*- name:[[:space:]]*"?家庭测速"?[[:space:]]*$' "$CANDIDATE")" -eq 1 ] || {
+    echo "candidate missing or non-unique 家庭测速 group" >&2
+    exit 1
+}
+[ "$(grep -E -c '^[[:space:]]*- name:[[:space:]]*"?node-benchmark"?[[:space:]]*$' "$CANDIDATE")" -eq 1 ] || {
+    echo "candidate missing or non-unique node-benchmark listener" >&2
+    exit 1
+}
+"$PREFIX/bin/awk" '
+    /^[[:space:]]*- name:[[:space:]]*"?node-benchmark"?[[:space:]]*$/ {
+        in_nb = 1
+        found_nb++
+        next
+    }
+    in_nb && (/^[[:space:]]*- name:/ || /^[a-zA-Z0-9_-]+:[[:space:]]*/) {
+        in_nb = 0
+    }
+    in_nb && /^[[:space:]]*listen:[[:space:]]*127\.0\.0\.1[[:space:]]*$/ {
+        listen_count++
+        next
+    }
+    in_nb && /^[[:space:]]*listen:[[:space:]]*/ {
+        bad_listen++
+        next
+    }
+    in_nb && /^[[:space:]]*port:[[:space:]]*17894[[:space:]]*$/ {
+        port_count++
+        next
+    }
+    in_nb && /^[[:space:]]*port:[[:space:]]*/ {
+        bad_port++
+        next
+    }
+    in_nb && /^[[:space:]]*proxy:[[:space:]]*"?家庭测速"?[[:space:]]*$/ {
+        proxy_count++
+        next
+    }
+    in_nb && /^[[:space:]]*proxy:[[:space:]]*/ {
+        bad_proxy++
+        next
+    }
+    END {
+        if (found_nb != 1 || listen_count != 1 || port_count != 1 || proxy_count != 1 || bad_listen != 0 || bad_port != 0 || bad_proxy != 0) {
+            exit 1
+        }
+    }
+' "$CANDIDATE" || {
+    echo "candidate node-benchmark listener must be loopback-only 127.0.0.1:17894 targeting 家庭测速" >&2
+    exit 1
+}
+
 mkdir -p "$SHADOW"
 chmod 700 "$SHADOW"
 for geodata in GeoSite.dat geoip.metadb Country.mmdb; do
@@ -68,6 +127,8 @@ done
     /^  listen: 127\.0\.0\.1:1053[[:space:]]*$/ { print "  listen: 127.0.0.1:1153"; next }
     /^    port: 17891[[:space:]]*$/ { print "    port: 17991"; next }
     /^    port: 17892[[:space:]]*$/ { print "    port: 17992"; next }
+    /^    port: 17893[[:space:]]*$/ { print "    port: 17993"; next }
+    /^    port: 17894[[:space:]]*$/ { print "    port: 17994"; next }
     /^tun:[[:space:]]*$/ { in_tun=1; print; next }
     in_tun && /^  enable:[[:space:]]*/ { print "  enable: false"; in_tun=0; next }
     { print }

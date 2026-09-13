@@ -15,6 +15,7 @@ This directory contains the standalone Mihomo service used by the OnePlus 7 Pro 
 - Generic local listener: `127.0.0.1:17890`, follows `rule` / `global` / `direct`
 - Codex/CPA listener: `127.0.0.1:17891`, pinned to `AI`
 - Antigravity listener: `127.0.0.1:17892`, pinned to `Antigravity`
+- Node benchmark listener: `127.0.0.1:17894`, pinned to `家庭测速`
 - Controller: `127.0.0.1:9091`
 - Persistent mode: `direct` on a fresh install; `rule` after the local
   allowlist has been validated
@@ -77,6 +78,7 @@ invariants remain immediately actionable.
 - Last known-good config: `~/router-data/mihomo/config.last-good.yaml`
 - Listener overrides: `~/router-data/mihomo/runtime-settings.yaml`
 - Persistent mode: `~/router-data/mihomo/runtime-mode`
+- Benchmark results: `~/router-data/mihomo/speedtest-results.json`
 - Service: `~/router-stack/services/mihomo`
 - Update service: `~/router-stack/services/mihomo-updater`
 - Data-plane probe: `~/router-stack/bin/mihomo-health-probe`

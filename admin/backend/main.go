@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -101,6 +102,13 @@ type Server struct {
 	terminalSessions                   atomic.Int32
 	screenSessions                     atomic.Int32
 	runSu                              func(command string) ([]byte, error)
+	mihomoController                   string
+	speedTestMu                        sync.Mutex
+	speedTestJob                       *MihomoSpeedTestJob
+	speedTestCancel                    context.CancelFunc
+	speedTestHTTP                      func(ctx context.Context, proxyURL, targetURL string, sampleBytes int64) (int64, time.Duration, time.Duration, int, error)
+	speedTestSampleWAN                 func(ctx context.Context) (float64, error)
+	speedTestCheckListener             func() bool
 }
 
 const (
@@ -393,6 +401,7 @@ func main() {
 		log.Printf("load remembered sessions: %v", err)
 	}
 	s.startNetworkSampler()
+	s.initSpeedTest()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.health)
@@ -413,6 +422,8 @@ func main() {
 	mux.HandleFunc("/api/mihomo/settings", s.auth(s.mihomoSettings))
 	mux.HandleFunc("/api/mihomo/whole-home-proxy", s.auth(s.mihomoWholeHomeProxy))
 	mux.HandleFunc("/api/mihomo/proxies", s.auth(s.mihomoProxies))
+	mux.HandleFunc("/api/mihomo/speedtest", s.auth(s.mihomoSpeedTest))
+	mux.HandleFunc("/api/mihomo/speedtest/apply", s.auth(s.mihomoSpeedTestApply))
 	mux.HandleFunc("/api/mihomo/delay", s.auth(s.mihomoDelay))
 	mux.HandleFunc("/api/mihomo/connections", s.auth(s.mihomoConnections))
 	mux.HandleFunc("/api/mihomo/subscription", s.auth(s.mihomoSubscription))
@@ -2814,6 +2825,13 @@ func (s *Server) mihomoSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) mihomoBaseURL() string {
+	if s.mihomoController != "" {
+		return s.mihomoController
+	}
+	return mihomoController
+}
+
 func (s *Server) mihomoRequest(method, path string, payload any, target any) error {
 	var body io.Reader
 	if payload != nil {
@@ -2823,7 +2841,7 @@ func (s *Server) mihomoRequest(method, path string, payload any, target any) err
 		}
 		body = strings.NewReader(string(encoded))
 	}
-	req, err := http.NewRequest(method, mihomoController+"/"+strings.TrimPrefix(path, "/"), body)
+	req, err := http.NewRequest(method, s.mihomoBaseURL()+"/"+strings.TrimPrefix(path, "/"), body)
 	if err != nil {
 		return err
 	}
@@ -3290,6 +3308,9 @@ func (s *Server) mihomoProxies(w http.ResponseWriter, r *http.Request) {
 		}
 		groups := make([]MihomoProxyGroup, 0)
 		for name, proxy := range data.Proxies {
+			if name == speedTestBenchmarkGroup {
+				continue
+			}
 			if len(proxy.All) > 0 {
 				groups = append(groups, MihomoProxyGroup{Name: name, Type: proxy.Type, Now: proxy.Now, All: proxy.All})
 			}
@@ -3305,7 +3326,7 @@ func (s *Server) mihomoProxies(w http.ResponseWriter, r *http.Request) {
 		Group string `json:"group"`
 		Proxy string `json:"proxy"`
 	}
-	if decodeJSON(r, &body) != nil || strings.TrimSpace(body.Group) == "" || strings.TrimSpace(body.Proxy) == "" {
+	if decodeJSON(r, &body) != nil || strings.TrimSpace(body.Group) == "" || strings.TrimSpace(body.Proxy) == "" || body.Group == speedTestBenchmarkGroup {
 		jsonOut(w, 400, map[string]string{"error": "代理组和节点不能为空"})
 		return
 	}

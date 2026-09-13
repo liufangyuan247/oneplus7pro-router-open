@@ -52,8 +52,18 @@ listeners:
     listen: 0.0.0.0
     port: 17893
     udp: true
+  - name: node-benchmark
+    type: mixed
+    listen: 127.0.0.1
+    port: 17894
+    proxy: 家庭测速
+    udp: true
 
 proxy-groups:
+  - name: 家庭测速
+    type: select
+    include-all-proxies: true
+    exclude-filter: "(?i)剩余|到期|官网|重置"
   - name: 家庭RULE自动
     type: url-test
     include-all-proxies: true

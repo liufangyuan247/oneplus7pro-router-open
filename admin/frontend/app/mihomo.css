@@ -110,6 +110,318 @@
 .subscription-add input:focus { border-color: #36bccc; box-shadow: 0 0 0 3px #30c7d815; }
 .subscription-add > button { min-height: 37px; white-space: nowrap; }
 
+.speedtest-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.speedtest-desc {
+  color: #7995a5;
+  font-size: 11px;
+  line-height: 1.6;
+  margin: -6px 0 6px;
+}
+
+.speedtest-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.speedtest-actions button {
+  border: 1px solid #2b5867;
+  background: #123542;
+  color: #bfe1e8;
+  border-radius: 9px;
+  padding: 9px 15px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all .2s;
+}
+
+.speedtest-actions button.primary {
+  border: 0;
+  background: linear-gradient(90deg, #22b9cb, #4dd59a);
+  color: #04202a;
+}
+
+.speedtest-actions button.deep {
+  border-color: #3b7b8f;
+  background: #144455;
+  color: #c9eff5;
+}
+
+.speedtest-actions button.danger {
+  border-color: #6d333c;
+  background: #381920;
+  color: #e89ba3;
+}
+
+.speedtest-actions button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.speedtest-budget-hint {
+  color: #648191;
+  font-size: 9px;
+  margin-left: auto;
+}
+
+.speedtest-progress-box {
+  padding: 14px 16px;
+  border: 1px solid #204c5c;
+  background: #09212c;
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.speedtest-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.speedtest-phase-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  border: 1px solid #2b6c7a;
+  background: #113642;
+  color: #7ce7f5;
+}
+
+.speedtest-phase-tag.running {
+  border-color: #26a5b8;
+  background: #0c3e4b;
+  color: #55effc;
+  animation: pulse-border 2s infinite;
+}
+
+@keyframes pulse-border {
+  0% { box-shadow: 0 0 0 0 #22b9cb44; }
+  70% { box-shadow: 0 0 0 6px #22b9cb00; }
+  100% { box-shadow: 0 0 0 0 #22b9cb00; }
+}
+
+.speedtest-progress-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid #173844;
+}
+
+.speedtest-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.speedtest-metric span {
+  color: #607e8e;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+.speedtest-metric strong {
+  color: #d1e4ed;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+
+.speedtest-bar-track {
+  height: 6px;
+  background: #122833;
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.speedtest-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #22b9cb, #4dd59a);
+  border-radius: 999px;
+  transition: width .3s ease;
+}
+
+.speedtest-notice {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 9px;
+  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.speedtest-notice.warning {
+  border: 1px solid #5e4a28;
+  background: #2b2210;
+  color: #e5cb87;
+}
+
+.speedtest-notice.error {
+  border: 1px solid #5b282c;
+  background: #291214;
+  color: #e59095;
+}
+
+.speedtest-notice.success {
+  border: 1px solid #235c4b;
+  background: #0f2e24;
+  color: #79e5b8;
+}
+
+.speedtest-results-card {
+  border: 1px solid #1b3d4d;
+  background: #091c26;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.speedtest-table-wrap {
+  overflow-x: auto;
+  width: 100%;
+}
+
+.speedtest-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 10px;
+}
+
+.speedtest-table th {
+  padding: 11px 13px;
+  color: #688796;
+  background: #0c2431;
+  font-weight: 600;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  white-space: nowrap;
+  border-bottom: 1px solid #1a3c4c;
+}
+
+.speedtest-table td {
+  padding: 11px 13px;
+  border-bottom: 1px solid #142f3d;
+  color: #bed7e3;
+  white-space: nowrap;
+}
+
+.speedtest-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.speedtest-table tr.winner-row {
+  background: #0c2c3666;
+}
+
+.speedtest-table tr.current-row {
+  background: #11283833;
+}
+
+.badge-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.badge-tag.winner {
+  border: 1px solid #36bccc;
+  background: #124754;
+  color: #64f1ff;
+}
+
+.badge-tag.current {
+  border: 1px solid #2d6b5e;
+  background: #123d34;
+  color: #7be4ba;
+}
+
+.badge-tag.video-4k {
+  border: 1px solid #8e7829;
+  background: #382e0d;
+  color: #f7dd79;
+}
+
+.badge-tag.video-1440p60 {
+  border: 1px solid #4a4392;
+  background: #231f47;
+  color: #a49aff;
+}
+
+.badge-tag.video-1440p {
+  border: 1px solid #2d6480;
+  background: #112e3e;
+  color: #70caea;
+}
+
+.badge-tag.video-1080p {
+  border: 1px solid #286455;
+  background: #10332a;
+  color: #63d9a9;
+}
+
+.badge-tag.video-unstable {
+  border: 1px solid #5b3137;
+  background: #2b1619;
+  color: #d8828b;
+}
+
+.btn-speedtest-apply {
+  border: 1px solid #277b8b;
+  background: #11424d;
+  color: #8cebf7;
+  border-radius: 7px;
+  padding: 5px 11px;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s;
+}
+
+.btn-speedtest-apply:hover:not(:disabled) {
+  background: #1b5b6a;
+  color: #ffffff;
+}
+
+.btn-speedtest-apply:disabled {
+  opacity: .35;
+  cursor: not-allowed;
+  border-color: #213f4b;
+  background: #0f242d;
+  color: #55717f;
+}
+
+.btn-speedtest-apply.active-current {
+  border: 0;
+  background: transparent;
+  color: #49ce9b;
+  cursor: default;
+  padding: 0;
+}
+
 @media (max-width: 760px) {
   .mihomo-hero { grid-template-columns: 1fr; }
   .mihomo-hero-state { align-items: flex-start; }
@@ -119,6 +431,8 @@
   .mihomo-port-grid { grid-template-columns: 1fr 1fr; }
   .cpa-integration-grid { grid-template-columns: 1fr 1fr; }
   .cpa-integration-grid button { grid-column: 1 / -1; }
+  .speedtest-actions { flex-direction: column; align-items: stretch; }
+  .speedtest-budget-hint { margin-left: 0; }
 }
 
 @media (max-width: 620px) {

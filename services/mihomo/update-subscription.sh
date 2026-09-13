@@ -141,6 +141,10 @@ function emit_proxy_groups(indent, child) {
     print child "include-all-proxies: true"
     print child "filter: \"(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)\""
     print child "exclude-filter: \"(?i)剩余|到期|官网|重置\""
+    print indent "- name: \"家庭测速\""
+    print child "type: select"
+    print child "include-all-proxies: true"
+    print child "exclude-filter: \"(?i)剩余|到期|官网|重置\""
     print indent "- name: \"Antigravity\""
     print child "type: select"
     print child "include-all-proxies: true"
@@ -165,6 +169,12 @@ function emit_ai_listener() {
     print "    type: tproxy"
     print "    listen: 0.0.0.0"
     print "    port: 17893"
+    print "    udp: true"
+    print "  - name: node-benchmark"
+    print "    type: mixed"
+    print "    listen: 127.0.0.1"
+    print "    port: 17894"
+    print "    proxy: \"家庭测速\""
     print "    udp: true"
 }
 function emit_sniffer() {
@@ -341,6 +351,8 @@ BEGIN {
     if ($0 ~ /^external-ui:[[:space:]]*/) { print "external-ui: ui"; ui=1; next }
     if ($0 ~ /^secret:[[:space:]]*/) { print "secret: \"\""; secret=1; next }
     if ($0 ~ /^ipv6:[[:space:]]*/) { print "ipv6: false"; ipv6=1; next }
+    if ($0 ~ /^unified-delay:[[:space:]]*/) { print "unified-delay: true"; unified_delay=1; next }
+    if ($0 ~ /^tcp-concurrent:[[:space:]]*/) { print "tcp-concurrent: true"; tcp_concurrent=1; next }
     print
 }
 END {
@@ -359,6 +371,8 @@ END {
     if (!ui) print "external-ui: ui"
     if (!secret) print "secret: \"\""
     if (!ipv6) print "ipv6: false"
+    if (!unified_delay) print "unified-delay: true"
+    if (!tcp_concurrent) print "tcp-concurrent: true"
     if (!dns) emit_dns()
     if (!tun) emit_tun()
     if (!listeners) emit_ai_listener()
@@ -493,7 +507,7 @@ controller_ready() {
 
 ports_ready() {
     [ -x "$SOCAT" ] || return 1
-    for port in 9091 17890 17891 17892; do
+    for port in 9091 17890 17891 17892 17894; do
         "$SOCAT" -T1 -u /dev/null "TCP:127.0.0.1:$port,connect-timeout=1" >/dev/null 2>&1 || return 1
     done
 }
