@@ -1,0 +1,330 @@
+<div id="op7-secondary-nav-preview" aria-label="Router Admin 二级导航交互预览">
+  <style>
+    #op7-secondary-nav-preview {
+      width: 100%;
+      color: light-dark(#17303d, #eaf2f8);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    #op7-secondary-nav-preview .op7-window {
+      min-height: 610px;
+      display: grid;
+      grid-template-columns: 176px minmax(0, 1fr);
+      overflow: hidden;
+      border: 1px solid light-dark(#cbd8df, #1f3443);
+      border-radius: 18px;
+      background: light-dark(#f4f8fa, #07151e);
+    }
+    #op7-secondary-nav-preview .op7-side {
+      padding: 20px 14px;
+      background: light-dark(#eaf1f5, #091a24);
+      border-right: 1px solid light-dark(#d2dfe5, #19303e);
+    }
+    #op7-secondary-nav-preview .op7-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 8px 22px;
+      font-weight: 500;
+    }
+    #op7-secondary-nav-preview .op7-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      color: #fff;
+      background: #ec2b3a;
+    }
+    #op7-secondary-nav-preview .op7-primary {
+      width: 100%;
+      min-height: 42px;
+      margin: 3px 0;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 10px;
+      color: light-dark(#526c79, #7790a1);
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    #op7-secondary-nav-preview .op7-primary[aria-pressed="true"] {
+      color: light-dark(#0f4f5b, #dffaff);
+      background: light-dark(#d9ebef, #163846);
+      box-shadow: inset 3px 0 #30c7d8;
+    }
+    #op7-secondary-nav-preview .op7-main {
+      min-width: 0;
+      padding: 24px 28px 32px;
+    }
+    #op7-secondary-nav-preview .op7-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+    #op7-secondary-nav-preview .op7-heading small {
+      color: light-dark(#6f8692, #668296);
+    }
+    #op7-secondary-nav-preview .op7-heading h1 {
+      margin: 5px 0 0;
+      font-size: 25px;
+      font-weight: 500;
+    }
+    #op7-secondary-nav-preview .op7-refresh {
+      min-height: 40px;
+      padding: 0 14px;
+      border: 1px solid light-dark(#bfced5, #294252);
+      border-radius: 9px;
+      color: inherit;
+      background: light-dark(#fff, #102633);
+      cursor: pointer;
+    }
+    #op7-secondary-nav-preview .op7-tabs {
+      display: flex;
+      gap: 5px;
+      margin-top: 22px;
+      padding-bottom: 8px;
+      overflow-x: auto;
+      border-bottom: 1px solid light-dark(#cedbe1, #1f3443);
+    }
+    #op7-secondary-nav-preview .op7-tab {
+      flex: 0 0 auto;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 0;
+      border-radius: 9px;
+      color: light-dark(#5e737d, #8295a6);
+      background: transparent;
+      cursor: pointer;
+    }
+    #op7-secondary-nav-preview .op7-tab[aria-selected="true"] {
+      color: light-dark(#0b5662, #dffaff);
+      background: light-dark(#dcecef, #133541);
+      box-shadow: inset 0 -2px #30c7d8;
+    }
+    #op7-secondary-nav-preview .op7-context {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      align-items: center;
+      min-height: 42px;
+      margin: 14px 0;
+      padding: 0 4px;
+      color: light-dark(#607985, #8ba1ad);
+    }
+    #op7-secondary-nav-preview .op7-context strong {
+      color: light-dark(#256b55, #70d7a1);
+      font-weight: 500;
+    }
+    #op7-secondary-nav-preview .op7-context span + span::before {
+      content: "·";
+      margin-right: 18px;
+      color: light-dark(#94a8b2, #496473);
+    }
+    #op7-secondary-nav-preview .op7-panel {
+      min-height: 340px;
+      padding: 22px;
+      border: 1px solid light-dark(#cbd9df, #1d3442);
+      border-radius: 16px;
+      background: light-dark(#fff, #0e232f);
+    }
+    #op7-secondary-nav-preview .op7-panel h2 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 500;
+    }
+    #op7-secondary-nav-preview .op7-panel p {
+      color: light-dark(#6a7f89, #7893a1);
+    }
+    #op7-secondary-nav-preview .op7-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 20px;
+    }
+    #op7-secondary-nav-preview .op7-metric {
+      min-width: 0;
+      padding: 14px;
+      border-radius: 11px;
+      background: light-dark(#edf4f6, #091d27);
+    }
+    #op7-secondary-nav-preview .op7-metric small,
+    #op7-secondary-nav-preview .op7-metric span {
+      display: block;
+      color: light-dark(#6c818a, #718d9d);
+    }
+    #op7-secondary-nav-preview .op7-metric strong {
+      display: block;
+      margin: 8px 0 4px;
+      font-size: 18px;
+      font-weight: 500;
+    }
+    #op7-secondary-nav-preview .op7-placeholder {
+      height: 90px;
+      margin-top: 18px;
+      border-radius: 12px;
+      background: repeating-linear-gradient(90deg, light-dark(#e7eff2, #112d38) 0 22%, transparent 22% 25%);
+    }
+    #op7-secondary-nav-preview .op7-note {
+      margin-top: 14px;
+      color: light-dark(#687d87, #7893a1);
+    }
+    @media (max-width: 720px) {
+      #op7-secondary-nav-preview .op7-window {
+        grid-template-columns: 72px minmax(0, 1fr);
+      }
+      #op7-secondary-nav-preview .op7-side {
+        padding-inline: 8px;
+      }
+      #op7-secondary-nav-preview .op7-brand strong,
+      #op7-secondary-nav-preview .op7-primary span {
+        display: none;
+      }
+      #op7-secondary-nav-preview .op7-brand {
+        justify-content: center;
+        margin-inline: 0;
+      }
+      #op7-secondary-nav-preview .op7-primary {
+        padding: 0;
+        text-align: center;
+      }
+      #op7-secondary-nav-preview .op7-main {
+        padding: 20px 16px 26px;
+      }
+      #op7-secondary-nav-preview .op7-metrics {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+    @media (max-width: 480px) {
+      #op7-secondary-nav-preview .op7-window {
+        display: block;
+        min-height: 650px;
+      }
+      #op7-secondary-nav-preview .op7-side {
+        display: none;
+      }
+      #op7-secondary-nav-preview .op7-heading h1 {
+        font-size: 20px;
+      }
+      #op7-secondary-nav-preview .op7-context {
+        gap: 6px 10px;
+      }
+      #op7-secondary-nav-preview .op7-context span + span::before {
+        margin-right: 10px;
+      }
+    }
+  </style>
+
+  <div class="op7-window">
+    <aside class="op7-side" aria-label="一级导航">
+      <div class="op7-brand"><span class="op7-mark">1+</span><strong>Router OS</strong></div>
+      <button class="op7-primary" type="button" data-view="overview" aria-pressed="false">OV&nbsp;&nbsp; <span>总览</span></button>
+      <button class="op7-primary" type="button" data-view="network" aria-pressed="false">NET&nbsp; <span>网络</span></button>
+      <button class="op7-primary" type="button" data-view="clients" aria-pressed="false">LAN&nbsp; <span>客户端</span></button>
+      <button class="op7-primary" type="button" data-view="services" aria-pressed="false">SVC&nbsp; <span>服务</span></button>
+      <button class="op7-primary" type="button" data-view="mihomo" aria-pressed="true">VPN&nbsp; <span>代理</span></button>
+      <button class="op7-primary" type="button" data-view="system" aria-pressed="false">SYS&nbsp; <span>系统</span></button>
+    </aside>
+
+    <main class="op7-main">
+      <header class="op7-heading">
+        <div><small id="op7-breadcrumb">代理 / 流量审计</small><h1 id="op7-title">代理 · 流量审计</h1></div>
+        <button class="op7-refresh" type="button">刷新</button>
+      </header>
+
+      <div class="op7-tabs" role="tablist" aria-label="代理二级导航"></div>
+
+      <div class="op7-context" aria-label="模块上下文">
+        <strong>Mihomo 运行中</strong>
+        <span>Rule 模式</span>
+        <span>蜂鸟云</span>
+        <span>18 条连接</span>
+      </div>
+
+      <section class="op7-panel" id="op7-panel" role="tabpanel" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.getElementById("op7-secondary-nav-preview");
+      const definitions = {
+        overview: { label: "总览", tabs: ["状态摘要"] },
+        network: { label: "网络", tabs: ["运行状态", "接口配置"] },
+        clients: { label: "客户端", tabs: ["流量概览", "设备管理"] },
+        services: { label: "服务", tabs: ["全部服务", "Tailscale", "Aria2"] },
+        mihomo: { label: "代理", tabs: ["运行概览", "策略与节点", "体验测速", "流量审计", "设置"] },
+        system: { label: "系统", tabs: ["供电与电池", "性能与温度"] }
+      };
+      const state = { view: "mihomo", activeByView: { mihomo: "流量审计" }, compactContext: true };
+      const tabs = root.querySelector(".op7-tabs");
+      const panel = root.querySelector("#op7-panel");
+      const context = root.querySelector(".op7-context");
+
+      function panelCopy(view, tab) {
+        if (view === "mihomo" && tab === "流量审计") {
+          return `<h2>通用流量审计</h2><p>这里只保留审计摘要、倍率设置，以及终端 / 订阅 / 节点 / 目标等局部数据视图。</p><div class="op7-metrics"><div class="op7-metric"><small>观察流量</small><strong>18.4 GB</strong><span>全部连接</span></div><div class="op7-metric"><small>代理原始流量</small><strong>12.7 GB</strong><span>69%</span></div><div class="op7-metric"><small>预计计费</small><strong>16.1 GB</strong><span>含倍率</span></div><div class="op7-metric"><small>采集状态</small><strong>正常</strong><span>刚刚更新</span></div></div><div class="op7-placeholder" aria-label="流量审计明细表占位"></div>`;
+        }
+        return `<h2>${tab}</h2><p>当前只挂载“${tab}”所属内容，兄弟子页不会出现在本页下方。</p><div class="op7-placeholder" aria-label="${tab}内容占位"></div><p class="op7-note">顶部状态条保留必要上下文，跨页动作可以直接跳到负责处理的子页。</p>`;
+      }
+
+      function render() {
+        const def = definitions[state.view];
+        const selected = state.activeByView[state.view] || def.tabs[0];
+        root.querySelectorAll(".op7-primary").forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.view === state.view));
+        });
+        root.querySelector("#op7-breadcrumb").textContent = `${def.label} / ${selected}`;
+        root.querySelector("#op7-title").textContent = `${def.label} · ${selected}`;
+        tabs.setAttribute("aria-label", `${def.label}二级导航`);
+        tabs.replaceChildren();
+        def.tabs.forEach((label, index) => {
+          const button = document.createElement("button");
+          button.className = "op7-tab";
+          button.type = "button";
+          button.role = "tab";
+          button.id = `op7-tab-${state.view}-${index}`;
+          button.setAttribute("aria-controls", "op7-panel");
+          button.setAttribute("aria-selected", String(label === selected));
+          button.textContent = label;
+          button.addEventListener("click", () => {
+            state.activeByView[state.view] = label;
+            render();
+          });
+          tabs.appendChild(button);
+        });
+        const selectedButton = tabs.querySelector('[aria-selected="true"]');
+        panel.setAttribute("aria-labelledby", selectedButton.id);
+        panel.innerHTML = panelCopy(state.view, selected);
+        context.style.display = state.compactContext ? "flex" : "none";
+      }
+
+      root.querySelectorAll(".op7-primary").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.view = button.dataset.view;
+          render();
+        });
+      });
+      render();
+
+      if (globalThis.Tweak) {
+        const tweak = new Tweak({ container: root, onChange: render });
+        tweak.addSelect(state, "view", {
+          label: "预览一级模块",
+          options: [
+            { label: "代理（推荐示例）", value: "mihomo" },
+            { label: "服务", value: "services" },
+            { label: "客户端", value: "clients" },
+            { label: "网络", value: "network" },
+            { label: "系统", value: "system" }
+          ],
+          reference: "navigation.view"
+        });
+        tweak.addToggle(state, "compactContext", {
+          label: "显示共享上下文",
+          reference: "navigation.compact-context"
+        });
+      }
+    })();
+  </script>
+</div>

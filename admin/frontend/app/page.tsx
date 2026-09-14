@@ -10,18 +10,18 @@ import {
   useState,
 } from "react";
 import { BrowserScreenControl } from "./web-screen";
+import {
+  isTab,
+  ModuleContextBar,
+  navItems,
+  RemoteMode,
+  resolveSection,
+  SecondaryNav,
+  secondaryNavItems,
+  SectionId,
+  Tab,
+} from "./navigation";
 
-type Tab =
-  | "overview"
-  | "network"
-  | "clients"
-  | "services"
-  | "mihomo"
-  | "storage"
-  | "logs"
-  | "system"
-  | "remote";
-type RemoteMode = "terminal" | "screen";
 type AuthState = "checking" | "login" | "ready" | "demo";
 
 type Snapshot = {
@@ -460,18 +460,6 @@ type SystemLogResponse = {
   error: number;
 };
 
-const navItems: { id: Tab; label: string; icon: string }[] = [
-  { id: "overview", label: "总览", icon: "OV" },
-  { id: "network", label: "网络", icon: "NET" },
-  { id: "clients", label: "客户端", icon: "LAN" },
-  { id: "services", label: "服务", icon: "SVC" },
-  { id: "mihomo", label: "代理", icon: "VPN" },
-  { id: "storage", label: "存储", icon: "SSD" },
-  { id: "logs", label: "日志", icon: "LOG" },
-  { id: "system", label: "系统", icon: "SYS" },
-  { id: "remote", label: "远程", icon: "WEB" },
-];
-
 const demo: Snapshot = {
   time: new Date().toISOString(),
   trustedLocal: true,
@@ -754,12 +742,64 @@ export default function Home() {
   const [auth, setAuth] = useState<AuthState>("checking");
   const [data, setData] = useState<Snapshot>(demo);
   const [active, setActive] = useState<Tab>("overview");
-  const [remoteMode, setRemoteMode] = useState<RemoteMode>("terminal");
+  const [activeSections, setActiveSections] = useState<
+    Partial<Record<Tab, SectionId>>
+  >({});
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [notice, setNotice] = useState("");
   const [logText, setLogText] = useState("");
   const [logService, setLogService] = useState("");
   const refreshSequence = useRef(0);
+
+  const navigate = useCallback(
+    (
+      view: Tab,
+      requestedSection?: SectionId,
+      historyMode: "push" | "replace" = "push",
+    ) => {
+      const section = resolveSection(
+        view,
+        requestedSection || activeSections[view],
+      );
+      setActive(view);
+      if (section) {
+        setActiveSections((old) => ({ ...old, [view]: section }));
+      }
+      if (typeof window === "undefined") return;
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", view);
+      if (section) url.searchParams.set("section", section);
+      else url.searchParams.delete("section");
+      if (historyMode === "replace") {
+        window.history.replaceState(null, "", url);
+      } else {
+        window.history.pushState(null, "", url);
+      }
+    },
+    [activeSections],
+  );
+
+  useEffect(() => {
+    const syncFromLocation = (normalize = false) => {
+      const url = new URL(window.location.href);
+      const requestedView = url.searchParams.get("view");
+      const view = isTab(requestedView) ? requestedView : "overview";
+      const section = resolveSection(view, url.searchParams.get("section"));
+      setActive(view);
+      if (section) {
+        setActiveSections((old) => ({ ...old, [view]: section }));
+      }
+      if (!normalize) return;
+      url.searchParams.set("view", view);
+      if (section) url.searchParams.set("section", section);
+      else url.searchParams.delete("section");
+      window.history.replaceState(null, "", url);
+    };
+    syncFromLocation(true);
+    const onPopState = () => syncFromLocation(true);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const refresh = useCallback(async (quiet = false) => {
     const sequence = ++refreshSequence.current;
@@ -873,6 +913,11 @@ export default function Home() {
   if (auth === "login") return <Login onSuccess={() => refresh(true)} />;
 
   const title = navItems.find((item) => item.id === active)?.label || "总览";
+  const activeSection = resolveSection(active, activeSections[active]);
+  const sectionTitle = secondaryNavItems[active]?.find(
+    (item) => item.id === activeSection,
+  )?.label;
+  const remoteMode: RemoteMode = activeSection === "screen" ? "screen" : "terminal";
   const running = data.services.filter((s) => s.State === "运行中").length;
   const external =
     data.storage
@@ -886,9 +931,81 @@ export default function Home() {
       data.services.filter((s) => s.State === "停止").length * 5,
   );
   const openRemote = (mode: RemoteMode) => {
-    setRemoteMode(mode);
-    setActive("remote");
+    navigate("remote", mode);
   };
+
+  const viewContent = (
+    <>
+      {active === "overview" && (
+        <Overview
+          data={data}
+          history={history}
+          health={health}
+          running={running}
+          external={external}
+          setActive={(tab) => navigate(tab)}
+          onRemote={openRemote}
+        />
+      )}
+      {active === "network" && activeSection && (
+        <Network
+          data={data}
+          history={history}
+          onNotice={setNotice}
+          section={activeSection}
+        />
+      )}
+      {active === "clients" && activeSection && (
+        <Clients
+          data={data}
+          history={history}
+          refresh={refresh}
+          setNotice={setNotice}
+          section={activeSection}
+        />
+      )}
+      {active === "services" && activeSection && (
+        <Services
+          data={data}
+          history={history}
+          refresh={refresh}
+          setNotice={setNotice}
+          section={activeSection}
+          onLog={async (name) => {
+            const r = await fetch(
+              `/api/logs?service=${encodeURIComponent(name)}`,
+            );
+            if (r.ok) {
+              const body = (await r.json()) as { log?: string };
+              setLogService(name);
+              setLogText(body.log || "暂无日志");
+            }
+          }}
+        />
+      )}
+      {active === "mihomo" && activeSection && (
+        <MihomoManager
+          data={data}
+          refresh={refresh}
+          setNotice={setNotice}
+          section={activeSection}
+        />
+      )}
+      {active === "storage" && <Storage data={data} />}
+      {active === "logs" && <SystemLogs />}
+      {active === "system" && activeSection && (
+        <System
+          data={data}
+          history={history}
+          onRefresh={() => refresh(true)}
+          section={activeSection}
+        />
+      )}
+      {active === "remote" && activeSection && (
+        <RemoteMaintenance mode={remoteMode} />
+      )}
+    </>
+  );
 
   return (
     <main className="admin-shell">
@@ -906,7 +1023,7 @@ export default function Home() {
               className={`nav-item ${active === item.id ? "active" : ""}`}
               key={item.id}
               type="button"
-              onClick={() => setActive(item.id)}
+              onClick={() => navigate(item.id)}
             >
               <span className="nav-icon">{item.icon}</span>
               <span>{item.label}</span>
@@ -925,11 +1042,15 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{title}</p>
+            <p className="eyebrow">
+              {sectionTitle ? `${title} / ${sectionTitle}` : title}
+            </p>
             <h1>
               {active === "overview"
                 ? `一加 7 Pro 状态${health >= 90 ? "稳定" : "需要注意"}`
-                : title}
+                : sectionTitle
+                  ? `${title} · ${sectionTitle}`
+                  : title}
             </h1>
           </div>
           <div className="top-actions">
@@ -956,57 +1077,24 @@ export default function Home() {
             )}
           </div>
         </header>
-
-        {active === "overview" && (
-          <Overview
-            data={data}
-            history={history}
-            health={health}
-            running={running}
-            external={external}
-            setActive={setActive}
-            onRemote={openRemote}
-          />
-        )}
-        {active === "network" && (
-          <Network data={data} history={history} onNotice={setNotice} />
-        )}
-        {active === "clients" && (
-          <Clients
-            data={data}
-            history={history}
-            refresh={refresh}
-            setNotice={setNotice}
-          />
-        )}
-        {active === "services" && (
-          <Services
-            data={data}
-            history={history}
-            refresh={refresh}
-            setNotice={setNotice}
-            onLog={async (name) => {
-              const r = await fetch(
-                `/api/logs?service=${encodeURIComponent(name)}`,
-              );
-              if (r.ok) {
-                const body = (await r.json()) as { log?: string };
-                setLogService(name);
-                setLogText(body.log || "暂无日志");
-              }
-            }}
-          />
-        )}
-        {active === "mihomo" && (
-          <MihomoManager data={data} refresh={refresh} setNotice={setNotice} />
-        )}
-        {active === "storage" && <Storage data={data} />}
-        {active === "logs" && <SystemLogs />}
-        {active === "system" && (
-          <System data={data} history={history} onRefresh={() => refresh(true)} />
-        )}
-        {active === "remote" && (
-          <RemoteMaintenance mode={remoteMode} onMode={setRemoteMode} />
+        {activeSection ? (
+          <>
+            <SecondaryNav
+              view={active}
+              active={activeSection}
+              onSelect={(section) => navigate(active, section)}
+            />
+            <section
+              className="secondary-panel-host"
+              id={`secondary-panel-${active}`}
+              role="tabpanel"
+              aria-labelledby={`secondary-${active}-${activeSection}`}
+            >
+              {viewContent}
+            </section>
+          </>
+        ) : (
+          viewContent
         )}
       </section>
       {notice && <div className="toast">{notice}</div>}
@@ -1315,38 +1403,18 @@ function Overview({
 
 function RemoteMaintenance({
   mode,
-  onMode,
 }: {
   mode: RemoteMode;
-  onMode: (mode: RemoteMode) => void;
 }) {
   const [root, setRoot] = useState(false);
   return (
     <div
       className={`view remote-console ${mode === "screen" ? "screen-mode" : ""}`}
     >
-      <article className="panel remote-console-hero">
-        <div>
-          <p className="eyebrow">远程维护</p>
-          <h2>浏览器控制中心</h2>
-        </div>
-        <div className="remote-mode-switch" role="tablist" aria-label="远程维护方式">
-          <button
-            type="button"
-            className={mode === "terminal" ? "active" : ""}
-            onClick={() => onMode("terminal")}
-          >
-            网页终端
-          </button>
-          <button
-            type="button"
-            className={mode === "screen" ? "active" : ""}
-            onClick={() => onMode("screen")}
-          >
-            屏幕控制
-          </button>
-        </div>
-      </article>
+      <ModuleContextBar>
+        <strong>{mode === "terminal" ? "网页终端" : "实时屏幕控制"}</strong>
+        <span>{mode === "terminal" ? (root ? "Root 会话" : "Termux 会话") : "scrcpy 低延迟连接"}</span>
+      </ModuleContextBar>
       {mode === "terminal" ? (
         <WebTerminal root={root} onRootChange={setRoot} />
       ) : (
@@ -1668,12 +1736,16 @@ function Network({
   data,
   history,
   onNotice,
+  section,
 }: {
   data: Snapshot;
   history: HistoryPoint[];
   onNotice: (value: string) => void;
+  section: SectionId;
 }) {
   const [draft, setDraft] = useState(data.networkDraft);
+  const wan = data.interfaces.find((item) => item.Role.includes("WAN"));
+  const lan = data.interfaces.find((item) => item.Role.includes("LAN"));
   const update = (key: keyof NetworkDraft, value: string | number) =>
     setDraft((old) => ({ ...old, [key]: value }));
   const save = async () => {
@@ -1687,14 +1759,21 @@ function Network({
   };
   return (
     <div className="view">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">正式部署 · 接口与流量</p>
-          <h2>网络接口</h2>
-        </div>
-        <span className="state-good">PPPoE 路由已接管</span>
-      </div>
-      <article className="panel history-panel">
+      <ModuleContextBar>
+        <strong>PPPoE 路由已接管</strong>
+        <span>WAN {wan?.Name || "未识别"}</span>
+        <span>LAN {lan?.Name || "未识别"}</span>
+      </ModuleContextBar>
+      {section === "status" && (
+        <>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">正式部署 · 接口与流量</p>
+              <h2>网络接口</h2>
+            </div>
+            <span className="state-good">实时状态</span>
+          </div>
+          <article className="panel history-panel">
         <div className="panel-title">
           <div>
             <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均</p>
@@ -1710,8 +1789,8 @@ function Network({
           ]}
           format={rate}
         />
-      </article>
-      <div className="interface-grid">
+          </article>
+          <div className="interface-grid">
         {data.interfaces.map((iface) => (
           <article className="panel interface-card" key={iface.Name}>
             <header>
@@ -1753,8 +1832,11 @@ function Network({
             <small>{iface.MAC}</small>
           </article>
         ))}
-      </div>
-      <article className="panel config-panel">
+          </div>
+        </>
+      )}
+      {section === "config" && (
+        <article className="panel config-panel section-page-first">
         <div className="panel-title">
           <div>
             <p className="eyebrow">当前生效拓扑</p>
@@ -1844,7 +1926,8 @@ function Network({
           USB NetCard）连接 AP，LAN 网关为
           192.168.2.1。这里保存的是运维记录，不会直接重启网络或中断现有连接。
         </p>
-      </article>
+        </article>
+      )}
     </div>
   );
 }
@@ -1854,11 +1937,13 @@ function Clients({
   history,
   refresh,
   setNotice,
+  section,
 }: {
   data: Snapshot;
   history: HistoryPoint[];
   refresh: (quiet?: boolean) => Promise<void>;
   setNotice: (value: string) => void;
+  section: SectionId;
 }) {
   const [editingMac, setEditingMac] = useState("");
   const [staticIP, setStaticIP] = useState("");
@@ -2083,24 +2168,24 @@ function Clients({
 
   return (
     <div className="view">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">eth1 · AP 桥接局域网与流量监控</p>
-          <h2>LAN 客户端与流量统计</h2>
-        </div>
-        <div className="clients-header-badges">
-          <strong className="count-badge">{data.clients.length} 台设备</strong>
-          <span className="live-badge">{onlineCount} 台在线</span>
-          {activeTrafficCount > 0 && (
-            <span className="traffic-active-badge">
-              {activeTrafficCount} 台传输中
-            </span>
-          )}
-        </div>
-      </div>
+      <ModuleContextBar>
+        <strong>{onlineCount} 台在线</strong>
+        <span>{data.clients.length} 台已发现</span>
+        <span>WAN ↓ {rate(wanDownSpeed)} · ↑ {rate(wanUpSpeed)}</span>
+        {activeTrafficCount > 0 && <span>{activeTrafficCount} 台传输中</span>}
+      </ModuleContextBar>
 
-      {/* WAN vs LAN 双域流量统计看板 */}
-      <div className="client-traffic-overview">
+      {section === "traffic" && (
+        <>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">eth1 · AP 桥接局域网与流量监控</p>
+              <h2>外网与内网流量</h2>
+            </div>
+            <span className="live-badge">实时</span>
+          </div>
+          {/* WAN vs LAN 双域流量统计看板 */}
+          <div className="client-traffic-overview">
         {/* WAN 外网看板 */}
         <article className="panel client-traffic-card wan-card">
           <header className="traffic-card-header">
@@ -2175,10 +2260,10 @@ function Clients({
             </div>
           </div>
         </article>
-      </div>
+          </div>
 
-      {/* WAN 与 LAN 实时吞吐趋势折线图 */}
-      <article className="panel history-panel client-chart-panel">
+          {/* WAN 与 LAN 实时吞吐趋势折线图 */}
+          <article className="panel history-panel client-chart-panel">
         <div className="panel-title">
           <div>
             <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均 · WAN vs LAN 双域对比</p>
@@ -2213,10 +2298,24 @@ function Clients({
           ]}
           format={rate}
         />
-      </article>
+          </article>
+          <p className="safe-note">
+            说明：青/绿表示 WAN 互联网出入，紫/橙表示 LAN 局域网吞吐。累计量来自当前接口计数器。
+          </p>
+        </>
+      )}
 
-      {/* 客户端列表与交互工具栏 */}
-      <article className="panel clients-panel">
+      {section === "devices" && (
+        <>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">租约、实时速率与固定地址</p>
+              <h2>客户端设备管理</h2>
+            </div>
+            <strong className="count-badge">{data.clients.length} 台设备</strong>
+          </div>
+          {/* 客户端列表与交互工具栏 */}
+          <article className="panel clients-panel">
         <div className="panel-title clients-list-heading">
           <div>
             <p className="eyebrow">局域网设备连接与流量明细</p>
@@ -2566,10 +2665,12 @@ function Clients({
               : "当前 eth1 局域网没有有效 DHCP 租约或在线邻居。"}
           </p>
         )}
-      </article>
-      <p className="safe-note">
-        说明：已明确区分 WAN 外网流量与 LAN 内网流量。顶部图表可观察外网互联网出入（青/绿）与内网局域网吞吐（紫/橙）的实时走势。每台客户端的“LAN 实时速率”与“LAN 累计流量”统计其通过软路由转发的上下行流量。列表仅统计 LAN 网口 eth1 / 192.168.2.0/24，已排除光猫上联与自身地址。
-      </p>
+          </article>
+          <p className="safe-note">
+            列表只统计 LAN 网口 eth1 / 192.168.2.0/24，已排除光猫上联与路由器自身地址。设备流量是其通过软路由转发的上下行流量。
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -4102,10 +4203,12 @@ function MihomoManager({
   data,
   refresh,
   setNotice,
+  section,
 }: {
   data: Snapshot;
   refresh: (quiet?: boolean) => Promise<void>;
   setNotice: (value: string) => void;
+  section: SectionId;
 }) {
   const [status, setStatus] = useState<MihomoStatus>({
     online: false,
@@ -4284,7 +4387,7 @@ function MihomoManager({
   }, []);
 
   useEffect(() => {
-    if (speedTestJob?.state !== "running") return;
+    if (section !== "speedtest" || speedTestJob?.state !== "running") return;
     const timer = setInterval(async () => {
       try {
         const res = await fetch("/api/mihomo/speedtest", { cache: "no-store" });
@@ -4301,7 +4404,7 @@ function MihomoManager({
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [speedTestJob?.state]);
+  }, [section, speedTestJob?.state]);
 
   useEffect(() => {
     let stopped = false;
@@ -4759,6 +4862,16 @@ function MihomoManager({
 
   return (
     <div className="view mihomo-console">
+      <ModuleContextBar>
+        <strong>{status.online && running ? "Mihomo 运行中" : "Mihomo 未就绪"}</strong>
+        <span>{modes.find((mode) => mode.id === status.mode)?.label || "未知模式"}</span>
+        <span>
+          {subscriptions.items.find((item) => item.active)?.name || "未启用订阅"}
+        </span>
+        <span>{status.connections} 条连接</span>
+      </ModuleContextBar>
+      {section === "overview" && (
+        <>
       <article className="panel mihomo-hero">
         <div className="mihomo-hero-copy">
           <p className="eyebrow">代理核心控制中心</p>
@@ -4927,8 +5040,11 @@ function MihomoManager({
           ))}
         </div>
       </article>
+        </>
+      )}
 
-      <article className="panel mihomo-section">
+      {section === "policies" && (
+        <article className="panel mihomo-section section-page-first">
         <div className="section-heading small">
           <div>
             <p className="eyebrow">策略组</p>
@@ -4971,9 +5087,11 @@ function MihomoManager({
             核心未运行，或当前配置中没有可选择的代理组。
           </p>
         )}
-      </article>
+        </article>
+      )}
 
-      <article className="panel mihomo-section speedtest-panel">
+      {section === "speedtest" && (
+        <article className="panel mihomo-section speedtest-panel section-page-first">
         <div className="section-heading small">
           <div>
             <p className="eyebrow">测速与推荐</p>
@@ -5250,14 +5368,19 @@ function MihomoManager({
             </div>
           </div>
         )}
-      </article>
+        </article>
+      )}
 
-      <TrafficAccountingSection
-        subscriptions={subscriptions}
-        setNotice={setNotice}
-      />
+      {section === "traffic" && (
+        <TrafficAccountingSection
+          subscriptions={subscriptions}
+          setNotice={setNotice}
+        />
+      )}
 
-      <article className="panel mihomo-section">
+      {section === "settings" && (
+        <>
+      <article className="panel mihomo-section section-page-first">
         <div className="section-heading small">
           <div>
             <p className="eyebrow">本机监听</p>
@@ -5433,6 +5556,8 @@ function MihomoManager({
           只保存在手机本机，管理页面仅显示已隐藏敏感路径的地址。
         </p>
       </article>
+        </>
+      )}
       {showLogs && (
         <div className="modal-backdrop" onClick={() => setShowLogs(false)}>
           <section
@@ -5757,12 +5882,14 @@ function Services({
   refresh,
   setNotice,
   onLog,
+  section,
 }: {
   data: Snapshot;
   history: HistoryPoint[];
   refresh: (quiet?: boolean) => Promise<void>;
   setNotice: (value: string) => void;
   onLog: (name: string) => void;
+  section: SectionId;
 }) {
   const act = async (name: string, action: string) => {
     if (action === "stop" && !confirm(`确定停止 ${name}？`)) return;
@@ -5789,18 +5916,27 @@ function Services({
   };
   return (
     <div className="view">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">Runit 托管</p>
-          <h2>应用与系统服务</h2>
-        </div>
-        <span className="live-pill">
-          <i /> 自动守护
-        </span>
-      </div>
-      <TailscaleService setNotice={setNotice} />
-      <Aria2Monitor data={data} history={history} />
-      <div className="service-cards">
+      <ModuleContextBar>
+        <strong>
+          {data.services.filter((service) => service.State === "运行中").length} / {data.services.length} 项运行中
+        </strong>
+        <span>Runit 自动守护</span>
+        <span>{data.aria2.online ? `Aria2 ${data.aria2.numActive} 项活动` : "Aria2 离线"}</span>
+      </ModuleContextBar>
+      {section === "tailscale" && <TailscaleService setNotice={setNotice} />}
+      {section === "aria2" && <Aria2Monitor data={data} history={history} />}
+      {section === "all" && (
+        <>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Runit 托管</p>
+              <h2>应用与系统服务</h2>
+            </div>
+            <span className="live-pill">
+              <i /> 自动守护
+            </span>
+          </div>
+          <div className="service-cards">
         {data.services.map((service, index) => (
           <article className="panel service-card" key={service.Name}>
             <div className="service-main">
@@ -5863,7 +5999,9 @@ function Services({
             </div>
           </article>
         ))}
-      </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -6145,13 +6283,19 @@ function BatteryGuardSettings({
   guardLow,
   guardHigh,
   onRefresh,
+  userLow,
+  userHigh,
+  onUserLowChange,
+  onUserHighChange,
 }: {
   guardLow?: number;
   guardHigh?: number;
   onRefresh?: () => void | Promise<void>;
+  userLow: string | null;
+  userHigh: string | null;
+  onUserLowChange: (value: string | null) => void;
+  onUserHighChange: (value: string | null) => void;
 }) {
-  const [userLow, setUserLow] = useState<string | null>(null);
-  const [userHigh, setUserHigh] = useState<string | null>(null);
   const [status, setStatus] = useState<
     "idle" | "saving" | "waiting" | "applied" | "error"
   >("idle");
@@ -6167,8 +6311,8 @@ function BatteryGuardSettings({
 
   const applyPreset = (low: number, high: number) => {
     if (disabled) return;
-    setUserLow(String(low));
-    setUserHigh(String(high));
+    onUserLowChange(String(low));
+    onUserHighChange(String(high));
     if (errorMessage) {
       setErrorMessage(null);
       setStatus("idle");
@@ -6270,8 +6414,8 @@ function BatteryGuardSettings({
           if (onRefresh) {
             await Promise.resolve(onRefresh());
           }
-          setUserLow(null);
-          setUserHigh(null);
+          onUserLowChange(null);
+          onUserHighChange(null);
           setStatus("applied");
           setStatusMessage(`✓ 阈值已成功生效（${low}%–${high}%）`);
           setTimeout(() => {
@@ -6346,7 +6490,7 @@ function BatteryGuardSettings({
                 value={lowInput}
                 disabled={disabled}
                 onChange={(e) => {
-                  setUserLow(e.target.value);
+                  onUserLowChange(e.target.value);
                   if (errorMessage) {
                     setErrorMessage(null);
                     setStatus("idle");
@@ -6367,7 +6511,7 @@ function BatteryGuardSettings({
                 value={highInput}
                 disabled={disabled}
                 onChange={(e) => {
-                  setUserHigh(e.target.value);
+                  onUserHighChange(e.target.value);
                   if (errorMessage) {
                     setErrorMessage(null);
                     setStatus("idle");
@@ -6439,11 +6583,17 @@ function System({
   data,
   history,
   onRefresh,
+  section,
 }: {
   data: Snapshot;
   history: HistoryPoint[];
   onRefresh?: () => void | Promise<void>;
+  section: SectionId;
 }) {
+  const [guardDraft, setGuardDraft] = useState<{
+    low: string | null;
+    high: string | null;
+  }>({ low: null, high: null });
   const memoryUsedPercent = data.memory.Total
     ? (data.memory.Used / data.memory.Total) * 100
     : 0;
@@ -6472,7 +6622,14 @@ function System({
   );
   return (
     <div className="view">
-      <div className="system-grid">
+      <ModuleContextBar>
+        <strong>{data.power.batteryPercent}% 电量</strong>
+        <span>{data.power.usbOnline ? `${data.power.usbType} 供电在线` : "未接入 USB 电源"}</span>
+        <span>CPU {data.cpu.usage.toFixed(1)}%</span>
+        <span>{data.cpu.temperature.toFixed(1)}°C</span>
+      </ModuleContextBar>
+      <div className="system-grid single-section-grid">
+        {section === "power" && (
         <article className="panel power-card">
           <div className="panel-title">
             <div>
@@ -6597,8 +6754,18 @@ function System({
             guardLow={data.power.guardLow}
             guardHigh={data.power.guardHigh}
             onRefresh={onRefresh}
+            userLow={guardDraft.low}
+            userHigh={guardDraft.high}
+            onUserLowChange={(low) =>
+              setGuardDraft((old) => ({ ...old, low }))
+            }
+            onUserHighChange={(high) =>
+              setGuardDraft((old) => ({ ...old, high }))
+            }
           />
         </article>
+        )}
+        {section === "performance" && (
         <article className="panel device-card">
           <div className="panel-title">
             <div>
@@ -6633,8 +6800,10 @@ function System({
             </div>
           </dl>
         </article>
+        )}
       </div>
-      <div className="system-grid power-history-grid">
+      {section === "power" && (
+        <div className="system-grid power-history-grid">
         <article className="panel history-panel">
           <div className="panel-title">
             <div>
@@ -6669,8 +6838,11 @@ function System({
             zeroBaseline={false}
           />
         </article>
-      </div>
-      <article className="panel history-panel system-history">
+        </div>
+      )}
+      {section === "performance" && (
+        <>
+          <article className="panel history-panel system-history">
         <div className="panel-title">
           <div>
             <p className="eyebrow">最近 10 分钟</p>
@@ -6687,14 +6859,14 @@ function System({
           format={(value) => value.toFixed(1)}
           domain={[0, 100]}
         />
-      </article>
-      <div className="section-heading small">
+          </article>
+          <div className="section-heading small">
         <div>
           <p className="eyebrow">处理器与内存</p>
           <h2>实时性能</h2>
         </div>
-      </div>
-      <div className="system-grid">
+          </div>
+          <div className="system-grid">
         <article className="panel cpu-panel">
           <div className="panel-title">
             <div>
@@ -6769,8 +6941,8 @@ function System({
             用作缓存；判断内存压力应看“可用”，不是只看“已用”。
           </p>
         </article>
-      </div>
-      <div className="section-heading small">
+          </div>
+          <div className="section-heading small">
         <div>
           <p className="eyebrow">热状态</p>
           <h2>温度</h2>
@@ -6780,8 +6952,8 @@ function System({
         >
           电池 {batteryTemperature.toFixed(1)}°C
         </span>
-      </div>
-      <article className="panel thermal-summary">
+          </div>
+          <article className="panel thermal-summary">
         <div className="battery-thermal">
           <div>
             <small>电池温度</small>
@@ -6809,7 +6981,9 @@ function System({
             </div>
           </details>
         )}
-      </article>
+          </article>
+        </>
+      )}
     </div>
   );
 }
