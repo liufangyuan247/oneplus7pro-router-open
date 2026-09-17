@@ -804,7 +804,10 @@ export default function Home() {
   const refresh = useCallback(async (quiet = false) => {
     const sequence = ++refreshSequence.current;
     try {
-      const response = await fetch("/api/snapshot", { cache: "no-store" });
+      const response = await fetch(
+        quiet ? "/api/snapshot" : "/api/snapshot?fresh=1",
+        { cache: "no-store" },
+      );
       if (sequence !== refreshSequence.current) return;
       if (response.status === 401) {
         setAuth("login");
@@ -888,13 +891,22 @@ export default function Home() {
     let stopped = false;
     let timer = 0;
     const poll = async () => {
+      if (document.hidden) return;
       await refresh(true);
-      if (!stopped) timer = window.setTimeout(poll, 2500);
+      if (!stopped && !document.hidden) {
+        timer = window.setTimeout(poll, 5000);
+      }
     };
-    poll();
+    const onVisibilityChange = () => {
+      clearTimeout(timer);
+      if (!document.hidden && !stopped) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    void poll();
     return () => {
       stopped = true;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [refresh]);
   useEffect(() => {
@@ -2927,12 +2939,14 @@ function TrafficAccountingSection({
   const [savingSettings, setSavingSettings] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  // Independent 5s non-blocking polling
+  // Accounting changes once per second server-side; a 10s visible refresh is
+  // sufficient for presentation and hidden tabs should do no work at all.
   useEffect(() => {
     let timer: number | undefined;
     let cancelled = false;
 
     const poll = async () => {
+      if (document.hidden) return;
       try {
         const [snapRes, settingsRes] = await Promise.all([
           fetch("/api/mihomo/traffic-accounting", { cache: "no-store" }),
@@ -2950,17 +2964,23 @@ function TrafficAccountingSection({
       } catch {
         // Non-blocking
       } finally {
-        if (!cancelled) {
-          timer = window.setTimeout(poll, 5000);
+        if (!cancelled && !document.hidden) {
+          timer = window.setTimeout(poll, 10000);
         }
       }
     };
 
-    poll();
+    const onVisibilityChange = () => {
+      if (timer) clearTimeout(timer);
+      if (!document.hidden && !cancelled) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    void poll();
 
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 
@@ -4389,6 +4409,7 @@ function MihomoManager({
   useEffect(() => {
     if (section !== "speedtest" || speedTestJob?.state !== "running") return;
     const timer = setInterval(async () => {
+      if (document.hidden) return;
       try {
         const res = await fetch("/api/mihomo/speedtest", { cache: "no-store" });
         if (res.ok) {
@@ -4410,6 +4431,7 @@ function MihomoManager({
     let stopped = false;
     let timer = 0;
     const poll = async () => {
+      if (document.hidden) return;
       try {
         const connectionsResponse = await fetch(
           "/api/mihomo/connections?summary=1",
@@ -4444,12 +4466,20 @@ function MihomoManager({
       } catch {
         /* The next poll will retry. */
       }
-      if (!stopped) timer = window.setTimeout(poll, 1500);
+      if (!stopped && !document.hidden) {
+        timer = window.setTimeout(poll, 3000);
+      }
     };
-    timer = window.setTimeout(poll, 1000);
+    const onVisibilityChange = () => {
+      clearTimeout(timer);
+      if (!document.hidden && !stopped) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    timer = window.setTimeout(poll, 500);
     return () => {
       stopped = true;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 
@@ -5703,16 +5733,25 @@ function TailscaleService({
     let stopped = false;
     let timer = 0;
     const poll = async () => {
+      if (document.hidden) return;
       try {
         await load();
       } finally {
-        if (!stopped) timer = window.setTimeout(poll, 5000);
+        if (!stopped && !document.hidden) {
+          timer = window.setTimeout(poll, 10000);
+        }
       }
     };
+    const onVisibilityChange = () => {
+      clearTimeout(timer);
+      if (!document.hidden && !stopped) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     void poll();
     return () => {
       stopped = true;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [load]);
 
@@ -6141,7 +6180,9 @@ function SystemLogs() {
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);
     if (!autoRefresh) return () => window.clearTimeout(initial);
-    const timer = window.setInterval(() => void load(true), 5000);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void load(true);
+    }, 5000);
     return () => {
       window.clearTimeout(initial);
       window.clearInterval(timer);

@@ -1786,6 +1786,59 @@ func TestHTTPBodyOverflow413(t *testing.T) {
 	}
 }
 
+func TestLedgerDoesNotRewriteWhileIdle(t *testing.T) {
+	now := time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC)
+	mgr := NewTrafficAccountingManager(TrafficAccountingConfig{
+		DataDir: t.TempDir(),
+		NowFunc: func() time.Time { return now },
+		FetchConnections: func(context.Context) (*mihomoRawConnectionsResponse, error) {
+			return &mihomoRawConnectionsResponse{}, nil
+		},
+	})
+	initialSave := mgr.lastSaveTime
+	now = now.Add(time.Minute)
+	if err := mgr.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !mgr.lastSaveTime.Equal(initialSave) {
+		t.Fatalf("idle poll rewrote ledger: last save moved from %v to %v", initialSave, mgr.lastSaveTime)
+	}
+}
+
+func TestLedgerWriteAmplificationIsRateLimited(t *testing.T) {
+	now := time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC)
+	connection := newMockRawConnection("fast", 0, 0, []string{"DIRECT"}, "example.com", "1.1.1.1", "192.168.2.2")
+	mgr := NewTrafficAccountingManager(TrafficAccountingConfig{
+		DataDir:      t.TempDir(),
+		SaveInterval: 10 * time.Second,
+		NowFunc:      func() time.Time { return now },
+		FetchConnections: func(context.Context) (*mihomoRawConnectionsResponse, error) {
+			return &mihomoRawConnectionsResponse{Connections: []mihomoRawConnection{connection}}, nil
+		},
+	})
+	initialSave := mgr.lastSaveTime
+	if err := mgr.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(time.Second)
+	connection.Upload = 2 * 1024 * 1024
+	if err := mgr.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !mgr.lastSaveTime.Equal(initialSave) {
+		t.Fatalf("large one-second delta bypassed save interval: %v", mgr.lastSaveTime)
+	}
+
+	now = now.Add(9 * time.Second)
+	if err := mgr.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !mgr.lastSaveTime.Equal(now) {
+		t.Fatalf("dirty ledger was not flushed at save interval: got %v want %v", mgr.lastSaveTime, now)
+	}
+}
+
 // 32. TestSanitizeLogSecrets: verify secrets and URLs are masked in logs.
 func TestSanitizeLogSecrets(t *testing.T) {
 	rawLog := "activation failed: error fetching https://user:pass@example.com/api/v1/client/subscribe?token=secret12345&auth=bearer_token999 from upstream"

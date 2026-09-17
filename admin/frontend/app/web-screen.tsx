@@ -89,12 +89,27 @@ export function BrowserScreenControl() {
   const [detail, setDetail] = useState("正在启动手机端视频编码器");
   const [enabled, setEnabled] = useState(true);
   const [generation, setGeneration] = useState(0);
+  const [pageVisible, setPageVisible] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [powerPending, setPowerPending] = useState<"unlock" | "lock" | null>(null);
   const [deviceClipboard, setDeviceClipboard] = useState<string | null>(null);
   const [clipboardStatus, setClipboardStatus] = useState(
     "剪切板已启用 · 在画面中按 Ctrl+V 可粘贴到手机",
   );
+
+  useEffect(() => {
+    const syncVisibility = () => {
+      const visible = !document.hidden;
+      setPageVisible(visible);
+      if (!visible) {
+        setState("closed");
+        setDetail("页面进入后台，屏幕串流已自动暂停");
+      }
+    };
+    document.addEventListener("visibilitychange", syncVisibility);
+    syncVisibility();
+    return () => document.removeEventListener("visibilitychange", syncVisibility);
+  }, []);
 
   useEffect(() => {
     document.body.classList.add("screen-control-active");
@@ -207,7 +222,7 @@ export function BrowserScreenControl() {
   }, [sendClipboardToDevice]);
 
   useEffect(() => {
-    if (!enabled || !canvasRef.current) return;
+    if (!enabled || !pageVisible || !canvasRef.current) return;
     let disposed = false;
     let videoController: PushReadableStreamController<Uint8Array> | undefined;
     let deviceMessageController:
@@ -455,7 +470,7 @@ export function BrowserScreenControl() {
       if (frameWatchdog !== undefined) window.clearInterval(frameWatchdog);
       disposeDecoder?.();
     };
-  }, [enabled, generation]);
+  }, [enabled, generation, pageVisible]);
 
   const point = (event: PointerEvent<HTMLCanvasElement>) => {
     const rectangle = event.currentTarget.getBoundingClientRect();

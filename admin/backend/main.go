@@ -111,14 +111,27 @@ type Server struct {
 	speedTestCheckListener             func() bool
 	trafficAccounting                  *TrafficAccountingManager
 	accountingCancel                   context.CancelFunc
+	snapshotMu                         sync.Mutex
+	snapshotCache                      Snapshot
+	snapshotAt                         time.Time
+	snapshotCollecting                 bool
+	snapshotWait                       chan struct{}
+	collectSnapshot                    func() (Snapshot, error)
+	mihomoConnectionsMu                sync.Mutex
+	mihomoConnectionsCache             *mihomoRawConnectionsResponse
+	mihomoConnectionsAt                time.Time
+	mihomoConnectionsLoading           bool
+	mihomoConnectionsWait              chan struct{}
 }
 
 const (
-	maxTerminalSessions       = 2
-	scrcpyServerVersion       = "3.3.1"
-	scrcpyVideoChannel   byte = 0
-	scrcpyControlChannel byte = 1
-	scrcpyDeviceChannel  byte = 2
+	maxTerminalSessions            = 2
+	snapshotCacheTTL               = 4 * time.Second
+	mihomoConnectionsCacheTTL      = 2 * time.Second
+	scrcpyServerVersion            = "3.3.1"
+	scrcpyVideoChannel        byte = 0
+	scrcpyControlChannel      byte = 1
+	scrcpyDeviceChannel       byte = 2
 )
 
 var terminalUpgrader = websocket.Upgrader{
@@ -1165,13 +1178,60 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {
 		return
 	}
-	snap, err := s.collect()
+	snap, err := s.cachedSnapshot(r.Context(), r.URL.Query().Get("fresh") == "1")
 	if err != nil {
 		jsonOut(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
 	snap.TrustedLocal = isLoopbackRequest(r)
 	jsonOut(w, 200, snap)
+}
+
+// cachedSnapshot makes expensive system discovery independent of the number of
+// open dashboards. At most one collector runs at a time and every client shares
+// the same short-lived immutable result.
+func (s *Server) cachedSnapshot(ctx context.Context, force bool) (Snapshot, error) {
+	for {
+		s.snapshotMu.Lock()
+		if !force && !s.snapshotAt.IsZero() && time.Since(s.snapshotAt) < snapshotCacheTTL {
+			snap := s.snapshotCache
+			s.snapshotMu.Unlock()
+			return snap, nil
+		}
+		if s.snapshotCollecting {
+			wait := s.snapshotWait
+			s.snapshotMu.Unlock()
+			select {
+			case <-wait:
+				// A forced request can reuse the collection it waited for.
+				force = false
+				continue
+			case <-ctx.Done():
+				return Snapshot{}, ctx.Err()
+			}
+		}
+
+		s.snapshotCollecting = true
+		s.snapshotWait = make(chan struct{})
+		wait := s.snapshotWait
+		s.snapshotMu.Unlock()
+
+		collector := s.collect
+		if s.collectSnapshot != nil {
+			collector = s.collectSnapshot
+		}
+		snap, err := collector()
+
+		s.snapshotMu.Lock()
+		if err == nil {
+			s.snapshotCache = snap
+			s.snapshotAt = time.Now()
+		}
+		s.snapshotCollecting = false
+		close(wait)
+		s.snapshotMu.Unlock()
+		return snap, err
+	}
 }
 
 func (s *Server) collect() (Snapshot, error) {
@@ -1962,25 +2022,11 @@ func parseConntrackClientTraffic(text string, stats map[string]netCounter) {
 
 func (s *Server) collectClientTrafficStats() map[string]netCounter {
 	stats := make(map[string]netCounter)
-
-	var data struct {
-		Connections []struct {
-			Metadata struct {
-				SourceIP string `json:"sourceIP"`
-			} `json:"metadata"`
-			Upload   uint64 `json:"upload"`
-			Download uint64 `json:"download"`
-		} `json:"connections"`
-	}
-	client := &http.Client{Timeout: 600 * time.Millisecond}
-	req, err := http.NewRequest("GET", mihomoController+"/connections", nil)
-	if err == nil {
-		if resp, err := client.Do(req); err == nil {
-			if resp.StatusCode == http.StatusOK {
-				_ = json.NewDecoder(resp.Body).Decode(&data)
-			}
-			resp.Body.Close()
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	data, _ := s.getMihomoConnections(ctx, mihomoConnectionsCacheTTL)
+	if data == nil {
+		data = &mihomoRawConnectionsResponse{}
 	}
 	for _, c := range data.Connections {
 		ip := c.Metadata.SourceIP
@@ -3362,6 +3408,54 @@ func (s *Server) mihomoDelay(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, 200, map[string]any{"group": group, "delays": delays})
 }
 
+// getMihomoConnections coalesces the traffic auditor, dashboard summary and
+// client list onto one Mihomo /connections decode. Returned snapshots are
+// immutable after publication and can therefore be shared safely.
+func (s *Server) getMihomoConnections(ctx context.Context, maxAge time.Duration) (*mihomoRawConnectionsResponse, error) {
+	for {
+		s.mihomoConnectionsMu.Lock()
+		if s.mihomoConnectionsCache != nil && time.Since(s.mihomoConnectionsAt) < maxAge {
+			cached := s.mihomoConnectionsCache
+			s.mihomoConnectionsMu.Unlock()
+			return cached, nil
+		}
+		if s.mihomoConnectionsLoading {
+			wait := s.mihomoConnectionsWait
+			s.mihomoConnectionsMu.Unlock()
+			select {
+			case <-wait:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		s.mihomoConnectionsLoading = true
+		s.mihomoConnectionsWait = make(chan struct{})
+		wait := s.mihomoConnectionsWait
+		s.mihomoConnectionsMu.Unlock()
+
+		var response mihomoRawConnectionsResponse
+		err := s.mihomoRequestWithTimeout(ctx, "GET", "/connections", nil, &response, maxAccountingPollTimeout, maxAccountingResponseBytes)
+
+		s.mihomoConnectionsMu.Lock()
+		if err == nil {
+			s.mihomoConnectionsCache = &response
+			s.mihomoConnectionsAt = time.Now()
+		}
+		s.mihomoConnectionsLoading = false
+		close(wait)
+		s.mihomoConnectionsMu.Unlock()
+		return &response, err
+	}
+}
+
+func (s *Server) invalidateMihomoConnections() {
+	s.mihomoConnectionsMu.Lock()
+	s.mihomoConnectionsAt = time.Time{}
+	s.mihomoConnectionsMu.Unlock()
+}
+
 func (s *Server) mihomoConnections(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "DELETE" {
 		id := strings.TrimSpace(r.URL.Query().Get("id"))
@@ -3373,6 +3467,7 @@ func (s *Server) mihomoConnections(w http.ResponseWriter, r *http.Request) {
 			jsonOut(w, 400, map[string]string{"error": "关闭连接失败"})
 			return
 		}
+		s.invalidateMihomoConnections()
 		jsonOut(w, 200, map[string]bool{"ok": true})
 		return
 	}
@@ -3380,27 +3475,8 @@ func (s *Server) mihomoConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summaryOnly := r.URL.Query().Get("summary") == "1"
-	var data struct {
-		DownloadTotal uint64 `json:"downloadTotal"`
-		UploadTotal   uint64 `json:"uploadTotal"`
-		Memory        uint64 `json:"memory"`
-		Connections   []struct {
-			ID       string   `json:"id"`
-			Upload   uint64   `json:"upload"`
-			Download uint64   `json:"download"`
-			Start    string   `json:"start"`
-			Chains   []string `json:"chains"`
-			Rule     string   `json:"rule"`
-			Metadata struct {
-				Host       string `json:"host"`
-				SourceIP   string `json:"sourceIP"`
-				SourcePort string `json:"sourcePort"`
-				Network    string `json:"network"`
-				Type       string `json:"type"`
-			} `json:"metadata"`
-		} `json:"connections"`
-	}
-	if err := s.mihomoRequest("GET", "/connections", nil, &data); err != nil {
+	data, err := s.getMihomoConnections(r.Context(), mihomoConnectionsCacheTTL)
+	if err != nil {
 		connections := any([]MihomoConnection{})
 		if summaryOnly {
 			connections = 0
@@ -3411,18 +3487,19 @@ func (s *Server) mihomoConnections(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if data.Memory == 0 {
-		data.Memory = processRSSBytes("mihomo")
+	memory := data.Memory
+	if memory == 0 {
+		memory = processRSSBytes("mihomo")
 	}
 	if summaryOnly {
-		jsonOut(w, 200, map[string]any{"downloadTotal": data.DownloadTotal, "uploadTotal": data.UploadTotal, "memory": data.Memory, "connections": len(data.Connections)})
+		jsonOut(w, 200, map[string]any{"downloadTotal": data.DownloadTotal, "uploadTotal": data.UploadTotal, "memory": memory, "connections": len(data.Connections)})
 		return
 	}
 	connections := make([]MihomoConnection, 0, len(data.Connections))
 	for _, connection := range data.Connections {
 		connections = append(connections, MihomoConnection{ID: connection.ID, Host: connection.Metadata.Host, Source: net.JoinHostPort(connection.Metadata.SourceIP, connection.Metadata.SourcePort), Network: connection.Metadata.Network, Type: connection.Metadata.Type, Rule: connection.Rule, Chains: connection.Chains, Upload: connection.Upload, Download: connection.Download, Start: connection.Start})
 	}
-	jsonOut(w, 200, map[string]any{"downloadTotal": data.DownloadTotal, "uploadTotal": data.UploadTotal, "memory": data.Memory, "connections": connections})
+	jsonOut(w, 200, map[string]any{"downloadTotal": data.DownloadTotal, "uploadTotal": data.UploadTotal, "memory": memory, "connections": connections})
 }
 
 func processRSSBytes(name string) uint64 {
@@ -3954,9 +4031,7 @@ func (s *Server) initTrafficAccounting() {
 		PollInterval: defaultAccountingPollInterval,
 		SaveInterval: defaultAccountingSaveInterval,
 		FetchConnections: func(ctx context.Context) (*mihomoRawConnectionsResponse, error) {
-			var resp mihomoRawConnectionsResponse
-			err := s.mihomoRequestWithTimeout(ctx, "GET", "/connections", nil, &resp, maxAccountingPollTimeout, maxAccountingResponseBytes)
-			return &resp, err
+			return s.getMihomoConnections(ctx, 750*time.Millisecond)
 		},
 		GetActiveSubscription: func() (string, string) {
 			s.subscriptionMu.Lock()

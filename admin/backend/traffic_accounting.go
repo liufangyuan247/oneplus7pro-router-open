@@ -318,6 +318,7 @@ type TrafficAccountingManager struct {
 	currentCycleID           uint64
 	lastSaveTime             time.Time
 	bytesSinceLastSave       uint64
+	ledgerDirty              bool
 	lastKnownNodesFetch      time.Time
 	cachedKnownNodes         []string
 	lastClientHostnamesFetch time.Time
@@ -544,7 +545,9 @@ func (m *TrafficAccountingManager) initLedger() {
 func (m *TrafficAccountingManager) persistLedgerLocked() error {
 	m.ledger.Version = trafficAccountingVersion
 	m.ledger.UpdatedAt = m.now().Format(time.RFC3339)
-	encoded, err := json.MarshalIndent(m.ledger, "", "  ")
+	// The ledger is machine-owned and can become large. Compact JSON reduces
+	// serialization work and atomic-write volume without changing its schema.
+	encoded, err := json.Marshal(m.ledger)
 	if err != nil {
 		m.ledgerPersistErr = fmt.Sprintf("账本持久化失败: %v", err)
 		return err
@@ -556,6 +559,7 @@ func (m *TrafficAccountingManager) persistLedgerLocked() error {
 	}
 	m.lastSaveTime = m.now()
 	m.bytesSinceLastSave = 0
+	m.ledgerDirty = false
 	m.ledgerPersistErr = ""
 	return nil
 }
@@ -878,8 +882,10 @@ func (m *TrafficAccountingManager) Poll(ctx context.Context) error {
 	})
 	m.pruneRateSamplesLocked(now)
 
-	// Periodic or size-based atomic flush
-	if m.bytesSinceLastSave >= 1024*1024 || now.Sub(m.lastSaveTime) >= m.saveInterval {
+	// Flush at most once per save interval and only after accounting data
+	// changed. The previous size shortcut rewrote the whole ledger every second
+	// on fast downloads, while idle polling rewrote it every ten seconds.
+	if m.ledgerDirty && now.Sub(m.lastSaveTime) >= m.saveInterval {
 		_ = m.persistLedgerLocked()
 	}
 
@@ -1017,6 +1023,7 @@ func deviceRouteCompositeKey(sourceIP, routeKind, subscriptionID, leafNode, prox
 func (m *TrafficAccountingManager) accumulateDeltaLocked(tc *trackedConnection, deltaUp, deltaDown uint64, incConn bool, at string) {
 	rawDelta := safeAddUint64(deltaUp, deltaDown)
 	m.bytesSinceLastSave = safeAddUint64(m.bytesSinceLastSave, rawDelta)
+	m.ledgerDirty = true
 
 	if m.ledger.Devices == nil {
 		m.ledger.Devices = make(map[string]*DeviceAccounting)
