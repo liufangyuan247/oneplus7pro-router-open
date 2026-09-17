@@ -1404,6 +1404,10 @@ apply_routes() {
   "$IP" route replace "$MODEM_SUBNET" dev "$wan" src 192.168.1.2 table "$TABLE_WAN"
   "$IP" route replace default dev "$ppp" table "$TABLE_WAN"
   "$IP" route replace default dev "$ppp" table main metric 50
+  # IPv6CP gives ppp0 a global address but Android does not install an IPv6
+  # default in main. Tailscale's marked transport sockets consult main first,
+  # so publish the point-to-point default explicitly for direct IPv6 paths.
+  "$IP" -6 route replace default dev "$ppp" table main metric 50
   # Avoid deleting and re-adding an already-correct policy rule every five
   # seconds. Besides needless netlink work, that churn makes tailscaled treat
   # the routing table as continuously changing and bloats its log.
@@ -1420,6 +1424,7 @@ remove_routes() {
   "$IP" rule del priority "$RULE_WAN" 2>/dev/null || true
   "$IP" route flush table "$TABLE_WAN" 2>/dev/null || true
   "$IP" route del default dev ppp0 table main 2>/dev/null || true
+  "$IP" -6 route del default dev ppp0 table main 2>/dev/null || true
 }
 
 publish_interfaces() {

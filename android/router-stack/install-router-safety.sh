@@ -8,6 +8,7 @@ UPDATER_SRC=/data/local/tmp/safe-update-router-network.sh
 GUARD=/data/adb/service.d/01-router-rollback-guard.sh
 SERVICE=/data/adb/service.d/22-router-network.sh
 MANAGER="$BASE/router-network"
+SERVICE_DIR=/data/adb/service.d
 
 for file in "$GUARD_SRC" "$SERVICE_SRC" "$UPDATER_SRC" "$MANAGER" "$SERVICE"; do
   [ -s "$file" ] || { echo "missing $file" >&2; exit 1; }
@@ -16,6 +17,21 @@ done
 
 mkdir -p "$BASE/runtime"
 chmod 700 "$BASE" "$BASE/runtime"
+
+# Magisk executes every executable file in service.d, regardless of whether
+# its name looks like a backup. Legacy executable backups can therefore start
+# obsolete rollback guards and duplicate supervisors during boot. Keep the
+# files for recovery, but make sure only the canonical entries are runnable.
+for legacy_backup in \
+  "$SERVICE_DIR"/*.backup* \
+  "$SERVICE_DIR"/*.bak-* \
+  "$SERVICE_DIR"/*.before-* \
+  "$SERVICE_DIR"/*.pre-* \
+  "$SERVICE_DIR"/*.old \
+  "$SERVICE_DIR"/*.disabled; do
+  [ -f "$legacy_backup" ] || continue
+  chmod 600 "$legacy_backup"
+done
 
 if [ ! -s "$BASE/router-network.backup" ]; then
   cp -p "$MANAGER" "$BASE/router-network.backup.new"
