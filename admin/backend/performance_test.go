@@ -102,3 +102,28 @@ func TestMihomoConnectionsCoalescesConsumers(t *testing.T) {
 		t.Fatalf("upstream ran %d times for %d consumers, want 1", got, consumers)
 	}
 }
+
+func TestMetricHistoryRetainsCompleteTenMinuteWindow(t *testing.T) {
+	s := &Server{}
+	base := time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 130; i++ {
+		s.appendMetricPoint(MetricHistoryPoint{
+			At:  base.Add(time.Duration(i) * metricSampleInterval).UnixMilli(),
+			CPU: float64(i),
+		})
+	}
+
+	history := s.metricHistorySnapshot()
+	if len(history) != 121 {
+		t.Fatalf("history contains %d points, want 121 inclusive five-second samples", len(history))
+	}
+	if span := time.Duration(history[len(history)-1].At-history[0].At) * time.Millisecond; span != metricHistoryWindow {
+		t.Fatalf("history span = %v, want %v", span, metricHistoryWindow)
+	}
+
+	// Callers receive their own slice and cannot corrupt the server ring.
+	history[0].CPU = -1
+	if got := s.metricHistorySnapshot()[0].CPU; got == -1 {
+		t.Fatal("history snapshot aliases the server ring")
+	}
+}

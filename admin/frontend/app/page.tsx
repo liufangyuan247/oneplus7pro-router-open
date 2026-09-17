@@ -170,6 +170,7 @@ type Snapshot = {
     Speed: string;
   }[];
   networkDraft: NetworkDraft;
+  history?: HistoryPoint[];
 };
 
 type NetworkDraft = {
@@ -801,11 +802,11 @@ export default function Home() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const refresh = useCallback(async (quiet = false) => {
+  const refresh = useCallback(async (quiet = false, force = !quiet) => {
     const sequence = ++refreshSequence.current;
     try {
       const response = await fetch(
-        quiet ? "/api/snapshot" : "/api/snapshot?fresh=1",
+        force ? "/api/snapshot?fresh=1" : "/api/snapshot",
         { cache: "no-store" },
       );
       if (sequence !== refreshSequence.current) return;
@@ -849,7 +850,11 @@ export default function Home() {
       };
       setData(next);
       setAuth("ready");
-      setHistory((old) => [...old.slice(-239), point]);
+      setHistory((old) =>
+        next.history?.length
+          ? next.history.slice(-240)
+          : [...old.slice(-239), point],
+      );
       if (!quiet) setNotice("数据已刷新");
     } catch {
       if (sequence !== refreshSequence.current) return;
@@ -890,16 +895,16 @@ export default function Home() {
   useEffect(() => {
     let stopped = false;
     let timer = 0;
-    const poll = async () => {
+    const poll = async (force = false) => {
       if (document.hidden) return;
-      await refresh(true);
+      await refresh(true, force);
       if (!stopped && !document.hidden) {
-        timer = window.setTimeout(poll, 5000);
+        timer = window.setTimeout(poll, 10000);
       }
     };
     const onVisibilityChange = () => {
       clearTimeout(timer);
-      if (!document.hidden && !stopped) void poll();
+      if (!document.hidden && !stopped) void poll(true);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     void poll();

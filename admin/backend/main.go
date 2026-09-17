@@ -122,12 +122,17 @@ type Server struct {
 	mihomoConnectionsAt                time.Time
 	mihomoConnectionsLoading           bool
 	mihomoConnectionsWait              chan struct{}
+	metricsMu                          sync.RWMutex
+	metricHistory                      []MetricHistoryPoint
+	metricLastCPU                      cpuCounters
 }
 
 const (
 	maxTerminalSessions            = 2
-	snapshotCacheTTL               = 4 * time.Second
+	snapshotCacheTTL               = 8 * time.Second
 	mihomoConnectionsCacheTTL      = 2 * time.Second
+	metricSampleInterval           = 5 * time.Second
+	metricHistoryWindow            = 10 * time.Minute
 	scrcpyServerVersion            = "3.3.1"
 	scrcpyVideoChannel        byte = 0
 	scrcpyControlChannel      byte = 1
@@ -176,20 +181,44 @@ const (
 )
 
 type Snapshot struct {
-	Time         string          `json:"time"`
-	TrustedLocal bool            `json:"trustedLocal"`
-	Device       DeviceInfo      `json:"device"`
-	CPU          CPUInfo         `json:"cpu"`
-	Memory       MemoryInfo      `json:"memory"`
-	Power        PowerInfo       `json:"power"`
-	Thermals     []ThermalInfo   `json:"thermals"`
-	Interfaces   []InterfaceInfo `json:"interfaces"`
-	Clients      []ClientInfo    `json:"clients"`
-	Services     []ServiceInfo   `json:"services"`
-	Aria2        Aria2Info       `json:"aria2"`
-	Storage      []StorageInfo   `json:"storage"`
-	USB          []USBInfo       `json:"usb"`
-	NetworkDraft NetworkDraft    `json:"networkDraft"`
+	Time         string               `json:"time"`
+	TrustedLocal bool                 `json:"trustedLocal"`
+	Device       DeviceInfo           `json:"device"`
+	CPU          CPUInfo              `json:"cpu"`
+	Memory       MemoryInfo           `json:"memory"`
+	Power        PowerInfo            `json:"power"`
+	Thermals     []ThermalInfo        `json:"thermals"`
+	Interfaces   []InterfaceInfo      `json:"interfaces"`
+	Clients      []ClientInfo         `json:"clients"`
+	Services     []ServiceInfo        `json:"services"`
+	Aria2        Aria2Info            `json:"aria2"`
+	Storage      []StorageInfo        `json:"storage"`
+	USB          []USBInfo            `json:"usb"`
+	NetworkDraft NetworkDraft         `json:"networkDraft"`
+	History      []MetricHistoryPoint `json:"history"`
+}
+
+type MetricHistoryPoint struct {
+	At                    int64   `json:"at"`
+	CPU                   float64 `json:"cpu"`
+	Temperature           float64 `json:"temperature"`
+	Memory                float64 `json:"memory"`
+	WANDown               float64 `json:"wanDown"`
+	WANUp                 float64 `json:"wanUp"`
+	LANDown               float64 `json:"lanDown"`
+	LANUp                 float64 `json:"lanUp"`
+	AriaDown              float64 `json:"ariaDown"`
+	AriaUp                float64 `json:"ariaUp"`
+	BatteryVoltage        float64 `json:"batteryVoltage"`
+	BatteryCurrent        float64 `json:"batteryCurrent"`
+	BatteryAverageCurrent float64 `json:"batteryAverageCurrent"`
+	BatteryCoulombCurrent float64 `json:"batteryCoulombCurrent"`
+	BatteryPower          float64 `json:"batteryPower"`
+	BatteryPercent        int     `json:"batteryPercent"`
+	ChargeCounter         float64 `json:"chargeCounter"`
+	USBVoltage            float64 `json:"usbVoltage"`
+	USBCurrent            float64 `json:"usbCurrent"`
+	USBPower              float64 `json:"usbPower"`
 }
 
 type DeviceInfo struct {
@@ -416,6 +445,7 @@ func main() {
 		log.Printf("load remembered sessions: %v", err)
 	}
 	s.startNetworkSampler()
+	s.startMetricSampler()
 	s.initSpeedTest()
 	s.initTrafficAccounting()
 
@@ -1242,7 +1272,7 @@ func (s *Server) collect() (Snapshot, error) {
 			cpuTemp = t.Temp
 		}
 	}
-	return Snapshot{Time: time.Now().Format(time.RFC3339), Device: readDevice(s.started), CPU: s.readCPU(cpuTemp), Memory: readMemory(), Power: s.readPower(), Thermals: thermals, Interfaces: s.readInterfaces(), Clients: s.readClients(), Services: s.readServices(), Aria2: s.readAria2(), Storage: s.readStorage(), USB: readUSB(), NetworkDraft: s.loadNetworkDraft()}, nil
+	return Snapshot{Time: time.Now().Format(time.RFC3339), Device: readDevice(s.started), CPU: s.readCPU(cpuTemp), Memory: readMemory(), Power: s.readPower(), Thermals: thermals, Interfaces: s.readInterfaces(), Clients: s.readClients(), Services: s.readServices(), Aria2: s.readAria2(), Storage: s.readStorage(), USB: readUSB(), NetworkDraft: s.loadNetworkDraft(), History: s.metricHistorySnapshot()}, nil
 }
 
 func readDevice(started time.Time) DeviceInfo {
@@ -1614,6 +1644,108 @@ func (s *Server) startNetworkSampler() {
 			s.sampleNetwork(time.Now(), readNetDev())
 		}
 	}()
+}
+
+// startMetricSampler keeps chart continuity independent of browser tabs. It
+// samples only cheap local counters/sysfs values plus one small aria2 RPC; full
+// client, service, storage and connection discovery remains on-demand.
+func (s *Server) startMetricSampler() {
+	current, _ := readAllCPUCounters()
+	s.metricsMu.Lock()
+	s.metricLastCPU = current
+	s.metricsMu.Unlock()
+
+	go func() {
+		// Establish a useful CPU delta shortly after startup, then settle on the
+		// same five-second cadence used by the charts.
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		<-timer.C
+		s.sampleMetrics(time.Now())
+
+		ticker := time.NewTicker(metricSampleInterval)
+		defer ticker.Stop()
+		for at := range ticker.C {
+			s.sampleMetrics(at)
+		}
+	}()
+}
+
+func (s *Server) sampleMetrics(at time.Time) {
+	currentCPU, _ := readAllCPUCounters()
+	s.metricsMu.Lock()
+	previousCPU := s.metricLastCPU
+	s.metricLastCPU = currentCPU
+	s.metricsMu.Unlock()
+	cpuUsage := 0.0
+	if previousCPU.total > 0 && currentCPU.total > previousCPU.total {
+		deltaTotal := currentCPU.total - previousCPU.total
+		deltaIdle := currentCPU.idle - previousCPU.idle
+		cpuUsage = 100 * float64(deltaTotal-deltaIdle) / float64(deltaTotal)
+	}
+
+	thermals := readThermals()
+	cpuTemp := 0.0
+	for _, thermal := range thermals {
+		if (strings.HasPrefix(thermal.Type, "cpu") || strings.HasPrefix(thermal.Type, "cpuss")) && thermal.Temp > cpuTemp {
+			cpuTemp = thermal.Temp
+		}
+	}
+	memory := readMemory()
+	memoryUsage := 0.0
+	if memory.Total > 0 {
+		memoryUsage = 100 * float64(memory.Used) / float64(memory.Total)
+	}
+	power := s.readPower()
+	aria := s.readAria2Global()
+	_, rates := s.networkSnapshot()
+	draft := s.loadNetworkDraft()
+	wanInterface, lanInterface := s.activeNetworkInterfaces(draft)
+	wanRate := rates[wanInterface]
+	lanRate := rates[lanInterface]
+
+	s.appendMetricPoint(MetricHistoryPoint{
+		At:                    at.UnixMilli(),
+		CPU:                   round(cpuUsage, 1),
+		Temperature:           cpuTemp,
+		Memory:                round(memoryUsage, 1),
+		WANDown:               round(wanRate.rx, 1),
+		WANUp:                 round(wanRate.tx, 1),
+		LANDown:               round(lanRate.tx, 1),
+		LANUp:                 round(lanRate.rx, 1),
+		AriaDown:              float64(aria.DownloadSpeed),
+		AriaUp:                float64(aria.UploadSpeed),
+		BatteryVoltage:        power.Voltage,
+		BatteryCurrent:        power.Current * 1000,
+		BatteryAverageCurrent: power.AverageCurrent * 1000,
+		BatteryCoulombCurrent: power.CoulombCurrent * 1000,
+		BatteryPower:          power.BatteryWatts,
+		BatteryPercent:        power.BatteryPercent,
+		ChargeCounter:         power.ChargeCounterMAh,
+		USBVoltage:            power.USBVoltage,
+		USBCurrent:            power.USBInputCurrent * 1000,
+		USBPower:              power.USBInputWatts,
+	})
+}
+
+func (s *Server) appendMetricPoint(point MetricHistoryPoint) {
+	s.metricsMu.Lock()
+	defer s.metricsMu.Unlock()
+	s.metricHistory = append(s.metricHistory, point)
+	cutoff := point.At - metricHistoryWindow.Milliseconds()
+	first := 0
+	for first < len(s.metricHistory) && s.metricHistory[first].At < cutoff {
+		first++
+	}
+	if first > 0 {
+		s.metricHistory = append([]MetricHistoryPoint(nil), s.metricHistory[first:]...)
+	}
+}
+
+func (s *Server) metricHistorySnapshot() []MetricHistoryPoint {
+	s.metricsMu.RLock()
+	defer s.metricsMu.RUnlock()
+	return append([]MetricHistoryPoint(nil), s.metricHistory...)
 }
 
 func (s *Server) sampleNetwork(at time.Time, stats map[string]netCounter) {
@@ -2206,7 +2338,7 @@ func ariaUint(value string) uint64 {
 	return n
 }
 
-func (s *Server) readAria2() Aria2Info {
+func (s *Server) readAria2Global() Aria2Info {
 	info := Aria2Info{Tasks: []Aria2Task{}}
 	var stat struct {
 		DownloadSpeed, UploadSpeed        string
@@ -2221,6 +2353,14 @@ func (s *Server) readAria2() Aria2Info {
 	info.NumActive, _ = strconv.Atoi(stat.NumActive)
 	info.NumWaiting, _ = strconv.Atoi(stat.NumWaiting)
 	info.NumStopped, _ = strconv.Atoi(stat.NumStopped)
+	return info
+}
+
+func (s *Server) readAria2() Aria2Info {
+	info := s.readAria2Global()
+	if !info.Online {
+		return info
+	}
 
 	var active []struct {
 		GID, Status, TotalLength, CompletedLength, DownloadSpeed, UploadSpeed, Connections string
