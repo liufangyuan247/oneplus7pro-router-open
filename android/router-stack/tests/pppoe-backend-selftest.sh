@@ -40,10 +40,12 @@ rm -f "$PPPOE_KERNEL_FAILED"
 write_ppp_options eth9 kernel
 grep -Fq "plugin \"$PPPOE_PLUGIN\"" "$RUNTIME/pppd.options"
 grep -qx 'eth9' "$RUNTIME/pppd.options"
+grep -qx '+ipv6' "$RUNTIME/pppd.options"
 ! grep -q '^pty ' "$RUNTIME/pppd.options"
 
 write_ppp_options eth9 userspace
 grep -Fq 'pty "/test/pppoe -I eth9 -T 20 -m 1412 -U"' "$RUNTIME/pppd.options"
+grep -qx '+ipv6' "$RUNTIME/pppd.options"
 ! grep -q '^plugin ' "$RUNTIME/pppd.options"
 
 stop_ppp() {

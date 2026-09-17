@@ -110,26 +110,44 @@ rollback_service() {
 
 manager_watch=0
 service_watch=0
+boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+
+# Magisk can invoke service.d entries more than once during the same boot.
+# Store the boot ID in each trial marker so a duplicate invocation does not
+# mistake the trial it just armed for an unconfirmed trial from an older boot.
+# An empty legacy marker still counts as stale and is rolled back.
 
 if [ -f "$MANAGER_PENDING" ]; then
   if [ -f "$MANAGER_TRIAL" ]; then
-    log "unconfirmed manager trial found during boot"
-    rollback_manager || true
+    trial_boot_id="$(cat "$MANAGER_TRIAL" 2>/dev/null || true)"
+    if [ -n "$boot_id" ] && [ "$trial_boot_id" = "$boot_id" ]; then
+      log "duplicate manager guard invocation ignored for boot=$boot_id"
+    else
+      log "unconfirmed manager trial found from previous boot"
+      rollback_manager || true
+    fi
   else
-    : > "$MANAGER_TRIAL"
+    printf '%s\n' "$boot_id" > "$MANAGER_TRIAL.new.$$"
+    mv -f "$MANAGER_TRIAL.new.$$" "$MANAGER_TRIAL"
     manager_watch=1
-    log "manager trial armed"
+    log "manager trial armed for boot=$boot_id"
   fi
 fi
 
 if [ -f "$SERVICE_PENDING" ]; then
   if [ -f "$SERVICE_TRIAL" ]; then
-    log "unconfirmed supervisor trial found during boot"
-    rollback_service || true
+    trial_boot_id="$(cat "$SERVICE_TRIAL" 2>/dev/null || true)"
+    if [ -n "$boot_id" ] && [ "$trial_boot_id" = "$boot_id" ]; then
+      log "duplicate supervisor guard invocation ignored for boot=$boot_id"
+    else
+      log "unconfirmed supervisor trial found from previous boot"
+      rollback_service || true
+    fi
   else
-    : > "$SERVICE_TRIAL"
+    printf '%s\n' "$boot_id" > "$SERVICE_TRIAL.new.$$"
+    mv -f "$SERVICE_TRIAL.new.$$" "$SERVICE_TRIAL"
     service_watch=1
-    log "supervisor trial armed"
+    log "supervisor trial armed for boot=$boot_id"
   fi
 fi
 

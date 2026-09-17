@@ -440,6 +440,7 @@ password "$PPPOE_PASS"
 noauth
 noipdefault
 nodefaultroute
++ipv6
 hide-password
 persist
 maxfail 0
@@ -458,6 +459,7 @@ password "$PPPOE_PASS"
 noauth
 noipdefault
 nodefaultroute
++ipv6
 hide-password
 persist
 maxfail 0

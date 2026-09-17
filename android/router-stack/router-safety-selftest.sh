@@ -50,6 +50,18 @@ chmod 700 "$BASE/router-network"
 : > "$BASE/router-network.pending"
 rm -f "$BASE/router-network.trial"
 ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" ROUTER_ROLLBACK_TIMEOUT=2 /system/bin/sh "$GUARD"
+ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" ROUTER_ROLLBACK_TIMEOUT=2 /system/bin/sh "$GUARD"
+cmp -s "$BASE/router-network" "$FAILED_MANAGER"
+[ -e "$BASE/router-network.pending" ]
+[ "$(cat "$BASE/router-network.trial")" = "$(cat /proc/sys/kernel/random/boot_id)" ]
+rm -f "$BASE/router-network.pending" "$BASE/router-network.trial"
+echo 'PASS duplicate same-boot guard invocation preserves candidate'
+
+cp "$FAILED_MANAGER" "$BASE/router-network"
+chmod 700 "$BASE/router-network"
+: > "$BASE/router-network.pending"
+rm -f "$BASE/router-network.trial"
+ROUTER_SAFETY_BASE="$BASE" ROUTER_SERVICE_PATH="$SERVICE" ROUTER_ROLLBACK_TIMEOUT=2 /system/bin/sh "$GUARD"
 sleep 3
 cmp -s "$BASE/router-network" "$BASE/router-network.backup"
 [ ! -e "$BASE/router-network.pending" ]
