@@ -86,14 +86,29 @@ fi
 listeners="$("$SU" -c "$PREFIX/bin/ss -lnt" 2>/dev/null || true)"
 echo "$listeners" | grep -q '127\.0\.0\.1:17890 ' || fail listener_17890_missing
 echo "$listeners" | grep -q '127\.0\.0\.1:17891 ' || fail listener_17891_missing
+echo "$listeners" | grep -q '127\.0\.0\.1:17892 ' || fail listener_17892_missing
 
+config_state="$("$CURL" -fsS --max-time 3 http://127.0.0.1:9091/configs 2>/dev/null || true)"
+mode="$(printf '%s' "$config_state" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')"
+case "$mode" in
+    rule|global|direct) ;;
+    *) fail mode_unavailable ;;
+esac
+
+# Table 2022 belongs to the TUN in every mode. Priority 8099 is different: the
+# root network manager intentionally installs that return path only while
+# rule/global is driving the whole-home data plane. Its absence in direct mode
+# is healthy and must not cause a three-minute restart loop.
 "$SU" -c "test -e /sys/class/net/op7tun && \
-    /system/bin/ip rule show priority 8099 | /system/bin/grep -Eq '^8099:.*to 198\\.18\\.0\\.0/30 lookup 2022([[:space:]]|$)' && \
     /system/bin/ip rule show priority 8102 | /system/bin/grep -q 'lookup 2022' && \
     /system/bin/ip route show table 2022 | /system/bin/grep -q 'dev op7tun'" \
     >/dev/null 2>&1 || fail tun_route_missing
+if [ "$mode" != direct ]; then
+    "$SU" -c "/system/bin/ip rule show priority 8099 | \
+        /system/bin/grep -Eq '^8099:.*to 198\\.18\\.0\\.0/30 lookup 2022([[:space:]]|$)'" \
+        >/dev/null 2>&1 || fail whole_home_return_route_missing "mode=$mode"
+fi
 
-config_state="$("$CURL" -fsS --max-time 3 http://127.0.0.1:9091/configs 2>/dev/null || true)"
 case "$config_state" in
     *'"stack":"Mixed"'*|'"stack":"mixed"'*) ;;
     *) fail tun_stack_unexpected ;;
@@ -120,7 +135,7 @@ if ! http_ok "$proxy_code"; then
 fi
 
 if http_ok "$proxy_code"; then
-    write_status ok data_plane_ready "pid=$pid code=$proxy_code"
+    write_status ok data_plane_ready "pid=$pid mode=$mode code=$proxy_code"
     exit 0
 fi
 

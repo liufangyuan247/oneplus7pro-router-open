@@ -45,6 +45,8 @@ GAWK="$PREFIX/bin/awk"
 SS="$PREFIX/bin/ss"
 MIHOMO_DATA=/data/data/com.termux/files/home/router-data/mihomo
 MIHOMO_MODE_FILE="$MIHOMO_DATA/runtime-mode"
+MIHOMO_CONFIG_FILE="$MIHOMO_DATA/config.yaml"
+MIHOMO_MODE_LOCK="$MIHOMO_DATA/.mode-transaction.lock"
 MIHOMO_CONTROLLER=http://127.0.0.1:9091
 MIHOMO_TUN=op7tun
 PPPD=/system/bin/pppd
@@ -1257,12 +1259,62 @@ write_mihomo_mode() {
   mv "$MIHOMO_MODE_FILE.new" "$MIHOMO_MODE_FILE"
 }
 
-patch_mihomo_mode() {
+write_mihomo_config_mode() {
+  mode="$1"
+  [ -s "$MIHOMO_CONFIG_FILE" ] || return 0
+  tmp="$MIHOMO_CONFIG_FILE.mode.$$"
+  "$GAWK" -v desired_mode="$mode" '
+    /^mode:[[:space:]]*/ { print "mode: " desired_mode; found=1; next }
+    { print }
+    END { if (!found) print "mode: " desired_mode }
+  ' "$MIHOMO_CONFIG_FILE" > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp"
+  chown 10207:10207 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$MIHOMO_CONFIG_FILE"
+}
+
+patch_mihomo_controller_mode() {
   mode="$1"
   case "$mode" in rule|global|direct) ;; *) return 2 ;; esac
   "$CURL" -fsS --max-time 5 -X PATCH -H 'Content-Type: application/json' \
     --data-binary "{\"mode\":\"$mode\"}" "$MIHOMO_CONTROLLER/configs" >/dev/null
-  write_mihomo_mode "$mode"
+}
+
+acquire_mihomo_mode_lock() {
+  mkdir -p "$MIHOMO_DATA"
+  attempts=0
+  while [ "$attempts" -lt 30 ]; do
+    if mkdir "$MIHOMO_MODE_LOCK" 2>/dev/null; then
+      printf '%s\n' "$$" > "$MIHOMO_MODE_LOCK/pid"
+      chown -R 10207:10207 "$MIHOMO_MODE_LOCK" 2>/dev/null || true
+      return 0
+    fi
+    owner="$(cat "$MIHOMO_MODE_LOCK/pid" 2>/dev/null || true)"
+    case "$owner" in
+      ''|*[!0-9]*) ;;
+      *)
+        if ! kill -0 "$owner" 2>/dev/null; then
+          rm -f "$MIHOMO_MODE_LOCK/pid"
+          rmdir "$MIHOMO_MODE_LOCK" 2>/dev/null || true
+          continue
+        fi
+        ;;
+    esac
+    if [ "$attempts" -eq 29 ] && [ -z "$owner" ]; then
+      rmdir "$MIHOMO_MODE_LOCK" 2>/dev/null || true
+    fi
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  echo 'timed out waiting for a Mihomo configuration update' >&2
+  return 1
+}
+
+release_mihomo_mode_lock() {
+  if [ "$(cat "$MIHOMO_MODE_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$MIHOMO_MODE_LOCK/pid"
+    rmdir "$MIHOMO_MODE_LOCK" 2>/dev/null || true
+  fi
 }
 
 legacy_proxy_process_matches() {
@@ -1355,46 +1407,60 @@ write_proxy_flag() {
   mv "$tmp" "$CONFIG"
 }
 
+set_proxy_mode() {
+  mode="$1"
+  case "$mode" in
+    direct) enabled=0 ;;
+    rule|global) enabled=1 ;;
+    *) echo 'Mihomo mode must be direct, rule, or global' >&2; return 2 ;;
+  esac
+  acquire_mihomo_mode_lock || return 1
+  if ! load_config; then
+    release_mihomo_mode_lock
+    return 1
+  fi
+  if [ "$enabled" = 1 ]; then
+    mihomo_router_available || {
+      echo "Mihomo is unavailable; $mode mode was not enabled" >&2
+      release_mihomo_mode_lock
+      return 1
+    }
+  fi
+  if mihomo_router_listening; then
+    if ! patch_mihomo_controller_mode "$mode"; then
+      release_mihomo_mode_lock
+      return 1
+    fi
+  fi
+  if ! write_mihomo_mode "$mode" || ! write_mihomo_config_mode "$mode" || ! write_proxy_flag "$enabled"; then
+    release_mihomo_mode_lock
+    echo 'Mihomo mode changed but its persistent state could not be synchronized' >&2
+    return 1
+  fi
+  PROXY_ENABLED="$enabled"
+  release_mihomo_mode_lock
+  echo "MIHOMO_MODE_$(printf '%s' "$mode" | tr '[:lower:]' '[:upper:]')"
+}
+
 set_proxy_state() {
-  desired="$1"
-  case "$desired" in
-    0)
-      write_proxy_flag 0
-      PROXY_ENABLED=0
-      if mihomo_router_listening; then
-        patch_mihomo_mode direct
-      else
-        write_mihomo_mode direct
-      fi
-      echo MIHOMO_MODE_DIRECT
-      ;;
-    1)
-      load_config
-      mihomo_router_available || {
-        echo 'Mihomo is unavailable; rule mode was not enabled' >&2
-        return 1
-      }
-      patch_mihomo_mode rule
-      write_proxy_flag 1
-      PROXY_ENABLED=1
-      echo MIHOMO_MODE_RULE
-      ;;
-    *)
-      echo 'proxy state must be 0 or 1' >&2
-      return 2
-      ;;
+  case "$1" in
+    0) set_proxy_mode direct ;;
+    1) set_proxy_mode rule ;;
+    *) echo 'proxy state must be 0 or 1' >&2; return 2 ;;
   esac
 }
 
 refresh_proxy_state() {
   load_config
-  if [ "${PROXY_ENABLED:-0}" = 1 ]; then
-    patch_mihomo_mode rule
-    echo MIHOMO_MODE_RULE
-  else
-    if mihomo_router_listening; then patch_mihomo_mode direct; else write_mihomo_mode direct; fi
-    echo MIHOMO_MODE_DIRECT
-  fi
+  mode="$(tr -d '\r\n' < "$MIHOMO_MODE_FILE" 2>/dev/null || true)"
+  case "$mode" in
+    direct|rule|global) set_proxy_mode "$mode" ;;
+    *)
+      # Migrate installations that predate runtime-mode once, then use the
+      # mode file as the sole persistent source from this point forward.
+      if [ "${PROXY_ENABLED:-0}" = 1 ]; then set_proxy_mode rule; else set_proxy_mode direct; fi
+      ;;
+  esac
 }
 
 apply_routes() {
@@ -1696,6 +1762,7 @@ if [ "${ROUTER_NETWORK_SOURCE_ONLY:-0}" != 1 ]; then
   status) status ;;
   proxy-on) set_proxy_state 1 ;;
   proxy-off) set_proxy_state 0 ;;
+  proxy-mode) [ "$#" -eq 2 ] || { echo "usage: $0 proxy-mode {direct|rule|global}" >&2; exit 2; }; set_proxy_mode "$2" ;;
   proxy-refresh) refresh_proxy_state ;;
   codex-refresh) echo CODEX_POLICY_MANAGED_BY_MIHOMO ;;
   list-static) static_lease_list ;;
@@ -1741,6 +1808,6 @@ if [ "${ROUTER_NETWORK_SOURCE_ONLY:-0}" != 1 ]; then
     trap - EXIT INT TERM
     echo PPPOE_USERSPACE_RETRY_ARMED
     ;;
-    *) echo "usage: $0 {validate|status|proxy-on|proxy-off|proxy-refresh|codex-refresh|list-static|set-static|clear-static|daemon|arm|disarm|cleanup|pppoe-retry-kernel|pppoe-retry-userspace}" >&2; exit 2 ;;
+    *) echo "usage: $0 {validate|status|proxy-on|proxy-off|proxy-mode|proxy-refresh|codex-refresh|list-static|set-static|clear-static|daemon|arm|disarm|cleanup|pppoe-retry-kernel|pppoe-retry-userspace}" >&2; exit 2 ;;
   esac
 fi

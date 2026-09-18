@@ -96,4 +96,38 @@ remove_routes() { :; }
 cleanup_runtime
 ! grep -q '^8099:' "$MIHOMO_RULE_STATE"
 
+# All mode-changing entry points must update the same persistent mode and
+# whole-home compatibility flag. This prevents a later subscription refresh
+# or proxy-refresh from restoring a stale direct mode.
+CONFIG="$TEST_ROOT/router.conf"
+MIHOMO_MODE_FILE="$TEST_ROOT/runtime-mode"
+MIHOMO_CONFIG_FILE="$TEST_ROOT/mihomo.yaml"
+MIHOMO_MODE_LOCK="$TEST_ROOT/mode.lock"
+printf '%s\n' "PROXY_ENABLED='0'" > "$CONFIG"
+printf '%s\n' 'mode: direct' 'mixed-port: 17890' > "$MIHOMO_CONFIG_FILE"
+load_config() { . "$CONFIG"; }
+mihomo_router_available() { return 0; }
+mihomo_router_listening() { return 0; }
+patch_mihomo_controller_mode() { :; }
+
+set_proxy_mode rule >/dev/null
+[ "$(cat "$MIHOMO_MODE_FILE")" = rule ]
+grep -q '^mode: rule$' "$MIHOMO_CONFIG_FILE"
+grep -q "^PROXY_ENABLED='1'$" "$CONFIG"
+
+set_proxy_mode global >/dev/null
+[ "$(cat "$MIHOMO_MODE_FILE")" = global ]
+grep -q '^mode: global$' "$MIHOMO_CONFIG_FILE"
+grep -q "^PROXY_ENABLED='1'$" "$CONFIG"
+
+set_proxy_mode direct >/dev/null
+[ "$(cat "$MIHOMO_MODE_FILE")" = direct ]
+grep -q '^mode: direct$' "$MIHOMO_CONFIG_FILE"
+grep -q "^PROXY_ENABLED='0'$" "$CONFIG"
+
+printf '%s\n' rule > "$MIHOMO_MODE_FILE"
+refresh_proxy_state >/dev/null
+[ "$(cat "$MIHOMO_MODE_FILE")" = rule ]
+grep -q "^PROXY_ENABLED='1'$" "$CONFIG"
+
 echo MIHOMO_INTERNAL_ROUTE_TEST_OK

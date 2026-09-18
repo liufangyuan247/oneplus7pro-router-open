@@ -15,7 +15,10 @@ DISABLED="$DATA/disabled"
 LOCK="$DATA/.subscription-update.lock"
 WORK="$DATA/.subscription-update.$$"
 SOCAT="$PREFIX/bin/socat"
+CURL="$PREFIX/bin/curl"
+JQ="$PREFIX/bin/jq"
 SU="$PREFIX/bin/su"
+MODE_LOCK="$DATA/.mode-transaction.lock"
 CORE_PIDFILE="$DATA/supervised-core.pid"
 MANAGED_AI_DOMAINS="$DATA/ai-proxy-domains.txt"
 CUSTOM_AI_DOMAINS="$DATA/custom-ai-proxy-domains.txt"
@@ -30,7 +33,20 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     exit 0
 fi
 mkdir -p "$WORK"
-trap 'rm -rf "$WORK" "$LOCK"' EXIT INT TERM
+MODE_LOCK_HELD=0
+release_mode_lock() {
+    [ "$MODE_LOCK_HELD" = 1 ] || return 0
+    if [ "$(cat "$MODE_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+        rm -f "$MODE_LOCK/pid"
+        rmdir "$MODE_LOCK" 2>/dev/null || true
+    fi
+    MODE_LOCK_HELD=0
+}
+cleanup() {
+    release_mode_lock
+    rm -rf "$WORK" "$LOCK"
+}
+trap cleanup EXIT INT TERM
 DOMAIN_POLICY_SNAPSHOT="$WORK/domain-policy"
 touch "$DOMAIN_POLICY_SNAPSHOT"
 for domain_file in "$MANAGED_AI_DOMAINS" "$CUSTOM_AI_DOMAINS"; do
@@ -69,13 +85,109 @@ done
     END { exit bad }
 ' "$DOMAIN_POLICY_SNAPSHOT"
 
-MODE=rule
-if [ -s "$MODE_FILE" ]; then
-    candidate=$(tr -d '\r\n' < "$MODE_FILE")
-    case "$candidate" in
-        rule|global|direct) MODE="$candidate" ;;
+valid_mode() {
+    case "$1" in
+        rule|global|direct) return 0 ;;
+        *) return 1 ;;
     esac
-fi
+}
+
+controller_mode() {
+    body=$("$CURL" -fsS --max-time 2 http://127.0.0.1:9091/configs 2>/dev/null || true)
+    [ -n "$body" ] || return 1
+    candidate=$(printf '%s' "$body" | "$JQ" -r '.mode // empty' 2>/dev/null || true)
+    valid_mode "$candidate" || return 1
+    printf '%s\n' "$candidate"
+}
+
+persisted_mode() {
+    if [ -s "$MODE_FILE" ]; then
+        candidate=$(tr -d '\r\n' < "$MODE_FILE")
+        if valid_mode "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    fi
+    if [ -s "$TARGET" ]; then
+        candidate=$(sed -n 's/^mode:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$TARGET" | head -n 1)
+        if valid_mode "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+resolve_mode() {
+    if [ -n "${MIHOMO_DESIRED_MODE:-}" ]; then
+        valid_mode "$MIHOMO_DESIRED_MODE" || {
+            echo "invalid MIHOMO_DESIRED_MODE: $MIHOMO_DESIRED_MODE" >&2
+            return 1
+        }
+        printf '%s\n' "$MIHOMO_DESIRED_MODE"
+        return 0
+    fi
+    # runtime-mode is the durable desired state. The controller is only a
+    # migration fallback for installations that do not have that file yet.
+    persisted_mode && return 0
+    controller_mode && return 0
+    printf '%s\n' rule
+}
+
+acquire_mode_lock() {
+    attempts=0
+    while [ "$attempts" -lt 30 ]; do
+        if mkdir "$MODE_LOCK" 2>/dev/null; then
+            printf '%s\n' "$$" > "$MODE_LOCK/pid"
+            MODE_LOCK_HELD=1
+            return 0
+        fi
+        owner=$(cat "$MODE_LOCK/pid" 2>/dev/null || true)
+        case "$owner" in
+            ''|*[!0-9]*) ;;
+            *)
+                if ! "$SU" -c "kill -0 $owner" >/dev/null 2>&1; then
+                    rm -f "$MODE_LOCK/pid"
+                    rmdir "$MODE_LOCK" 2>/dev/null || true
+                    continue
+                fi
+                ;;
+        esac
+        if [ "$attempts" -eq 29 ] && [ -z "$owner" ]; then
+            rmdir "$MODE_LOCK" 2>/dev/null || true
+        fi
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    echo 'timed out waiting for a Mihomo mode change' >&2
+    return 1
+}
+
+replace_mode() {
+    path="$1"
+    desired="$2"
+    updated="$path.mode.$$"
+    "$PREFIX/bin/awk" -v desired_mode="$desired" '
+        /^mode:[[:space:]]*/ { print "mode: " desired_mode; found=1; next }
+        { print }
+        END { if (!found) print "mode: " desired_mode }
+    ' "$path" > "$updated"
+    chmod 600 "$updated"
+    mv "$updated" "$path"
+}
+
+write_persisted_mode() {
+    desired="$1"
+    tmp="$MODE_FILE.new.$$"
+    printf '%s\n' "$desired" > "$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$MODE_FILE"
+}
+
+# Prefer the live controller while available. A subscription refresh must
+# preserve the mode users are actually running, even if another control plane
+# has not yet synchronized the persistent mode file.
+MODE=$(resolve_mode)
 
 ROUTING_POLICY="${MIHOMO_ROUTING_POLICY:-}"
 if [ -z "$ROUTING_POLICY" ] && [ -s "$ROUTING_POLICY_FILE" ]; then
@@ -482,6 +594,16 @@ END {
     mv "$WITH_SETTINGS" "$ADAPTED"
 fi
 
+# Downloading and adapting a subscription can take long enough for the user to
+# change modes. Re-snapshot immediately before validation and activation so an
+# update or subscription switch cannot roll that newer selection back.
+acquire_mode_lock
+LATEST_MODE=$(resolve_mode)
+if [ "$LATEST_MODE" != "$MODE" ]; then
+    MODE="$LATEST_MODE"
+    replace_mode "$ADAPTED" "$MODE"
+fi
+
 chmod 600 "$ADAPTED"
 "$PREFIX/bin/mihomo" -t -d "$DATA" -f "$ADAPTED"
 
@@ -581,4 +703,17 @@ if ! activate_target; then
     exit 1
 fi
 
-echo "SUBSCRIPTION_UPDATED policy=$ROUTING_POLICY"
+actual_mode=$(controller_mode || true)
+if [ "$actual_mode" != "$MODE" ]; then
+    echo "subscription activation changed Mihomo mode: wanted=$MODE actual=${actual_mode:-unavailable}" >&2
+    if [ -n "$actual_mode" ]; then
+        "$JQ" -nc --arg mode "$MODE" '{mode:$mode}' | \
+            "$CURL" -fsS --max-time 5 -X PATCH -H 'Content-Type: application/json' \
+                --data-binary @- http://127.0.0.1:9091/configs >/dev/null || true
+    fi
+    [ "$(controller_mode || true)" = "$MODE" ] || exit 1
+fi
+write_persisted_mode "$MODE"
+release_mode_lock
+
+echo "SUBSCRIPTION_UPDATED policy=$ROUTING_POLICY mode=$MODE"

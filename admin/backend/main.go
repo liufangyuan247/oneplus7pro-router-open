@@ -2970,6 +2970,10 @@ func validateSubscriptionURL(raw string) (string, error) {
 }
 
 func (s *Server) mihomoSubscription(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.subscriptionMu.Lock()
+		defer s.subscriptionMu.Unlock()
+	}
 	switch r.Method {
 	case "GET":
 		jsonOut(w, 200, s.subscriptionInfo())
@@ -3086,6 +3090,40 @@ func (s *Server) mihomoDashboardFonts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mihomoAPIProxy(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPatch && strings.Trim(strings.TrimPrefix(r.URL.Path, mihomoAPIPrefix), "/") == "configs" {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
+		if err != nil || len(body) > 1<<20 {
+			jsonOut(w, http.StatusBadRequest, map[string]string{"error": "invalid or oversized Mihomo config request"})
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var payload map[string]any
+		if json.Unmarshal(body, &payload) == nil {
+			if rawMode, exists := payload["mode"]; exists {
+				mode, ok := rawMode.(string)
+				mode = strings.ToLower(strings.TrimSpace(mode))
+				if !ok || !validMihomoMode(mode) {
+					jsonOut(w, http.StatusBadRequest, map[string]string{"error": "Mihomo mode must be global, rule, or direct"})
+					return
+				}
+				s.subscriptionMu.Lock()
+				defer s.subscriptionMu.Unlock()
+				if err := s.setMihomoMode(mode); err != nil {
+					jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+					return
+				}
+				delete(payload, "mode")
+				if len(payload) > 0 {
+					if err := s.mihomoRequest(http.MethodPatch, "/configs", payload, nil); err != nil {
+						jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": "remaining Mihomo config update failed"})
+						return
+					}
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+	}
 	reverseProxyRequest(w, r, mihomoAPIPrefix, "/")
 }
 
@@ -3174,6 +3212,25 @@ func (s *Server) mihomoStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func validMihomoMode(mode string) bool {
+	return mode == "global" || mode == "rule" || mode == "direct"
+}
+
+func (s *Server) setMihomoMode(mode string) error {
+	if !validMihomoMode(mode) {
+		return errors.New("Mihomo mode must be global, rule, or direct")
+	}
+	out, err := s.execSu(routerNetworkManager + " proxy-mode " + mode)
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		if message == "" {
+			message = "Mihomo mode change or persistence failed"
+		}
+		return errors.New(message)
+	}
+	return nil
+}
+
 func (s *Server) mihomoMode(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "PUT") {
 		return
@@ -3186,18 +3243,14 @@ func (s *Server) mihomoMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.Mode = strings.ToLower(strings.TrimSpace(body.Mode))
-	if body.Mode != "global" && body.Mode != "rule" && body.Mode != "direct" {
+	if !validMihomoMode(body.Mode) {
 		jsonOut(w, 400, map[string]string{"error": "模式必须是 global、rule 或 direct"})
 		return
 	}
-	if err := s.mihomoRequest("PATCH", "/configs", map[string]string{"mode": body.Mode}, nil); err != nil {
+	s.subscriptionMu.Lock()
+	defer s.subscriptionMu.Unlock()
+	if err := s.setMihomoMode(body.Mode); err != nil {
 		jsonOut(w, 503, map[string]string{"error": "Mihomo 未运行或模式切换失败"})
-		return
-	}
-	modePath := filepath.Join(s.data, "mihomo", "runtime-mode")
-	if err := os.WriteFile(modePath+".tmp", []byte(body.Mode+"\n"), 0600); err != nil || os.Rename(modePath+".tmp", modePath) != nil {
-		_ = os.Remove(modePath + ".tmp")
-		jsonOut(w, 500, map[string]string{"error": "模式已切换，但持久化失败"})
 		return
 	}
 	jsonOut(w, 200, map[string]any{"ok": true, "mode": body.Mode})
