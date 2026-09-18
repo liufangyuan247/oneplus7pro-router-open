@@ -34,6 +34,13 @@ protection loop.
 - `source/third_party/anet-android/`: Android build compatibility module
 - `build/cli-proxy-api-android`: deployed Android/ARM64 binary
 - `install-cpa.sh`: idempotent binary, data and runit installer
+- `cpa-start.sh`: bounded readiness gate that starts CPA only after configured
+  Mihomo-backed model and Antigravity egress are usable; stage it as
+  `~/.stage/cpa-start` alongside the CPA binary before installation
+- `deploy-cpa-start.sh`: installs the readiness gate on an existing phone with
+  automatic run/start backups and health-checked rollback. Root-driven ADB
+  deployments restore and verify Termux ownership before restarting the
+  service, so a future root-owned `0700` file fails safely before interruption.
 - `enable-cpa-health-probe.sh`: adds the CPA HTTP health probe
 - `enable-cpa-oom-protection.sh`: adds CPA to the Magisk OOM protection loop
 - `enable-cpa-request-logging.sh`: enables persistent application and detailed
