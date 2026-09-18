@@ -7,6 +7,7 @@ SERVICE_DIR="$HOME_DIR/router-stack/services/cpa-usage-keeper"
 STAGED_RUN="$HOME_DIR/.stage/cpa-usage-keeper-run"
 STAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP_DIR="$HOME_DIR/router-data/cpa-usage-keeper/install-backups/$STAMP-models-dev-proxy"
+SERVICE_GUARD="$HOME_DIR/router-stack/bin/termux-service-guard"
 
 export HOME="$HOME_DIR" PREFIX PATH="$PREFIX/bin:/system/bin"
 
@@ -20,6 +21,7 @@ cp -p "$SERVICE_DIR/run" "$BACKUP_DIR/service-run"
 cp "$STAGED_RUN" "$SERVICE_DIR/run.new.$STAMP"
 chmod 0755 "$SERVICE_DIR/run.new.$STAMP"
 mv "$SERVICE_DIR/run.new.$STAMP" "$SERVICE_DIR/run"
+"$SERVICE_GUARD" repair cpa-usage-keeper
 sv restart "$SERVICE_DIR" >/dev/null 2>&1 || true
 
 ATTEMPT=0

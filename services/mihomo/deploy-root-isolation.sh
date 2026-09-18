@@ -11,6 +11,7 @@ STAMP="$(date '+%Y%m%d-%H%M%S')"
 BACKUP="$HOME_DIR/router-data/backups/mihomo/$STAMP-root-isolation"
 SV="$PREFIX/bin/sv"
 CURL="$PREFIX/bin/curl"
+SERVICE_GUARD="$HOME_DIR/router-stack/bin/termux-service-guard"
 
 export LD_LIBRARY_PATH="$PREFIX/lib"
 export PATH="$PREFIX/bin:/system/bin"
@@ -44,6 +45,7 @@ cp "$SOURCE" "$RUN.new.$STAMP"
 chown 10207:10207 "$RUN.new.$STAMP"
 chmod 700 "$RUN.new.$STAMP"
 mv -f "$RUN.new.$STAMP" "$RUN"
+"$SERVICE_GUARD" repair mihomo
 "$SV" up "$SERVICE" >/dev/null 2>&1 || true
 
 ready=0

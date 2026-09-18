@@ -14,6 +14,7 @@ STAMP="$(date '+%Y%m%d-%H%M%S')"
 BACKUP="$HOME_DIR/router-data/backups/mihomo/$STAMP-supervision"
 SV="$PREFIX/bin/sv"
 CURL="$PREFIX/bin/curl"
+SERVICE_GUARD="$HOME_DIR/router-stack/bin/termux-service-guard"
 
 export PATH="$PREFIX/bin:/system/bin"
 export LD_LIBRARY_PATH="$PREFIX/lib"
@@ -92,6 +93,7 @@ chown 10207:10207 "$RUN.new.$STAMP" "$UPDATER.new.$STAMP"
 chmod 700 "$RUN.new.$STAMP" "$UPDATER.new.$STAMP"
 mv -f "$RUN.new.$STAMP" "$RUN"
 mv -f "$UPDATER.new.$STAMP" "$UPDATER"
+"$SERVICE_GUARD" repair
 "$SV" up "$SERVICE"
 wait_ready
 verify_single_supervised_core

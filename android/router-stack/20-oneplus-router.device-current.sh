@@ -12,6 +12,7 @@ TERMUX_UID=10207
 # external_storage group 1077. Include both so root-launched Termux daemons
 # can traverse Android's public USB-volume mount.
 TERMUX_GIDS=1004,1007,1011,1015,1023,1028,1077,1078,1079,3001,3002,3003,3006,3009,3011,9997,50207
+SERVICE_GUARD="$STACK/bin/termux-service-guard"
 
 enforce_android_router_profile() {
   # These packages have been observed re-enabling or retaining a process even
@@ -113,6 +114,14 @@ done
       fi
 
       if ! pgrep -f "$STACK/bin/supervisor" >/dev/null 2>&1; then
+        # Admission check only: repair ADB-root ownership immediately before a
+        # new runsvdir supervisor is allowed to enter service. Normal running
+        # loops perform no permission scan and incur no recurring CPU wakeup.
+        if [ -x "$SERVICE_GUARD" ] && ! "$SERVICE_GUARD" repair; then
+          echo "$(date '+%F %T') Termux service permission admission failed"
+          sleep 30
+          continue
+        fi
         "$PREFIX/bin/setpriv" \
           --reuid "$TERMUX_UID" --regid "$TERMUX_UID" --groups "$TERMUX_GIDS" \
           "$STACK/bin/supervisor" >> "$LOGROOT/supervisor.log" 2>&1 &

@@ -6,13 +6,23 @@ HOME=/data/data/com.termux/files/home
 STACK="$HOME/router-stack"
 DATA="$HOME/router-data"
 SERVICES="$STACK/services"
+GUARD="$STACK/bin/termux-service-guard"
 
 export PREFIX HOME PATH="$PREFIX/bin:$PREFIX/bin/applets"
 export TMPDIR="$PREFIX/tmp"
+umask 077
 
 mkdir -p "$STACK/bin" "$STACK/www/ariang" "$SERVICES" \
   "$DATA/downloads" "$DATA/openlist" "$DATA/aria2" \
   "$DATA/qbittorrent/qBittorrent/config" "$DATA/caddy"
+
+[ -s "$HOME/.stage/termux-service-guard" ] || {
+  echo 'missing staged termux-service-guard' >&2
+  exit 1
+}
+cp "$HOME/.stage/termux-service-guard" "$GUARD.new"
+chmod 700 "$GUARD.new"
+mv "$GUARD.new" "$GUARD"
 
 ARIA_CONF="$DATA/aria2/aria2.conf"
 ARIA_SECRET=$(sed -n 's/^rpc-secret=//p' "$ARIA_CONF" 2>/dev/null | head -n 1 || true)
@@ -340,6 +350,10 @@ probe() {
   count=\$((count + 1))
   echo "\$count" > "\$STATE/\$name.fail"
   if [ "\$count" -ge 3 ]; then
+    if ! '$GUARD' audit "\$name"; then
+      echo "healthcheck: refusing to restart \$name because its service files are unsafe"
+      return
+    fi
     echo "healthcheck: restarting \$name after \$count failed probes"
     "\$PREFIX/bin/sv" restart "\$SERVICES/\$name" || true
     echo 0 > "\$STATE/\$name.fail"
@@ -403,6 +417,10 @@ case "\${1:-status}" in
     for s in "\$SERVICES"/*; do "\$PREFIX/bin/sv" down "\$s" 2>/dev/null || true; done
     ;;
   restart)
+    '$GUARD' audit || {
+      echo 'Refusing to restart services with unsafe ownership or permissions.' >&2
+      exit 1
+    }
     for s in "\$SERVICES"/*; do "\$PREFIX/bin/sv" restart "\$s" 2>/dev/null || true; done
     ;;
   status)
@@ -422,6 +440,8 @@ case "\${1:-status}" in
 esac
 EOF
 chmod 700 "$STACK/bin/routerctl"
+
+"$GUARD" repair
 
 : > "$STACK/enabled"
 echo "Installed router stack at $STACK"

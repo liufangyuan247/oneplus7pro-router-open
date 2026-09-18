@@ -15,6 +15,7 @@ ADMIN_PASSWORD_FILE="$HOME_DIR/router-data/admin/password"
 EXPECTED_SHA256=4cbd3ba408f10b899c35db96134ac56e4b3a8b429d507269bd40bfa765f2a052
 STAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP_DIR="$DATA_ROOT/install-backups/$STAMP"
+SERVICE_GUARD="$HOME_DIR/router-stack/bin/termux-service-guard"
 FAILED=0
 HAD_BIN=0
 HAD_ENV=0
@@ -116,6 +117,8 @@ mv -f "$RUN_NEW" "$SERVICE_DIR/run"
 mv -f "$LOG_RUN_NEW" "$SERVICE_DIR/log/run"
 printf '%s\n' 'v1.14.8-android' > "$DATA_ROOT/installed-version"
 printf '%s  %s\n' "$EXPECTED_SHA256" "$BIN" > "$DATA_ROOT/installed-sha256"
+
+"$SERVICE_GUARD" repair
 
 sv up "$SERVICE_DIR" >/dev/null 2>&1 || true
 COUNT=0

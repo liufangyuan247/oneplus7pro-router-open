@@ -28,10 +28,16 @@ listen on network interfaces when torrenting is enabled.
 - Persistent data: `/data/data/com.termux/files/home/router-data`
 - Rotated service logs: `router-stack/services/<name>/log/main`
 - Magisk entry: `/data/adb/service.d/20-oneplus-router.sh`
+- Termux service admission guard: `~/router-stack/bin/termux-service-guard`
 - USB default mode: `/data/adb/service.d/10-usb-mtp-adb.sh`
 - Toshiba HDD compatibility/monitor: `/data/adb/service.d/23-router-storage.sh`
 - Optional charge guard: `/data/adb/service.d/30-battery-guard.sh`
 - Root Tailscale helper: `/data/adb/service.d/25-tailscale-root.sh`
+
+`termux-service-guard` enforces the Termux UID/GID and private modes on runit
+entrypoints, stack helpers and locally deployed binaries. It runs only at
+installation/deployment boundaries, before an automated restart, or before a
+new supervisor is admitted; it does not poll during normal operation.
 
 The R2S's 2 TB `ROUTER_DISK` NTFS disk has filesystem UUID
 `ROUTER_VOLUME_ID`. Android mounts it at

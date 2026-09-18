@@ -7,6 +7,7 @@ STACK="$HOME/router-stack"
 DATA="$HOME/router-data/mihomo"
 SERVICE="$STACK/services/mihomo"
 UPDATER_SERVICE="$STACK/services/mihomo-updater"
+SERVICE_GUARD="$STACK/bin/termux-service-guard"
 STAGE="$HOME/.stage"
 BACKUPS="$HOME/router-data/backups/mihomo"
 
@@ -139,6 +140,8 @@ chmod 600 "$DATA/client-bypass-lan-iface"
 [ ! -f "$DATA/subscription.url" ] || chmod 600 "$DATA/subscription.url"
 chmod 700 "$SERVICE/run" "$SERVICE/finish" "$SERVICE/log/run"
 chmod 700 "$UPDATER_SERVICE/run" "$UPDATER_SERVICE/finish" "$UPDATER_SERVICE/log/run"
+[ -x "$SERVICE_GUARD" ] || { echo 'Termux service admission guard is missing' >&2; exit 1; }
+"$SERVICE_GUARD" repair mihomo mihomo-updater
 rm -f "$SERVICE/down" "$UPDATER_SERVICE/down"
 
 "$PREFIX/bin/mihomo" -t -d "$DATA" -f "$DATA/config.yaml"
@@ -181,6 +184,7 @@ if [ -f "$HEALTHD" ]; then
     "$PREFIX/bin/sh" -n "$HEALTHD.new"
     chmod 700 "$HEALTHD.new"
     mv "$HEALTHD.new" "$HEALTHD"
+    "$SERVICE_GUARD" repair healthd
     "$PREFIX/bin/sv" restart "$STACK/services/healthd" >/dev/null 2>&1 || true
 fi
 

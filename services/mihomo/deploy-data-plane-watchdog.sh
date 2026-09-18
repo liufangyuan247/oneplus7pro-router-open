@@ -9,6 +9,7 @@ SOURCE="$STAGE/mihomo-health-probe"
 PROBE="$STACK/bin/mihomo-health-probe"
 HEALTHD="$STACK/bin/healthd"
 SERVICE="$STACK/services/healthd"
+SERVICE_GUARD="$STACK/bin/termux-service-guard"
 STAMP="$(date '+%Y%m%d-%H%M%S')"
 BACKUP="$HOME_DIR/router-data/backups/mihomo/$STAMP-data-plane-watchdog"
 
@@ -49,6 +50,8 @@ mv -f "$HEALTHD.new.$STAMP" "$HEALTHD"
 for state_file in "$HOME_DIR"/router-data/health/mihomo-data-plane.*; do
     [ ! -e "$state_file" ] || chown 10207:10207 "$state_file"
 done
+
+"$SERVICE_GUARD" repair
 
 if ! /system/bin/run-as com.termux "$PROBE"; then
     cp -p "$BACKUP/healthd" "$HEALTHD"
