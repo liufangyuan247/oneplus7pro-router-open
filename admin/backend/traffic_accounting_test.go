@@ -520,6 +520,13 @@ func TestSettingsUpdateFutureOnly(t *testing.T) {
 		t.Fatalf("history should not be altered by settings update, got %d", mgr.GetSnapshot().Proxy.WeightedBytes)
 	}
 
+	// The UI should immediately show the newly configured multiplier even
+	// though historical weighted and unpriced byte totals are not recalculated.
+	updated := mgr.GetSnapshot()
+	if len(updated.Nodes) != 1 || updated.Nodes[0].MultiplierMilli == nil || *updated.Nodes[0].MultiplierMilli != 2000 || updated.Nodes[0].PricingStatus != "subscription_default" {
+		t.Fatalf("node pricing metadata did not reflect current settings: %+v", updated.Nodes)
+	}
+
 	// Step 2: Next 1000 raw bytes should be scaled by 2.0x -> +2000 weighted, total 3000
 	currentConns = []mihomoRawConnection{
 		newMockRawConnection("c1", 1000, 1000, []string{"NodeX", "Proxy"}, "a.com", "1.1.1.1", "192.168.2.1"),
@@ -1167,7 +1174,6 @@ func TestKnownNodesLowFrequencyAndHostLookupDedup(t *testing.T) {
 			return "host-50"
 		},
 	})
-
 	_ = mgr.Poll(context.Background())
 
 	mu.Lock()
@@ -1334,20 +1340,74 @@ func TestSpeedtestKnownNodesAttributedOnlyToActiveSub(t *testing.T) {
 			return "active-sub", "Active Sub"
 		},
 		GetKnownNodes: func() []string {
-			return []string{"NodeA", "NodeB"}
+			return []string{"🇺🇸 NodeA", "NodeA", "🇭🇰 NodeB"}
 		},
 	})
+	mgr.mu.Lock()
+	mgr.settings.Subscriptions["active-sub"].KnownNodes = append(
+		mgr.settings.Subscriptions["active-sub"].KnownNodes,
+		"🇭🇰 StaleNode",
+	)
+	mgr.mu.Unlock()
 
 	_ = mgr.Poll(context.Background())
 
 	settings := mgr.GetSettings()
 	cfg, ok := settings.Subscriptions["active-sub"]
-	if !ok || len(cfg.KnownNodes) < 2 {
+	if !ok {
 		t.Fatalf("expected active-sub to have discovered known nodes, got %v", cfg)
+	}
+	counts := make(map[string]int)
+	for _, node := range cfg.KnownNodes {
+		counts[node]++
+		if normalizeNodeName(node) != node {
+			t.Fatalf("known node was not stored canonically: %q", node)
+		}
+	}
+	if counts["NodeA"] != 1 || counts["NodeB"] != 1 {
+		t.Fatalf("expected each discovered node exactly once, got %v", counts)
+	}
+	if counts["StaleNode"] != 0 {
+		t.Fatalf("stale provider node was not pruned: %v", counts)
 	}
 	// Verify other subscriptions were not touched
 	if _, hasOther := settings.Subscriptions[""]; hasOther {
 		t.Errorf("empty subscription ID should never receive discovered nodes")
+	}
+}
+
+func TestSettingsLoadNormalizesDecoratedNodeDuplicates(t *testing.T) {
+	tempDir := t.TempDir()
+	settingsPath := filepath.Join(tempDir, "traffic-accounting-settings.json")
+	raw := `{
+  "version": 1,
+  "enabled": true,
+  "subscriptions": {
+    "sub-1": {
+      "defaultMultiplierMilli": null,
+      "nodeMultipliersMilli": {
+        "🇯🇵 日本 | 04": 2000,
+        "日本 | 04": 1500
+      },
+      "knownNodes": ["🇯🇵 日本 | 04", "日本 | 04"]
+    }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewTrafficAccountingManager(TrafficAccountingConfig{DataDir: tempDir})
+	settings := mgr.GetSettings()
+	cfg := settings.Subscriptions["sub-1"]
+	if cfg == nil {
+		t.Fatal("normalized subscription is missing")
+	}
+	if len(cfg.NodeMultipliersMilli) != 1 || cfg.NodeMultipliersMilli["日本 | 04"] != 1500 {
+		t.Fatalf("decorated multiplier keys were not normalized: %+v", cfg.NodeMultipliersMilli)
+	}
+	if len(cfg.KnownNodes) != 1 || cfg.KnownNodes[0] != "日本 | 04" {
+		t.Fatalf("decorated known nodes were not normalized: %+v", cfg.KnownNodes)
 	}
 }
 

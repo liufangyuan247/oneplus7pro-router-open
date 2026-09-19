@@ -35,7 +35,12 @@ const (
 	otherKey                      = "_other"
 )
 
-var hummingbirdPresetMultipliers = map[string]uint32{
+// initialHummingbirdPresetMultipliers is a bootstrap fallback only. Runtime
+// settings persisted in traffic-accounting-settings.json are authoritative and
+// are never replaced by this table on restart or subscription refresh. Rates
+// may change over time; UpdateSettings applies a new rate only to future byte
+// deltas while historical weighted totals retain the rate used at collection.
+var initialHummingbirdPresetMultipliers = map[string]uint32{
 	"美国17 | 直连 | 三网优化":   2000,
 	"美国 | 07":            2000,
 	"美国05 | 直连 | 三网优化":   1500,
@@ -44,27 +49,25 @@ var hummingbirdPresetMultipliers = map[string]uint32{
 	"美国02 | A | 三网优化":    1500,
 	"美国16 | 直连 | 三网优化":   1500,
 	"美国06| 直连 | 三网优化":    1500,
-	"美国 | Hy2 | 移动":      1500,
 	"美国09 | 自研 | 三网优化":   2000,
 	"香港17 | 自研 | 三网优化":   1500,
 	"香港 | 01":            2000,
-	"香港02 | A":           2000,
 	"香港03 | 三网优化 | 网页":   1500,
 	"香港04 | 三网优化 | 网页":   1500,
 	"香港 | 05":            2000,
 	"香港06 | Hy2 | 三网优化":  1500,
 	"香港 | 08":            2000,
+	"香港10 | A | 三网优化":    2000,
 	"香港09 | 自研 | 移动":     1500,
 	"香港12 | A | 三网优化":    1500,
-	"香港13 | 直连 | 移动":     1000,
 	"台湾 | 01":            2000,
 	"台湾 | 03":            2000,
+	"韩国 | 01":            2000,
 	"日本 | 03":            1500,
 	"日本 | 04":            1500,
 	"日本05 | 直连 | 移动":     1000,
 	"日本06 | 直连":          1000,
 	"日本07 | 直连 | 三网优化":   2000,
-	"新加坡01":              2000,
 	"新加坡02":              2000,
 	"新加坡04":              2000,
 	"美国 | 01":            2000,
@@ -74,7 +77,9 @@ var hummingbirdPresetMultipliers = map[string]uint32{
 	"德国 | 01":            1500,
 	"德国02 | 直连 | 三网优化":   1500,
 	"英国 | 01":            1500,
+	"法国 | 01":            1500,
 	"意大利 | 01":           1500,
+	"澳大利亚01 | 三网优化":      2000,
 }
 
 // TrafficStats captures logical payload bytes and connection counts.
@@ -402,6 +407,15 @@ func (m *TrafficAccountingManager) initSettings() {
 				s.Subscriptions = make(map[string]*SubscriptionAccountingConfig)
 			}
 			m.settings = s
+			normalized := false
+			for _, cfg := range m.settings.Subscriptions {
+				if normalizeSubscriptionAccountingConfig(cfg) {
+					normalized = true
+				}
+			}
+			if normalized {
+				_ = m.persistSettingsLocked()
+			}
 			return
 		}
 		// Settings file exists but is corrupted: back it up and rebuild defaults
@@ -432,14 +446,79 @@ func (m *TrafficAccountingManager) initSettings() {
 func (m *TrafficAccountingManager) applyHummingbirdPresetLocked(subID string) {
 	cfg := &SubscriptionAccountingConfig{
 		NodeMultipliersMilli: make(map[string]uint32),
-		KnownNodes:           make([]string, 0, len(hummingbirdPresetMultipliers)),
+		KnownNodes:           make([]string, 0, len(initialHummingbirdPresetMultipliers)),
 	}
-	for node, mult := range hummingbirdPresetMultipliers {
+	for node, mult := range initialHummingbirdPresetMultipliers {
 		cfg.NodeMultipliersMilli[node] = mult
 		cfg.KnownNodes = append(cfg.KnownNodes, node)
 	}
 	sort.Strings(cfg.KnownNodes)
 	m.settings.Subscriptions[subID] = cfg
+}
+
+// normalizeSubscriptionAccountingConfig keeps discovered node names and
+// multiplier keys in the same canonical namespace. Mihomo node names commonly
+// carry a leading country flag, while provider pricing tables omit it; storing
+// both forms creates duplicate rows where one appears to have no multiplier.
+func normalizeSubscriptionAccountingConfig(cfg *SubscriptionAccountingConfig) bool {
+	if cfg == nil {
+		return false
+	}
+
+	originalMultipliers := cfg.NodeMultipliersMilli
+	normalizedMultipliers := make(map[string]uint32, len(originalMultipliers))
+	for node, multiplier := range originalMultipliers {
+		canonical := normalizeNodeName(node)
+		if canonical != "" && !isBuiltinGroup(canonical) {
+			normalizedMultipliers[canonical] = multiplier
+		}
+	}
+	// If both decorated and canonical keys exist, the explicitly canonical key
+	// wins deterministically rather than depending on Go map iteration order.
+	for node, multiplier := range originalMultipliers {
+		canonical := normalizeNodeName(node)
+		if strings.TrimSpace(node) == canonical && canonical != "" && !isBuiltinGroup(canonical) {
+			normalizedMultipliers[canonical] = multiplier
+		}
+	}
+
+	known := make(map[string]struct{}, len(cfg.KnownNodes)+len(normalizedMultipliers))
+	for _, node := range cfg.KnownNodes {
+		canonical := normalizeNodeName(node)
+		if canonical != "" && !isBuiltinGroup(canonical) {
+			known[canonical] = struct{}{}
+		}
+	}
+	for node := range normalizedMultipliers {
+		known[node] = struct{}{}
+	}
+	normalizedKnown := make([]string, 0, len(known))
+	for node := range known {
+		normalizedKnown = append(normalizedKnown, node)
+	}
+	sort.Strings(normalizedKnown)
+
+	changed := len(originalMultipliers) != len(normalizedMultipliers) || len(cfg.KnownNodes) != len(normalizedKnown)
+	if !changed {
+		for node, multiplier := range originalMultipliers {
+			if normalizedMultipliers[node] != multiplier {
+				changed = true
+				break
+			}
+		}
+	}
+	if !changed {
+		for i := range cfg.KnownNodes {
+			if cfg.KnownNodes[i] != normalizedKnown[i] {
+				changed = true
+				break
+			}
+		}
+	}
+
+	cfg.NodeMultipliersMilli = normalizedMultipliers
+	cfg.KnownNodes = normalizedKnown
+	return changed
 }
 
 func (m *TrafficAccountingManager) persistSettingsLocked() error {
@@ -701,14 +780,12 @@ func (m *TrafficAccountingManager) Poll(ctx context.Context) error {
 		currentActiveSubID, currentActiveSubName = m.getActiveSubscription()
 	}
 
-	// Discover candidate nodes from 家庭测速 (cached every 60s, attributed only to active subscription)
+	// Synchronize candidate nodes from 家庭测速 (cached every 60s and
+	// attributed only to the active subscription). Configured multiplier keys
+	// are retained, while provider nodes that disappeared are pruned.
 	settingsChanged := false
 	if currentActiveSubID != "" && len(m.cachedKnownNodes) > 0 && needKnownNodes {
-		for _, nodeName := range m.cachedKnownNodes {
-			if m.discoverNodeLocked(currentActiveSubID, nodeName) {
-				settingsChanged = true
-			}
-		}
+		settingsChanged = m.syncKnownNodesLocked(currentActiveSubID, m.cachedKnownNodes)
 	}
 
 	seenIDs := make(map[string]bool, len(resp.Connections))
@@ -928,7 +1005,7 @@ func (m *TrafficAccountingManager) calculateCurrentRateLocked() ProxyRate {
 // discoverNodeLocked attributes newly discovered nodes only to the specified subscription.
 // Returns true if a new node was added to knownNodes, false otherwise.
 func (m *TrafficAccountingManager) discoverNodeLocked(subID, nodeName string) bool {
-	trimmed := strings.TrimSpace(nodeName)
+	trimmed := normalizeNodeName(nodeName)
 	if trimmed == "" || isBuiltinGroup(trimmed) || subID == "" {
 		return false
 	}
@@ -948,6 +1025,53 @@ func (m *TrafficAccountingManager) discoverNodeLocked(subID, nodeName string) bo
 	}
 	cfg.KnownNodes = append(cfg.KnownNodes, trimmed)
 	sort.Strings(cfg.KnownNodes)
+	return true
+}
+
+func (m *TrafficAccountingManager) syncKnownNodesLocked(subID string, nodes []string) bool {
+	if subID == "" {
+		return false
+	}
+	cfg, ok := m.settings.Subscriptions[subID]
+	if !ok || cfg == nil {
+		cfg = &SubscriptionAccountingConfig{
+			NodeMultipliersMilli: make(map[string]uint32),
+		}
+		m.settings.Subscriptions[subID] = cfg
+	}
+
+	known := make(map[string]struct{}, len(nodes)+len(cfg.NodeMultipliersMilli))
+	for _, node := range nodes {
+		canonical := normalizeNodeName(node)
+		if canonical != "" && !isBuiltinGroup(canonical) {
+			known[canonical] = struct{}{}
+		}
+	}
+	for node := range cfg.NodeMultipliersMilli {
+		canonical := normalizeNodeName(node)
+		if canonical != "" && !isBuiltinGroup(canonical) {
+			known[canonical] = struct{}{}
+		}
+	}
+
+	next := make([]string, 0, len(known))
+	for node := range known {
+		next = append(next, node)
+	}
+	sort.Strings(next)
+	if len(next) == len(cfg.KnownNodes) {
+		equal := true
+		for i := range next {
+			if next[i] != cfg.KnownNodes[i] {
+				equal = false
+				break
+			}
+		}
+		if equal {
+			return false
+		}
+	}
+	cfg.KnownNodes = next
 	return true
 }
 
@@ -1385,7 +1509,7 @@ func (m *TrafficAccountingManager) GetSnapshot() TrafficAccountingResponse {
 		Speedtest:            m.ledger.Speedtest,
 		Devices:              boundDevicesRanking(m.ledger.Devices),
 		Subscriptions:        boundSubscriptionsRanking(m.ledger.Subscriptions),
-		Nodes:                boundNodesRanking(m.ledger.Nodes),
+		Nodes:                m.boundNodesRankingLocked(),
 		Groups:               boundGroupsRanking(m.ledger.Groups),
 		Targets:              boundTargetsRanking(m.ledger.Targets),
 		DeviceRoutes:         boundDeviceRoutesRanking(m.ledger.DeviceRoutes),
@@ -1394,6 +1518,24 @@ func (m *TrafficAccountingManager) GetSnapshot() TrafficAccountingResponse {
 	}
 
 	return res
+}
+
+// boundNodesRankingLocked reports the multiplier that is configured now while
+// leaving historical weighted and unpriced byte totals untouched.  Persisted
+// node metadata reflects the multiplier used by the most recent traffic
+// increment and would otherwise remain stale after a settings-only update.
+func (m *TrafficAccountingManager) boundNodesRankingLocked() []NodeAccounting {
+	nodes := boundNodesRanking(m.ledger.Nodes)
+	for i := range nodes {
+		if nodes[i].Node == otherKey {
+			continue
+		}
+		nodes[i].MultiplierMilli, nodes[i].PricingStatus = m.resolveMultiplierLocked(
+			nodes[i].SubscriptionID,
+			nodes[i].Node,
+		)
+	}
+	return nodes
 }
 
 func boundDevicesRanking(m map[string]*DeviceAccounting) []DeviceAccounting {
@@ -1761,7 +1903,7 @@ func (m *TrafficAccountingManager) UpdateSettings(req UpdateTrafficSettingsReque
 		}
 		seenNodes := make(map[string]bool)
 		for node, mult := range subCfg.NodeMultipliersMilli {
-			trimmed := strings.TrimSpace(node)
+			trimmed := normalizeNodeName(node)
 			if len(trimmed) == 0 || len(trimmed) > 256 {
 				return nil, errors.New("节点名称格式无效")
 			}
@@ -1796,7 +1938,7 @@ func (m *TrafficAccountingManager) UpdateSettings(req UpdateTrafficSettingsReque
 		cfg.DefaultMultiplierMilli = subReq.DefaultMultiplierMilli
 		cfg.NodeMultipliersMilli = make(map[string]uint32, len(subReq.NodeMultipliersMilli))
 		for k, v := range subReq.NodeMultipliersMilli {
-			trimmed := strings.TrimSpace(k)
+			trimmed := normalizeNodeName(k)
 			cfg.NodeMultipliersMilli[trimmed] = v
 			// Also add to knownNodes if not present
 			found := false
@@ -1810,7 +1952,7 @@ func (m *TrafficAccountingManager) UpdateSettings(req UpdateTrafficSettingsReque
 				cfg.KnownNodes = append(cfg.KnownNodes, trimmed)
 			}
 		}
-		sort.Strings(cfg.KnownNodes)
+		normalizeSubscriptionAccountingConfig(cfg)
 	}
 
 	if err := m.persistSettingsLocked(); err != nil {

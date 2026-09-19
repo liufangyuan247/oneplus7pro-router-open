@@ -209,6 +209,7 @@ type MetricHistoryPoint struct {
 	LANUp                 float64 `json:"lanUp"`
 	AriaDown              float64 `json:"ariaDown"`
 	AriaUp                float64 `json:"ariaUp"`
+	BatteryTemperature    float64 `json:"batteryTemperature"`
 	BatteryVoltage        float64 `json:"batteryVoltage"`
 	BatteryCurrent        float64 `json:"batteryCurrent"`
 	BatteryAverageCurrent float64 `json:"batteryAverageCurrent"`
@@ -1715,6 +1716,7 @@ func (s *Server) sampleMetrics(at time.Time) {
 		LANUp:                 round(lanRate.rx, 1),
 		AriaDown:              float64(aria.DownloadSpeed),
 		AriaUp:                float64(aria.UploadSpeed),
+		BatteryTemperature:    power.BatteryTemp,
 		BatteryVoltage:        power.Voltage,
 		BatteryCurrent:        power.Current * 1000,
 		BatteryAverageCurrent: power.AverageCurrent * 1000,

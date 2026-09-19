@@ -419,6 +419,7 @@ type HistoryPoint = {
   at: number;
   cpu: number;
   temperature: number;
+  batteryTemperature: number;
   memory: number;
   wanDown: number;
   wanUp: number;
@@ -830,6 +831,7 @@ export default function Home() {
         at: Date.now(),
         cpu: next.cpu.usage,
         temperature: next.cpu.temperature,
+        batteryTemperature: next.power.BatteryTemp,
         memory,
         wanDown: wan?.RxBps || 0,
         wanUp: wan?.TxBps || 0,
@@ -869,6 +871,7 @@ export default function Home() {
             at: Date.now(),
             cpu: demo.cpu.usage,
             temperature: demo.cpu.temperature,
+            batteryTemperature: demo.power.BatteryTemp,
             memory: (demo.memory.Used / demo.memory.Total) * 100,
             wanDown: demo.interfaces[0]?.RxBps || 0,
             wanUp: demo.interfaces[0]?.TxBps || 0,
@@ -1232,6 +1235,7 @@ function Overview({
   const traffic = wan || lan;
   const wanOnline = Boolean(wan?.Addresses?.length);
   const lanOnline = Boolean(lan?.Addresses?.length);
+  const batteryTemperature = data.power.BatteryTemp;
   const metrics = [
     {
       label: "CPU 负载",
@@ -1240,10 +1244,15 @@ function Overview({
       tone: "cyan",
     },
     {
-      label: "最高核心温度",
-      value: `${data.cpu.temperature.toFixed(1)}°C`,
-      detail: data.cpu.temperature < 80 ? "未触发高温警告" : "温度偏高",
-      tone: data.cpu.temperature < 80 ? "green" : "amber",
+      label: "电池温度",
+      value: `${batteryTemperature.toFixed(1)}°C`,
+      detail:
+        batteryTemperature < 40
+          ? "温度正常"
+          : batteryTemperature < 45
+            ? "温度偏高，留意通风"
+            : "温度过高，检查散热",
+      tone: batteryTemperature < 40 ? "green" : "amber",
     },
     {
       label: "内存",
@@ -1363,7 +1372,7 @@ function Overview({
           <div className="panel-title">
             <div>
               <p className="eyebrow">最近 10 分钟</p>
-              <h2>CPU 与核心温度</h2>
+              <h2>CPU 与温度趋势</h2>
             </div>
             <strong>{data.cpu.usage.toFixed(1)}%</strong>
           </div>
@@ -1372,7 +1381,12 @@ function Overview({
             series={[
               { label: "CPU %", color: "#30c7d8", value: (p) => p.cpu },
               {
-                label: "温度 °C",
+                label: "电池 °C",
+                color: "#52d395",
+                value: (p) => p.batteryTemperature,
+              },
+              {
+                label: "CPU 最高 °C",
                 color: "#ffad66",
                 value: (p) => p.temperature,
               },
@@ -1630,6 +1644,7 @@ function TimeSeriesChart({
           at: 0,
           cpu: 0,
           temperature: 0,
+          batteryTemperature: 0,
           memory: 0,
           wanDown: 0,
           wanUp: 0,
@@ -2894,7 +2909,7 @@ const formatBps = (bps: number) => {
 
 const formatMultiplier = (milli?: number | null) => {
   if (milli == null) return "—";
-  return `${(milli / 1000).toFixed(2)}x`;
+  return `${milli / 1000}x`;
 };
 
 const formatAccountingTime = (iso?: string) => {
@@ -2943,6 +2958,11 @@ function TrafficAccountingSection({
   >({});
   const [savingSettings, setSavingSettings] = useState(false);
   const [resetting, setResetting] = useState(false);
+
+  const currentlyUnpricedNodes =
+    snapshot?.nodes.filter(
+      (node) => node.pricingStatus === "unpriced" && node.rawBytes > 0,
+    ) || [];
 
   // Accounting changes once per second server-side; a 10s visible refresh is
   // sufficient for presentation and hidden tabs should do no work at all.
@@ -3313,7 +3333,9 @@ function TrafficAccountingSection({
                 ) : (
                   <>
                     {sorted.map((item) => {
-                      const isUnpriced = item.unpricedRawBytes > 0;
+                      const isCurrentlyUnpriced = currentlyUnpricedNodes.some(
+                        (node) => node.subscriptionId === item.id,
+                      );
                       return (
                         <tr key={item.id}>
                           <td>
@@ -3331,8 +3353,10 @@ function TrafficAccountingSection({
                             <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
                           </td>
                           <td className="num-col">
-                            {isUnpriced ? (
+                            {item.unpricedRawBytes > 0 && isCurrentlyUnpriced ? (
                               <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes)}</span>
+                            ) : item.unpricedRawBytes > 0 ? (
+                              <span className="text-muted">{bytes(item.unpricedRawBytes)}</span>
                             ) : (
                               <span className="text-muted">0</span>
                             )}
@@ -3384,7 +3408,7 @@ function TrafficAccountingSection({
                     所属订阅{sortIcon("subscriptionName")}
                   </th>
                   <th onClick={() => handleHeaderSort("pricingStatus")} className="sortable-th">
-                    当前倍率和计价状态{sortIcon("pricingStatus")}
+                    当前倍率{sortIcon("pricingStatus")}
                   </th>
                   <th onClick={() => handleHeaderSort("uploadBytes")} className="sortable-th num-col">
                     上行{sortIcon("uploadBytes")}
@@ -3413,8 +3437,7 @@ function TrafficAccountingSection({
                   </tr>
                 ) : (
                   sorted.map((item, idx) => {
-                    const isUnpriced =
-                      item.unpricedRawBytes > 0 || item.pricingStatus === "unpriced";
+                    const isCurrentlyUnpriced = item.pricingStatus === "unpriced";
                     return (
                       <tr key={`${item.node}-${item.subscriptionId || ""}-${idx}`}>
                         <td>
@@ -3427,13 +3450,13 @@ function TrafficAccountingSection({
                         </td>
                         <td>
                           {item.pricingStatus === "node_override" && (
-                            <span className="badge-tag pricing-override">
-                              覆盖 {formatMultiplier(item.multiplierMilli)}
+                            <span className="badge-tag pricing-override" title="节点倍率">
+                              {formatMultiplier(item.multiplierMilli)}
                             </span>
                           )}
                           {item.pricingStatus === "subscription_default" && (
-                            <span className="badge-tag pricing-default">
-                              默认 {formatMultiplier(item.multiplierMilli)}
+                            <span className="badge-tag pricing-default" title="订阅默认倍率">
+                              {formatMultiplier(item.multiplierMilli)}
                             </span>
                           )}
                           {item.pricingStatus === "unpriced" && (
@@ -3449,10 +3472,10 @@ function TrafficAccountingSection({
                           <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
                         </td>
                         <td className="num-col">
-                          {isUnpriced ? (
+                          {item.unpricedRawBytes > 0 && isCurrentlyUnpriced ? (
                             <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes || 0)}</span>
                           ) : (
-                            <span className="text-muted">0</span>
+                            <span className="text-muted">—</span>
                           )}
                         </td>
                         <td className="num-col">{item.connectionCount}</td>
@@ -3755,10 +3778,20 @@ function TrafficAccountingSection({
           </span>
         </div>
       )}
-      {snapshot?.proxy && snapshot.proxy.unpricedRawBytes > 0 && (
+      {snapshot?.proxy &&
+        snapshot.proxy.unpricedRawBytes > 0 &&
+        currentlyUnpricedNodes.length > 0 && (
         <div className="speedtest-notice warning" style={{ marginBottom: "10px" }}>
           <span>
-            ⚠️ 存在未计价代理流量：累计 {bytes(snapshot.proxy.unpricedRawBytes)}。因节点尚未配置计费倍率，预计计费中不含该部分流量，请前往【倍率设置】补充倍率。
+            ⚠️ 当前仍有节点未配置倍率：
+            {currentlyUnpricedNodes
+              .slice(0, 3)
+              .map((node) => node.node)
+              .join("、")}
+            {currentlyUnpricedNodes.length > 3
+              ? ` 等 ${currentlyUnpricedNodes.length} 个节点`
+              : ""}
+            。账本累计未计价 {bytes(snapshot.proxy.unpricedRawBytes)}，请前往【倍率设置】补充。
           </span>
         </div>
       )}
@@ -3814,7 +3847,9 @@ function TrafficAccountingSection({
             {snapshot?.proxy?.rawBytes
               ? (snapshot.proxy.weightedBytes / snapshot.proxy.rawBytes).toFixed(2) + "x"
               : "—"}
-            {snapshot?.proxy && snapshot.proxy.unpricedRawBytes > 0 && (
+            {snapshot?.proxy &&
+              snapshot.proxy.unpricedRawBytes > 0 &&
+              currentlyUnpricedNodes.length > 0 && (
               <span style={{ display: "block", color: "#e59095", marginTop: "2px" }}>
                 ⚠️ 含 {bytes(snapshot.proxy.unpricedRawBytes)} 未计价（不含在预计计费内）
               </span>
@@ -6671,8 +6706,9 @@ function System({
       <ModuleContextBar>
         <strong>{data.power.batteryPercent}% 电量</strong>
         <span>{data.power.usbOnline ? `${data.power.usbType} 供电在线` : "未接入 USB 电源"}</span>
+        <span>电池 {batteryTemperature.toFixed(1)}°C</span>
         <span>CPU {data.cpu.usage.toFixed(1)}%</span>
-        <span>{data.cpu.temperature.toFixed(1)}°C</span>
+        <span>CPU 最高 {data.cpu.temperature.toFixed(1)}°C</span>
       </ModuleContextBar>
       <div className="system-grid single-section-grid">
         {section === "power" && (
@@ -6850,6 +6886,35 @@ function System({
       </div>
       {section === "power" && (
         <div className="system-grid power-history-grid">
+        <article className="panel history-panel">
+          <div className="panel-title">
+            <div>
+              <p className="eyebrow">最近 10 分钟</p>
+              <h2>电池温度趋势</h2>
+            </div>
+            <span
+              className={batteryTemperature < 40 ? "state-good" : "warning-chip"}
+            >
+              {batteryTemperature < 40
+                ? "温度正常"
+                : batteryTemperature < 45
+                  ? "温度偏高"
+                  : "温度过高"}
+            </span>
+          </div>
+          <TimeSeriesChart
+            history={history}
+            series={[
+              {
+                label: "电池 °C",
+                color: "#52d395",
+                value: (p) => p.batteryTemperature,
+              },
+            ]}
+            format={(value) => `${value.toFixed(1)}°C`}
+            zeroBaseline={false}
+          />
+        </article>
         <article className="panel history-panel">
           <div className="panel-title">
             <div>
