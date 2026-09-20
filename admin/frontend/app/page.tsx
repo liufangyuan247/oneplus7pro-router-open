@@ -3095,7 +3095,7 @@ function TrafficAccountingSection({
       }
       setSettings(body);
       setShowSettingsModal(false);
-      setNotice("流量审计倍率配置已保存（提示：仅影响未来流量，不追溯历史账本）");
+      setNotice("流量审计倍率配置已保存，未计价流量已自动补算");
       const snapRes = await fetch("/api/mihomo/traffic-accounting", { cache: "no-store" });
       if (snapRes.ok) {
         setSnapshot((await snapRes.json()) as TrafficAccountingSnapshot);
@@ -3230,9 +3230,14 @@ function TrafficAccountingSection({
                   </tr>
                 ) : (
                   sorted.map((r, idx) => {
-                    const isUnpriced = r.unpricedRawBytes > 0;
                     const isProxy = r.routeKind === "proxy";
                     const isUnassigned = isProxy && !r.subscriptionId;
+                    const isCurrentlyUnpriced =
+                      isUnassigned ||
+                      currentlyUnpricedNodes.some(
+                        (node) =>
+                          node.subscriptionId === r.subscriptionId && node.node === r.node,
+                      );
 
                     return (
                       <tr key={`${r.ip}-${r.routeKind}-${r.node || ""}-${r.group || ""}-${idx}`}>
@@ -3276,10 +3281,10 @@ function TrafficAccountingSection({
                           )}
                         </td>
                         <td className="num-col">
-                          {isUnpriced ? (
+                          {r.unpricedRawBytes > 0 && isCurrentlyUnpriced ? (
                             <span className="unpriced-badge">⚠️ {bytes(r.unpricedRawBytes)}</span>
                           ) : (
-                            <span className="text-muted">0</span>
+                            <span className="text-muted">—</span>
                           )}
                         </td>
                         <td className="num-col">{r.connectionCount}</td>
@@ -3355,10 +3360,8 @@ function TrafficAccountingSection({
                           <td className="num-col">
                             {item.unpricedRawBytes > 0 && isCurrentlyUnpriced ? (
                               <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes)}</span>
-                            ) : item.unpricedRawBytes > 0 ? (
-                              <span className="text-muted">{bytes(item.unpricedRawBytes)}</span>
                             ) : (
-                              <span className="text-muted">0</span>
+                              <span className="text-muted">—</span>
                             )}
                           </td>
                           <td className="num-col">{item.connectionCount}</td>
@@ -3527,7 +3530,6 @@ function TrafficAccountingSection({
                   </tr>
                 ) : (
                   sorted.map((item) => {
-                    const isUnpriced = item.unpricedRawBytes > 0;
                     return (
                       <tr key={item.group}>
                         <td>
@@ -3542,10 +3544,10 @@ function TrafficAccountingSection({
                           <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
                         </td>
                         <td className="num-col">
-                          {isUnpriced ? (
+                          {item.unpricedRawBytes > 0 && currentlyUnpricedNodes.length > 0 ? (
                             <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes)}</span>
                           ) : (
-                            <span className="text-muted">0</span>
+                            <span className="text-muted">—</span>
                           )}
                         </td>
                         <td className="num-col">{item.connectionCount}</td>
@@ -3597,7 +3599,6 @@ function TrafficAccountingSection({
                   </tr>
                 ) : (
                   sorted.map((item) => {
-                    const isUnpriced = item.unpricedRawBytes > 0;
                     return (
                       <tr key={item.target}>
                         <td>
@@ -3612,10 +3613,10 @@ function TrafficAccountingSection({
                           <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
                         </td>
                         <td className="num-col">
-                          {isUnpriced ? (
+                          {item.unpricedRawBytes > 0 && currentlyUnpricedNodes.length > 0 ? (
                             <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes)}</span>
                           ) : (
-                            <span className="text-muted">0</span>
+                            <span className="text-muted">—</span>
                           )}
                         </td>
                         <td className="num-col">{item.connectionCount}</td>
@@ -3668,7 +3669,6 @@ function TrafficAccountingSection({
                   </tr>
                 ) : (
                   sorted.map((item) => {
-                    const isUnpriced = item.unpricedRawBytes > 0;
                     return (
                       <tr key={item.time}>
                         <td>
@@ -3683,10 +3683,10 @@ function TrafficAccountingSection({
                           <strong className="text-weighted">{bytes(item.weightedBytes || 0)}</strong>
                         </td>
                         <td className="num-col">
-                          {isUnpriced ? (
+                          {item.unpricedRawBytes > 0 && currentlyUnpricedNodes.length > 0 ? (
                             <span className="unpriced-badge">⚠️ {bytes(item.unpricedRawBytes)}</span>
                           ) : (
-                            <span className="text-muted">0</span>
+                            <span className="text-muted">—</span>
                           )}
                         </td>
                         <td className="num-col">{item.connectionCount}</td>
@@ -4016,7 +4016,7 @@ function TrafficAccountingSection({
               <div>
                 <strong>流量审计倍率配置</strong>
                 <p className="modal-header-desc">
-                  配置订阅默认倍率及各节点覆盖倍率（范围 0.1 ~ 100）。
+                  配置订阅默认倍率及各节点覆盖倍率（范围 0.1 ~ 100）；倍率可用后自动补算未计价流量。
                 </p>
               </div>
               <div>
@@ -4027,10 +4027,6 @@ function TrafficAccountingSection({
             </header>
 
             <div className="traffic-settings-content">
-              <div className="speedtest-notice warning" style={{ marginBottom: "14px" }}>
-                <span>⚠️ 提示：倍率修改仅对未来产生的新流量生效，不会追溯重算历史账本。</span>
-              </div>
-
               <label className="lan-toggle whole-home-proxy-toggle" style={{ marginBottom: "16px" }}>
                 <input
                   type="checkbox"

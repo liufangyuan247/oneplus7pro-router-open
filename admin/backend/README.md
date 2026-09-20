@@ -42,6 +42,9 @@ nodes, proxy groups, destination targets, and hourly/daily time series.
 Configurable billing multipliers (0.1x–100x, per-subscription defaults and
 per-node overrides) calculate estimated billing traffic. Traffic not matching any
 active subscription is isolated as unassigned proxy traffic without distortion.
+Unpriced node deltas keep an exact per-dimension pending journal and are
+backfilled once a multiplier becomes available; traffic that was already priced
+keeps the multiplier used when it was collected.
 All accounting ledgers and settings are atomically persisted with mode `0600`.
 
 The **服务** page also contains a protected Tailscale control panel. It reports

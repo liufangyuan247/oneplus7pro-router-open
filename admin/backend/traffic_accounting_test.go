@@ -468,8 +468,8 @@ func TestMultipliersAndPricing(t *testing.T) {
 	}
 }
 
-// 10. Settings update future-only test: updating multipliers does not alter historical stats.
-func TestSettingsUpdateFutureOnly(t *testing.T) {
+// 10. Changing a multiplier does not recalculate traffic that was already priced.
+func TestSettingsUpdateKeepsAlreadyPricedHistory(t *testing.T) {
 	tempDir := t.TempDir()
 	var currentConns []mihomoRawConnection
 
@@ -520,8 +520,8 @@ func TestSettingsUpdateFutureOnly(t *testing.T) {
 		t.Fatalf("history should not be altered by settings update, got %d", mgr.GetSnapshot().Proxy.WeightedBytes)
 	}
 
-	// The UI should immediately show the newly configured multiplier even
-	// though historical weighted and unpriced byte totals are not recalculated.
+	// The UI should immediately show the newly configured multiplier. This
+	// traffic was already priced, so its historical weighted total is retained.
 	updated := mgr.GetSnapshot()
 	if len(updated.Nodes) != 1 || updated.Nodes[0].MultiplierMilli == nil || *updated.Nodes[0].MultiplierMilli != 2000 || updated.Nodes[0].PricingStatus != "subscription_default" {
 		t.Fatalf("node pricing metadata did not reflect current settings: %+v", updated.Nodes)
@@ -535,6 +535,230 @@ func TestSettingsUpdateFutureOnly(t *testing.T) {
 
 	if mgr.GetSnapshot().Proxy.WeightedBytes != 3000 {
 		t.Fatalf("expected 3000 weighted bytes (1000 + 2000), got %d", mgr.GetSnapshot().Proxy.WeightedBytes)
+	}
+}
+
+func TestMultiplierBackfillsPendingTrafficAcrossAllDimensions(t *testing.T) {
+	tempDir := t.TempDir()
+	var currentConns []mihomoRawConnection
+	now := time.Date(2026, 9, 20, 1, 2, 3, 0, time.UTC)
+	mgr := NewTrafficAccountingManager(TrafficAccountingConfig{
+		DataDir: tempDir,
+		NowFunc: func() time.Time { return now },
+		FetchConnections: func(context.Context) (*mihomoRawConnectionsResponse, error) {
+			return &mihomoRawConnectionsResponse{Connections: currentConns}, nil
+		},
+		GetActiveSubscription: func() (string, string) { return "sub-1", "Sub" },
+	})
+
+	currentConns = []mihomoRawConnection{
+		newMockRawConnection("a", 0, 0, []string{"🇯🇵 NodeA", "GroupA"}, "a.example", "1.1.1.1", "192.168.2.10"),
+		newMockRawConnection("b", 0, 0, []string{"🇺🇸 NodeB", "GroupB"}, "b.example", "2.2.2.2", "192.168.2.20"),
+	}
+	if err := mgr.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	currentConns[0].Upload, currentConns[0].Download = 100, 300
+	currentConns[1].Upload, currentConns[1].Download = 200, 100
+	if err := mgr.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	before := mgr.GetSnapshot()
+	if before.Proxy.UnpricedRawBytes != 700 || before.Proxy.WeightedBytes != 0 {
+		t.Fatalf("unexpected pending totals before multiplier: %+v", before.Proxy)
+	}
+
+	multA, multB := uint32(1500), uint32(2000)
+	if _, err := mgr.UpdateSettings(UpdateTrafficSettingsRequest{
+		Subscriptions: map[string]*UpdateSubscriptionConfigRequest{
+			"sub-1": {
+				NodeMultipliersMilli: map[string]uint32{"NodeA": multA, "NodeB": multB},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	after := mgr.GetSnapshot()
+	if after.Proxy.UnpricedRawBytes != 0 || after.Proxy.WeightedBytes != 1200 {
+		t.Fatalf("proxy pending traffic was not backfilled exactly: %+v", after.Proxy)
+	}
+	assertNoUnpriced := func(label string, stats TrafficStats) {
+		t.Helper()
+		if stats.UnpricedRawBytes != 0 {
+			t.Errorf("%s retained %d unpriced bytes", label, stats.UnpricedRawBytes)
+		}
+	}
+	assertNoUnpriced("subscription", after.Subscriptions[0].TrafficStats)
+	for _, item := range after.Devices {
+		assertNoUnpriced("device "+item.IP, item.TrafficStats)
+	}
+	for _, item := range after.Nodes {
+		assertNoUnpriced("node "+item.Node, item.TrafficStats)
+	}
+	for _, item := range after.Groups {
+		assertNoUnpriced("group "+item.Group, item.TrafficStats)
+	}
+	for _, item := range after.Targets {
+		assertNoUnpriced("target "+item.Target, item.TrafficStats)
+		if item.Target == "a.example" && item.WeightedBytes != 600 {
+			t.Errorf("NodeA target weighted bytes = %d, want 600", item.WeightedBytes)
+		}
+		if item.Target == "b.example" && item.WeightedBytes != 600 {
+			t.Errorf("NodeB target weighted bytes = %d, want 600", item.WeightedBytes)
+		}
+	}
+	for _, item := range after.DeviceRoutes {
+		assertNoUnpriced("device route "+item.Node, item.TrafficStats)
+	}
+	for _, item := range after.Hourly {
+		assertNoUnpriced("hour "+item.Time, item.TrafficStats)
+	}
+	for _, item := range after.Daily {
+		assertNoUnpriced("day "+item.Time, item.TrafficStats)
+	}
+	mgr.mu.Lock()
+	pendingCount := len(mgr.ledger.PendingPricing)
+	mgr.mu.Unlock()
+	if pendingCount != 0 {
+		t.Fatalf("pending pricing journal was not cleared: %d entries", pendingCount)
+	}
+
+	// A later rate change does not rewrite the traffic that has already been
+	// priced by the one-time backfill.
+	multA = 3000
+	if _, err := mgr.UpdateSettings(UpdateTrafficSettingsRequest{
+		Subscriptions: map[string]*UpdateSubscriptionConfigRequest{
+			"sub-1": {
+				NodeMultipliersMilli: map[string]uint32{"NodeA": multA, "NodeB": multB},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := mgr.GetSnapshot().Proxy.WeightedBytes; got != 1200 {
+		t.Fatalf("already-priced history changed after rate update: got %d want 1200", got)
+	}
+}
+
+func TestPendingPricingSurvivesRestartAndBackfillsOnRateRestore(t *testing.T) {
+	tempDir := t.TempDir()
+	var currentConns []mihomoRawConnection
+	config := func() TrafficAccountingConfig {
+		return TrafficAccountingConfig{
+			DataDir: tempDir,
+			FetchConnections: func(context.Context) (*mihomoRawConnectionsResponse, error) {
+				return &mihomoRawConnectionsResponse{Connections: currentConns}, nil
+			},
+			GetActiveSubscription: func() (string, string) { return "sub-1", "Sub" },
+		}
+	}
+	mgr := NewTrafficAccountingManager(config())
+	currentConns = []mihomoRawConnection{
+		newMockRawConnection("c", 0, 0, []string{"NodeX", "Group"}, "restart.example", "1.1.1.1", "192.168.2.10"),
+	}
+	_ = mgr.Poll(context.Background())
+	currentConns[0].Upload, currentConns[0].Download = 125, 375
+	_ = mgr.Poll(context.Background())
+	mgr.mu.Lock()
+	if err := mgr.persistLedgerLocked(); err != nil {
+		mgr.mu.Unlock()
+		t.Fatal(err)
+	}
+	mgr.mu.Unlock()
+
+	restarted := NewTrafficAccountingManager(config())
+	if got := restarted.GetSnapshot().Proxy.UnpricedRawBytes; got != 500 {
+		t.Fatalf("pending bytes did not survive restart: got %d want 500", got)
+	}
+	multiplier := uint32(2500)
+	if _, err := restarted.UpdateSettings(UpdateTrafficSettingsRequest{
+		Subscriptions: map[string]*UpdateSubscriptionConfigRequest{
+			"sub-1": {NodeMultipliersMilli: map[string]uint32{"NodeX": multiplier}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after := restarted.GetSnapshot()
+	if after.Proxy.UnpricedRawBytes != 0 || after.Proxy.WeightedBytes != 1249 {
+		t.Fatalf("restart backfill mismatch: %+v", after.Proxy)
+	}
+	if len(after.Targets) != 1 || after.Targets[0].UnpricedRawBytes != 0 || after.Targets[0].WeightedBytes != 1249 {
+		t.Fatalf("target backfill did not survive restart: %+v", after.Targets)
+	}
+}
+
+func TestLegacyUnpricedLedgerMigratesOnceWhenAllRatesExist(t *testing.T) {
+	tempDir := t.TempDir()
+	multiplier := uint32(1500)
+	settings := TrafficAccountingSettings{
+		Version: trafficAccountingVersion,
+		Enabled: true,
+		Subscriptions: map[string]*SubscriptionAccountingConfig{
+			"sub-1": {
+				NodeMultipliersMilli: map[string]uint32{"NodeX": multiplier},
+				KnownNodes:           []string{"NodeX"},
+			},
+		},
+	}
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "traffic-accounting-settings.json"), settingsJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	legacyStats := TrafficStats{
+		UploadBytes:      100,
+		DownloadBytes:    400,
+		RawBytes:         500,
+		UnpricedRawBytes: 500,
+	}
+	legacy := TrafficLedger{
+		Version:       trafficAccountingVersion,
+		StartedAt:     "2026-09-19T00:00:00Z",
+		Proxy:         legacyStats,
+		Devices:       map[string]*DeviceAccounting{"device": {IP: "device", TrafficStats: legacyStats}},
+		Subscriptions: map[string]*SubscriptionAccounting{"sub-1": {ID: "sub-1", TrafficStats: legacyStats}},
+		Nodes: map[string]*NodeAccounting{
+			nodeCompositeKey("sub-1", "🇯🇵 NodeX"): {
+				Node:           "🇯🇵 NodeX",
+				SubscriptionID: "sub-1",
+				PricingStatus:  "unpriced",
+				TrafficStats:   legacyStats,
+			},
+		},
+		Groups:       map[string]*GroupAccounting{"Group": {Group: "Group", TrafficStats: legacyStats}},
+		Targets:      map[string]*TargetAccounting{"legacy.example": {Target: "legacy.example", TrafficStats: legacyStats}},
+		DeviceRoutes: map[string]*DeviceRouteAccounting{"route": {Node: "🇯🇵 NodeX", TrafficStats: legacyStats}},
+		Hourly:       map[string]*TimeAccounting{"hour": {Time: "hour", TrafficStats: legacyStats}},
+		Daily:        map[string]*TimeAccounting{"day": {Time: "day", TrafficStats: legacyStats}},
+	}
+	ledgerJSON, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "traffic-accounting.json"), ledgerJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewTrafficAccountingManager(TrafficAccountingConfig{DataDir: tempDir})
+	after := mgr.GetSnapshot()
+	if after.Proxy.UnpricedRawBytes != 0 || after.Proxy.WeightedBytes != 750 {
+		t.Fatalf("legacy proxy residual was not migrated: %+v", after.Proxy)
+	}
+	if len(after.Nodes) != 1 || after.Nodes[0].UnpricedRawBytes != 0 || after.Nodes[0].WeightedBytes != 750 {
+		t.Fatalf("legacy node residual was not migrated: %+v", after.Nodes)
+	}
+	if len(after.Targets) != 1 || after.Targets[0].UnpricedRawBytes != 0 || after.Targets[0].WeightedBytes != 750 {
+		t.Fatalf("legacy target residual was not migrated: %+v", after.Targets)
+	}
+	mgr.mu.Lock()
+	version := mgr.ledger.PricingBackfill
+	mgr.mu.Unlock()
+	if version != pricingBackfillVersion {
+		t.Fatalf("legacy migration version = %d, want %d", version, pricingBackfillVersion)
 	}
 }
 

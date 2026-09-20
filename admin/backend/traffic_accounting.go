@@ -30,6 +30,7 @@ const (
 	maxAccountingGroups           = 200
 	maxAccountingDeviceRoutes     = 5000
 	maxAPIRankingRows             = 200
+	pricingBackfillVersion        = 1
 	minMultiplierMilli            = 100    // 0.1x
 	maxMultiplierMilli            = 100000 // 100x
 	otherKey                      = "_other"
@@ -38,8 +39,8 @@ const (
 // initialHummingbirdPresetMultipliers is a bootstrap fallback only. Runtime
 // settings persisted in traffic-accounting-settings.json are authoritative and
 // are never replaced by this table on restart or subscription refresh. Rates
-// may change over time; UpdateSettings applies a new rate only to future byte
-// deltas while historical weighted totals retain the rate used at collection.
+// may change over time; already-priced traffic retains its original rate, while
+// pending unpriced traffic is backfilled once a rate becomes available.
 var initialHummingbirdPresetMultipliers = map[string]uint32{
 	"美国17 | 直连 | 三网优化":   2000,
 	"美国 | 07":            2000,
@@ -93,6 +94,38 @@ type TrafficStats struct {
 	UnpricedRawBytes      uint64 `json:"unpricedRawBytes"`
 	ConnectionCount       uint64 `json:"connectionCount"`
 	LastSeenAt            string `json:"lastSeenAt,omitempty"`
+}
+
+// DirectionalBytes preserves the upload/download split for traffic that could
+// not be priced yet. Keeping this outside TrafficStats prevents internal
+// backfill metadata from leaking into the public accounting API.
+type DirectionalBytes struct {
+	UploadBytes   uint64 `json:"uploadBytes"`
+	DownloadBytes uint64 `json:"downloadBytes"`
+}
+
+func (b *DirectionalBytes) Add(up, down uint64) {
+	b.UploadBytes = safeAddUint64(b.UploadBytes, up)
+	b.DownloadBytes = safeAddUint64(b.DownloadBytes, down)
+}
+
+// PendingNodePricing is the exact cross-dimensional journal for one
+// subscription/node pair while it has no multiplier. Once a multiplier exists,
+// the journal can be replayed into every affected aggregate.
+type PendingNodePricing struct {
+	SubscriptionID string                      `json:"subscriptionId"`
+	Node           string                      `json:"node"`
+	Proxy          DirectionalBytes            `json:"proxy"`
+	Unassigned     DirectionalBytes            `json:"unassigned,omitempty"`
+	Speedtest      DirectionalBytes            `json:"speedtest,omitempty"`
+	Devices        map[string]DirectionalBytes `json:"devices,omitempty"`
+	Subscriptions  map[string]DirectionalBytes `json:"subscriptions,omitempty"`
+	Nodes          map[string]DirectionalBytes `json:"nodes,omitempty"`
+	Groups         map[string]DirectionalBytes `json:"groups,omitempty"`
+	Targets        map[string]DirectionalBytes `json:"targets,omitempty"`
+	DeviceRoutes   map[string]DirectionalBytes `json:"deviceRoutes,omitempty"`
+	Hourly         map[string]DirectionalBytes `json:"hourly,omitempty"`
+	Daily          map[string]DirectionalBytes `json:"daily,omitempty"`
 }
 
 func (s *TrafficStats) Add(up, down, wUp, wDown, unpriced uint64, incConn bool, at string) {
@@ -223,6 +256,8 @@ type TrafficLedger struct {
 	DeviceRoutes         map[string]*DeviceRouteAccounting  `json:"deviceRoutes"`
 	Hourly               map[string]*TimeAccounting         `json:"hourly"`
 	Daily                map[string]*TimeAccounting         `json:"daily"`
+	PendingPricing       map[string]*PendingNodePricing     `json:"pendingPricing,omitempty"`
+	PricingBackfill      int                                `json:"pricingBackfillVersion,omitempty"`
 }
 
 type TrafficAccountingResponse struct {
@@ -382,6 +417,13 @@ func NewTrafficAccountingManager(cfg TrafficAccountingConfig) *TrafficAccounting
 
 	m.initSettings()
 	m.initLedger()
+	pricingChanged := m.repriceResolvedPendingLocked()
+	if m.reconcileLegacyUnpricedLocked() {
+		pricingChanged = true
+	}
+	if pricingChanged {
+		_ = m.persistLedgerLocked()
+	}
 	m.lastSaveTime = m.now()
 
 	return m
@@ -540,17 +582,19 @@ func (m *TrafficAccountingManager) persistSettingsLocked() error {
 func (m *TrafficAccountingManager) newEmptyLedger() TrafficLedger {
 	nowStr := m.now().Format(time.RFC3339)
 	return TrafficLedger{
-		Version:       trafficAccountingVersion,
-		StartedAt:     nowStr,
-		UpdatedAt:     nowStr,
-		Devices:       make(map[string]*DeviceAccounting),
-		Subscriptions: make(map[string]*SubscriptionAccounting),
-		Nodes:         make(map[string]*NodeAccounting),
-		Groups:        make(map[string]*GroupAccounting),
-		Targets:       make(map[string]*TargetAccounting),
-		DeviceRoutes:  make(map[string]*DeviceRouteAccounting),
-		Hourly:        make(map[string]*TimeAccounting),
-		Daily:         make(map[string]*TimeAccounting),
+		Version:         trafficAccountingVersion,
+		StartedAt:       nowStr,
+		UpdatedAt:       nowStr,
+		Devices:         make(map[string]*DeviceAccounting),
+		Subscriptions:   make(map[string]*SubscriptionAccounting),
+		Nodes:           make(map[string]*NodeAccounting),
+		Groups:          make(map[string]*GroupAccounting),
+		Targets:         make(map[string]*TargetAccounting),
+		DeviceRoutes:    make(map[string]*DeviceRouteAccounting),
+		Hourly:          make(map[string]*TimeAccounting),
+		Daily:           make(map[string]*TimeAccounting),
+		PendingPricing:  make(map[string]*PendingNodePricing),
+		PricingBackfill: pricingBackfillVersion,
 	}
 }
 
@@ -615,6 +659,9 @@ func (m *TrafficAccountingManager) initLedger() {
 	}
 	if loaded.Daily == nil {
 		loaded.Daily = make(map[string]*TimeAccounting)
+	}
+	if loaded.PendingPricing == nil {
+		loaded.PendingPricing = make(map[string]*PendingNodePricing)
 	}
 
 	m.ledger = loaded
@@ -1144,6 +1191,65 @@ func deviceRouteCompositeKey(sourceIP, routeKind, subscriptionID, leafNode, prox
 	return sourceIP + "\x00" + routeKind + "\x00" + subscriptionID + "\x00" + leafNode + "\x00" + proxyGroup
 }
 
+func addDirectionalMap(values map[string]DirectionalBytes, key string, up, down uint64) {
+	if key == "" {
+		return
+	}
+	value := values[key]
+	value.Add(up, down)
+	values[key] = value
+}
+
+func newPendingNodePricing(subscriptionID, node string) *PendingNodePricing {
+	return &PendingNodePricing{
+		SubscriptionID: subscriptionID,
+		Node:           normalizeNodeName(node),
+		Devices:        make(map[string]DirectionalBytes),
+		Subscriptions:  make(map[string]DirectionalBytes),
+		Nodes:          make(map[string]DirectionalBytes),
+		Groups:         make(map[string]DirectionalBytes),
+		Targets:        make(map[string]DirectionalBytes),
+		DeviceRoutes:   make(map[string]DirectionalBytes),
+		Hourly:         make(map[string]DirectionalBytes),
+		Daily:          make(map[string]DirectionalBytes),
+	}
+}
+
+func (m *TrafficAccountingManager) recordPendingPricingLocked(
+	tc *trackedConnection,
+	up, down uint64,
+	deviceKey, subscriptionKey, nodeKey, groupKey, targetKey, deviceRouteKey, hourKey, dayKey string,
+) {
+	if safeAddUint64(up, down) == 0 {
+		return
+	}
+	if m.ledger.PendingPricing == nil {
+		m.ledger.PendingPricing = make(map[string]*PendingNodePricing)
+	}
+	canonicalNode := normalizeNodeName(tc.LeafNode)
+	key := nodeCompositeKey(tc.SubscriptionID, canonicalNode)
+	pending := m.ledger.PendingPricing[key]
+	if pending == nil {
+		pending = newPendingNodePricing(tc.SubscriptionID, canonicalNode)
+		m.ledger.PendingPricing[key] = pending
+	}
+	pending.Proxy.Add(up, down)
+	if tc.SubscriptionID == "" {
+		pending.Unassigned.Add(up, down)
+	}
+	if tc.IsSpeedtest {
+		pending.Speedtest.Add(up, down)
+	}
+	addDirectionalMap(pending.Devices, deviceKey, up, down)
+	addDirectionalMap(pending.Subscriptions, subscriptionKey, up, down)
+	addDirectionalMap(pending.Nodes, nodeKey, up, down)
+	addDirectionalMap(pending.Groups, groupKey, up, down)
+	addDirectionalMap(pending.Targets, targetKey, up, down)
+	addDirectionalMap(pending.DeviceRoutes, deviceRouteKey, up, down)
+	addDirectionalMap(pending.Hourly, hourKey, up, down)
+	addDirectionalMap(pending.Daily, dayKey, up, down)
+}
+
 func (m *TrafficAccountingManager) accumulateDeltaLocked(tc *trackedConnection, deltaUp, deltaDown uint64, incConn bool, at string) {
 	rawDelta := safeAddUint64(deltaUp, deltaDown)
 	m.bytesSinceLastSave = safeAddUint64(m.bytesSinceLastSave, rawDelta)
@@ -1204,6 +1310,7 @@ func (m *TrafficAccountingManager) accumulateDeltaLocked(tc *trackedConnection, 
 	var wUp, wDown, unpriced uint64
 	var multiplier *uint32
 	var pricingStatus string
+	var accountingSubKey, accountingNodeKey, accountingGroupKey string
 
 	switch tc.RouteKind {
 	case "direct":
@@ -1255,6 +1362,7 @@ func (m *TrafficAccountingManager) accumulateDeltaLocked(tc *trackedConnection, 
 				}
 			}
 			if sub != nil {
+				accountingSubKey = subKey
 				sub.Name = tc.SubscriptionName
 				sub.Add(deltaUp, deltaDown, wUp, wDown, unpriced, incConn, at)
 			}
@@ -1292,6 +1400,7 @@ func (m *TrafficAccountingManager) accumulateDeltaLocked(tc *trackedConnection, 
 			node.PricingStatus = pricingStatus
 		}
 		if node != nil {
+			accountingNodeKey = nodeKey
 			node.Add(deltaUp, deltaDown, wUp, wDown, unpriced, incConn, at)
 		}
 
@@ -1313,6 +1422,7 @@ func (m *TrafficAccountingManager) accumulateDeltaLocked(tc *trackedConnection, 
 				}
 			}
 			if grp != nil {
+				accountingGroupKey = grpKey
 				grp.Add(deltaUp, deltaDown, wUp, wDown, unpriced, incConn, at)
 			}
 		}
@@ -1417,6 +1527,22 @@ func (m *TrafficAccountingManager) accumulateDeltaLocked(tc *trackedConnection, 
 	if day != nil {
 		day.Add(deltaUp, deltaDown, wUp, wDown, unpriced, incConn, at)
 	}
+
+	if unpriced > 0 {
+		m.recordPendingPricingLocked(
+			tc,
+			deltaUp,
+			deltaDown,
+			devKey,
+			accountingSubKey,
+			accountingNodeKey,
+			accountingGroupKey,
+			targetKey,
+			drKey,
+			hourKey,
+			dateKey,
+		)
+	}
 }
 
 func (m *TrafficAccountingManager) pruneTimeBucketsLocked(now time.Time) {
@@ -1464,6 +1590,251 @@ func (m *TrafficAccountingManager) pruneTimeBucketsLocked(now time.Time) {
 			keys = keys[1:]
 		}
 	}
+}
+
+func applyPendingBytes(stats *TrafficStats, pending DirectionalBytes, multiplier uint32) bool {
+	if stats == nil {
+		return false
+	}
+	raw := safeAddUint64(pending.UploadBytes, pending.DownloadBytes)
+	if raw == 0 {
+		return false
+	}
+	stats.WeightedUploadBytes = safeAddUint64(
+		stats.WeightedUploadBytes,
+		scaleBytes(pending.UploadBytes, multiplier),
+	)
+	stats.WeightedDownloadBytes = safeAddUint64(
+		stats.WeightedDownloadBytes,
+		scaleBytes(pending.DownloadBytes, multiplier),
+	)
+	stats.WeightedBytes = safeAddUint64(stats.WeightedUploadBytes, stats.WeightedDownloadBytes)
+	if raw >= stats.UnpricedRawBytes {
+		stats.UnpricedRawBytes = 0
+	} else {
+		stats.UnpricedRawBytes -= raw
+	}
+	return true
+}
+
+func (m *TrafficAccountingManager) applyPendingNodePricingLocked(pending *PendingNodePricing, multiplier uint32) {
+	if pending == nil {
+		return
+	}
+	applyPendingBytes(&m.ledger.Proxy, pending.Proxy, multiplier)
+	applyPendingBytes(&m.ledger.UnassignedProxy, pending.Unassigned, multiplier)
+	applyPendingBytes(&m.ledger.Speedtest, pending.Speedtest, multiplier)
+	for key, value := range pending.Devices {
+		if item := m.ledger.Devices[key]; item != nil {
+			applyPendingBytes(&item.TrafficStats, value, multiplier)
+		}
+	}
+	for key, value := range pending.Subscriptions {
+		if item := m.ledger.Subscriptions[key]; item != nil {
+			applyPendingBytes(&item.TrafficStats, value, multiplier)
+		}
+	}
+	for key, value := range pending.Nodes {
+		if item := m.ledger.Nodes[key]; item != nil {
+			applyPendingBytes(&item.TrafficStats, value, multiplier)
+		}
+	}
+	for key, value := range pending.Groups {
+		if item := m.ledger.Groups[key]; item != nil {
+			applyPendingBytes(&item.TrafficStats, value, multiplier)
+		}
+	}
+	for key, value := range pending.Targets {
+		if item := m.ledger.Targets[key]; item != nil {
+			applyPendingBytes(&item.TrafficStats, value, multiplier)
+		}
+	}
+	for key, value := range pending.DeviceRoutes {
+		if item := m.ledger.DeviceRoutes[key]; item != nil {
+			applyPendingBytes(&item.TrafficStats, value, multiplier)
+		}
+	}
+	for key, value := range pending.Hourly {
+		if item := m.ledger.Hourly[key]; item != nil {
+			applyPendingBytes(&item.TrafficStats, value, multiplier)
+		}
+	}
+	for key, value := range pending.Daily {
+		if item := m.ledger.Daily[key]; item != nil {
+			applyPendingBytes(&item.TrafficStats, value, multiplier)
+		}
+	}
+}
+
+// repriceResolvedPendingLocked replays every exact pending journal whose node
+// now has a multiplier. Already-priced traffic is never recalculated when a
+// multiplier changes.
+func (m *TrafficAccountingManager) repriceResolvedPendingLocked() bool {
+	changed := false
+	for key, pending := range m.ledger.PendingPricing {
+		if pending == nil {
+			delete(m.ledger.PendingPricing, key)
+			changed = true
+			continue
+		}
+		multiplier, _ := m.resolveMultiplierLocked(pending.SubscriptionID, pending.Node)
+		if multiplier == nil {
+			continue
+		}
+		m.applyPendingNodePricingLocked(pending, *multiplier)
+		delete(m.ledger.PendingPricing, key)
+		changed = true
+	}
+	if changed {
+		m.ledgerDirty = true
+	}
+	return changed
+}
+
+func mulDivUint64(value, numerator, denominator uint64) uint64 {
+	if value == 0 || numerator == 0 || denominator == 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(value, numerator)
+	if hi >= denominator {
+		return math.MaxUint64
+	}
+	quotient, _ := bits.Div64(hi, lo, denominator)
+	return quotient
+}
+
+func splitLegacyUnpriced(stats *TrafficStats) DirectionalBytes {
+	if stats == nil || stats.UnpricedRawBytes == 0 {
+		return DirectionalBytes{}
+	}
+	raw := stats.UnpricedRawBytes
+	if stats.RawBytes == 0 {
+		return DirectionalBytes{DownloadBytes: raw}
+	}
+	up := mulDivUint64(raw, stats.UploadBytes, stats.RawBytes)
+	if up > raw {
+		up = raw
+	}
+	return DirectionalBytes{UploadBytes: up, DownloadBytes: raw - up}
+}
+
+func applyLegacyMultiplier(stats *TrafficStats, multiplier uint32) uint64 {
+	pending := splitLegacyUnpriced(stats)
+	if !applyPendingBytes(stats, pending, multiplier) {
+		return 0
+	}
+	return safeAddUint64(
+		scaleBytes(pending.UploadBytes, multiplier),
+		scaleBytes(pending.DownloadBytes, multiplier),
+	)
+}
+
+func applyLegacyRatio(stats *TrafficStats, weightedNumerator, rawDenominator uint64) {
+	if stats == nil || stats.UnpricedRawBytes == 0 || rawDenominator == 0 {
+		return
+	}
+	raw := stats.UnpricedRawBytes
+	weighted := mulDivUint64(raw, weightedNumerator, rawDenominator)
+	weightedUp := uint64(0)
+	if stats.RawBytes > 0 {
+		weightedUp = mulDivUint64(weighted, stats.UploadBytes, stats.RawBytes)
+		if weightedUp > weighted {
+			weightedUp = weighted
+		}
+	}
+	stats.WeightedUploadBytes = safeAddUint64(stats.WeightedUploadBytes, weightedUp)
+	stats.WeightedDownloadBytes = safeAddUint64(
+		stats.WeightedDownloadBytes,
+		weighted-weightedUp,
+	)
+	stats.WeightedBytes = safeAddUint64(stats.WeightedUploadBytes, stats.WeightedDownloadBytes)
+	stats.UnpricedRawBytes = 0
+}
+
+// reconcileLegacyUnpricedLocked handles ledgers written before the exact
+// pending journal existed. It runs only when every historical unpriced node is
+// now resolvable; node totals use their exact current multipliers, and the same
+// resulting blended rate clears the legacy residual from aggregate dimensions.
+func (m *TrafficAccountingManager) reconcileLegacyUnpricedLocked() bool {
+	if m.ledger.PricingBackfill >= pricingBackfillVersion {
+		return false
+	}
+	if m.ledger.Proxy.UnpricedRawBytes == 0 {
+		m.ledger.PricingBackfill = pricingBackfillVersion
+		m.ledgerDirty = true
+		return true
+	}
+	if m.ledger.UnassignedProxy.UnpricedRawBytes > 0 {
+		return false
+	}
+
+	totalRaw := uint64(0)
+	for _, node := range m.ledger.Nodes {
+		if node == nil || node.UnpricedRawBytes == 0 {
+			continue
+		}
+		multiplier, _ := m.resolveMultiplierLocked(node.SubscriptionID, node.Node)
+		if multiplier == nil {
+			return false
+		}
+		totalRaw = safeAddUint64(totalRaw, node.UnpricedRawBytes)
+	}
+	if totalRaw == 0 || totalRaw != m.ledger.Proxy.UnpricedRawBytes {
+		return false
+	}
+
+	totalWeighted := uint64(0)
+	for _, node := range m.ledger.Nodes {
+		if node == nil || node.UnpricedRawBytes == 0 {
+			continue
+		}
+		multiplier, _ := m.resolveMultiplierLocked(node.SubscriptionID, node.Node)
+		totalWeighted = safeAddUint64(
+			totalWeighted,
+			applyLegacyMultiplier(&node.TrafficStats, *multiplier),
+		)
+	}
+
+	applyLegacyRatio(&m.ledger.Proxy, totalWeighted, totalRaw)
+	applyLegacyRatio(&m.ledger.Speedtest, totalWeighted, totalRaw)
+	for _, item := range m.ledger.Devices {
+		if item != nil {
+			applyLegacyRatio(&item.TrafficStats, totalWeighted, totalRaw)
+		}
+	}
+	for _, item := range m.ledger.Subscriptions {
+		if item != nil {
+			applyLegacyRatio(&item.TrafficStats, totalWeighted, totalRaw)
+		}
+	}
+	for _, item := range m.ledger.Groups {
+		if item != nil {
+			applyLegacyRatio(&item.TrafficStats, totalWeighted, totalRaw)
+		}
+	}
+	for _, item := range m.ledger.Targets {
+		if item != nil {
+			applyLegacyRatio(&item.TrafficStats, totalWeighted, totalRaw)
+		}
+	}
+	for _, item := range m.ledger.DeviceRoutes {
+		if item != nil {
+			applyLegacyRatio(&item.TrafficStats, totalWeighted, totalRaw)
+		}
+	}
+	for _, item := range m.ledger.Hourly {
+		if item != nil {
+			applyLegacyRatio(&item.TrafficStats, totalWeighted, totalRaw)
+		}
+	}
+	for _, item := range m.ledger.Daily {
+		if item != nil {
+			applyLegacyRatio(&item.TrafficStats, totalWeighted, totalRaw)
+		}
+	}
+	m.ledger.PricingBackfill = pricingBackfillVersion
+	m.ledgerDirty = true
+	return true
 }
 
 // GetSnapshot returns the current stats with bounded rankings (top 200).
@@ -1520,10 +1891,9 @@ func (m *TrafficAccountingManager) GetSnapshot() TrafficAccountingResponse {
 	return res
 }
 
-// boundNodesRankingLocked reports the multiplier that is configured now while
-// leaving historical weighted and unpriced byte totals untouched.  Persisted
-// node metadata reflects the multiplier used by the most recent traffic
-// increment and would otherwise remain stale after a settings-only update.
+// boundNodesRankingLocked reports the multiplier that is configured now.
+// Persisted node metadata reflects the multiplier used by the most recent
+// traffic increment and would otherwise remain stale after a settings update.
 func (m *TrafficAccountingManager) boundNodesRankingLocked() []NodeAccounting {
 	nodes := boundNodesRanking(m.ledger.Nodes)
 	for i := range nodes {
@@ -1958,6 +2328,16 @@ func (m *TrafficAccountingManager) UpdateSettings(req UpdateTrafficSettingsReque
 	if err := m.persistSettingsLocked(); err != nil {
 		m.settings = prevSettings
 		return nil, fmt.Errorf("保存配置失败: %w", err)
+	}
+
+	pricingChanged := m.repriceResolvedPendingLocked()
+	if m.reconcileLegacyUnpricedLocked() {
+		pricingChanged = true
+	}
+	if pricingChanged {
+		if err := m.persistLedgerLocked(); err != nil {
+			return nil, fmt.Errorf("倍率已保存，但未计价流量补算持久化失败: %w", err)
+		}
 	}
 
 	settingsCopy := m.getSettingsLocked()
