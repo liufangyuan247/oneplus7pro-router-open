@@ -27,10 +27,12 @@ CUSTOM_ANTIGRAVITY_DOMAINS="$DATA/custom-antigravity-proxy-domains.txt"
 MANAGED_RULE_DOMAINS="$DATA/selective-proxy-domains.txt"
 CUSTOM_RULE_DOMAINS="$DATA/custom-proxy-domains.txt"
 
-[ -s "$URL_FILE" ] || { echo 'subscription URL is not configured' >&2; exit 1; }
+if [ -z "${MIHOMO_SUBSCRIPTION_URL:-}" ]; then
+    [ -s "$URL_FILE" ] || { echo 'subscription URL is not configured' >&2; exit 1; }
+fi
 if ! mkdir "$LOCK" 2>/dev/null; then
-    echo 'subscription update already running'
-    exit 0
+    echo 'subscription update already running' >&2
+    exit 75
 fi
 mkdir -p "$WORK"
 MODE_LOCK_HELD=0
@@ -199,9 +201,20 @@ case "$ROUTING_POLICY" in
     *) echo "unsupported Mihomo routing policy: $ROUTING_POLICY" >&2; exit 1 ;;
 esac
 
-URL=$(cat "$URL_FILE")
+URL="${MIHOMO_SUBSCRIPTION_URL:-$(cat "$URL_FILE")}"
 RAW="$WORK/raw.yaml"
 ADAPTED="$WORK/adapted.yaml"
+RAW_CACHE_OUTPUT="${MIHOMO_RAW_CACHE_OUTPUT:-$DATA/active-subscription.raw.yaml}"
+
+persist_raw_cache() {
+    [ -n "$RAW_CACHE_OUTPUT" ] || return 0
+    cache_dir=$(dirname "$RAW_CACHE_OUTPUT")
+    mkdir -p "$cache_dir"
+    cache_tmp="$RAW_CACHE_OUTPUT.tmp.$$"
+    cp "$RAW" "$cache_tmp"
+    chmod 600 "$cache_tmp"
+    mv "$cache_tmp" "$RAW_CACHE_OUTPUT"
+}
 
 download_subscription() {
     if "$PREFIX/bin/curl" -fsS --max-time 2 http://127.0.0.1:9091/version >/dev/null 2>&1; then
@@ -215,7 +228,12 @@ download_subscription() {
         --user-agent 'clash.meta' --output "$RAW" "$URL"
 }
 
-download_subscription
+if [ -n "${MIHOMO_RAW_SUBSCRIPTION_FILE:-}" ]; then
+    [ -s "$MIHOMO_RAW_SUBSCRIPTION_FILE" ] || { echo 'cached subscription is missing' >&2; exit 1; }
+    cp "$MIHOMO_RAW_SUBSCRIPTION_FILE" "$RAW"
+else
+    download_subscription
+fi
 [ "$(wc -c < "$RAW")" -ge 512 ] || { echo 'subscription response is unexpectedly small' >&2; exit 1; }
 
 # Parse raw YAML, inject household RULE and AI proxy groups, TUN, DNS, and Sniffer
@@ -608,6 +626,7 @@ chmod 600 "$ADAPTED"
 "$PREFIX/bin/mihomo" -t -d "$DATA" -f "$ADAPTED"
 
 if [ "${MIHOMO_UPDATE_VALIDATE_ONLY:-0}" = 1 ]; then
+    persist_raw_cache
     candidate="$DATA/config.unified-candidate.yaml"
     cp "$ADAPTED" "$candidate"
     chmod 600 "$candidate"
@@ -715,5 +734,7 @@ if [ "$actual_mode" != "$MODE" ]; then
 fi
 write_persisted_mode "$MODE"
 release_mode_lock
+
+persist_raw_cache
 
 echo "SUBSCRIPTION_UPDATED policy=$ROUTING_POLICY mode=$MODE"

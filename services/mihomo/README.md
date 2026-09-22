@@ -74,7 +74,9 @@ invariants remain immediately actionable.
 
 - Config and selection cache: `~/router-data/mihomo`
 - Subscription list: `~/router-data/mihomo/subscriptions.json`
+- Per-subscription raw caches: `~/router-data/mihomo/subscription-cache/*.yaml`
 - Active subscription URL: `~/router-data/mihomo/subscription.url`
+- Background-updater raw cache: `~/router-data/mihomo/active-subscription.raw.yaml`
 - Last known-good config: `~/router-data/mihomo/config.last-good.yaml`
 - Listener overrides: `~/router-data/mihomo/runtime-settings.yaml`
 - Persistent mode: `~/router-data/mihomo/runtime-mode`

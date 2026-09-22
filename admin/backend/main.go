@@ -103,6 +103,7 @@ type Server struct {
 	terminalSessions                   atomic.Int32
 	screenSessions                     atomic.Int32
 	runSu                              func(command string) ([]byte, error)
+	subscriptionUpdater                func(item SubscriptionRecord, activate, useCache bool) ([]byte, error)
 	mihomoController                   string
 	speedTestMu                        sync.Mutex
 	speedTestJob                       *MihomoSpeedTestJob
@@ -352,6 +353,8 @@ type SubscriptionRecord struct {
 	ID            string                     `json:"id"`
 	Name          string                     `json:"name"`
 	URL           string                     `json:"url"`
+	CachedURL     string                     `json:"cachedUrl,omitempty"`
+	NodeCount     int                        `json:"nodeCount,omitempty"`
 	PricingSource *SubscriptionPricingSource `json:"pricingSource,omitempty"`
 	CreatedAt     time.Time                  `json:"createdAt"`
 	UpdatedAt     time.Time                  `json:"updatedAt"`
@@ -388,6 +391,9 @@ type PublicSubscription struct {
 	Name          string                           `json:"name"`
 	Source        string                           `json:"source"`
 	PricingSource *PublicSubscriptionPricingSource `json:"pricingSource,omitempty"`
+	Cached        bool                             `json:"cached"`
+	NodeCount     int                              `json:"nodeCount"`
+	NeedsUpdate   bool                             `json:"needsUpdate"`
 	Active        bool                             `json:"active"`
 	CreatedAt     string                           `json:"createdAt"`
 	UpdatedAt     string                           `json:"updatedAt"`
@@ -498,7 +504,8 @@ func main() {
 	mux.HandleFunc("/api/mihomo/delay", s.auth(s.mihomoDelay))
 	mux.HandleFunc("/api/mihomo/connections", s.auth(s.mihomoConnections))
 	mux.HandleFunc("/api/mihomo/subscription", s.auth(s.mihomoSubscription))
-	mux.HandleFunc("/api/mihomo/subscriptions", s.auth(s.mihomoSubscriptions))
+	mux.HandleFunc("/api/mihomo/subscriptions", s.auth(s.mihomoSubscriptionsV2))
+	mux.HandleFunc("/api/mihomo/subscriptions/nodes", s.auth(s.mihomoSubscriptionNodes))
 	mux.HandleFunc("/api/mihomo/subscriptions/pricing", s.auth(s.mihomoSubscriptionPricing))
 	mux.HandleFunc("GET /api/mihomo/traffic-accounting", s.auth(s.mihomoTrafficAccounting))
 	mux.HandleFunc("POST /api/mihomo/traffic-accounting/reset", s.auth(s.mihomoTrafficAccountingReset))
@@ -3780,6 +3787,11 @@ func (s *Server) loadSubscriptionStore() (SubscriptionStore, error) {
 		if store.Items == nil {
 			store.Items = []SubscriptionRecord{}
 		}
+		if s.migrateActiveSubscriptionCache(&store) {
+			if err := s.saveSubscriptionStore(store); err != nil {
+				return store, err
+			}
+		}
 		return store, nil
 	}
 	if !os.IsNotExist(err) {
@@ -3833,7 +3845,11 @@ func (s *Server) publicSubscriptions(store SubscriptionStore) map[string]any {
 		if item.ID == store.ActiveID && activeUpdated != "" {
 			updated = activeUpdated
 		}
-		publicItem := PublicSubscription{ID: item.ID, Name: item.Name, Source: maskedSubscriptionSource(item.URL), Active: item.ID == store.ActiveID, CreatedAt: item.CreatedAt.Format(time.RFC3339), UpdatedAt: updated}
+		cached := item.CachedURL == item.URL && item.URL != "" && fileExistsNonEmpty(s.subscriptionCachePath(item.ID))
+		publicItem := PublicSubscription{ID: item.ID, Name: item.Name, Source: maskedSubscriptionSource(item.URL), Active: item.ID == store.ActiveID, Cached: cached, NodeCount: item.NodeCount, NeedsUpdate: !cached, CreatedAt: item.CreatedAt.Format(time.RFC3339), UpdatedAt: updated}
+		if !cached {
+			publicItem.NodeCount = 0
+		}
 		if source := item.PricingSource; source != nil {
 			publicItem.PricingSource = &PublicSubscriptionPricingSource{
 				Kind:                 source.Kind,

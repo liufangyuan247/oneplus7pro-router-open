@@ -97,8 +97,23 @@
 .subscription-card-copy > span { max-width: 100%; color: #7391a1; font: 9px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
 .subscription-card-copy small { color: #587484; font-size: 8px; }
 .active-subscription { border: 1px solid #2d6757; background: #153b32; color: #79dcae; border-radius: 999px; padding: 3px 7px; font-size: 7px; }
-.subscription-card-actions { display: flex; gap: 7px; }
+.subscription-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .subscription-card-actions .danger-quiet { border-color: #543941; color: #df8c94; background: #2a1d24; }
+.subscription-nodes-modal { width: min(920px, 94vw); }
+.subscription-node-table-wrap { max-height: 62vh; overflow: auto; }
+.subscription-node-table { width: 100%; border-collapse: collapse; font-size: 9px; }
+.subscription-node-table th,
+.subscription-node-table td { padding: 9px 10px; border-bottom: 1px solid #173542; text-align: left; }
+.subscription-node-table th { position: sticky; top: 0; background: #0a2029; color: #8daab8; }
+.subscription-node-table td:first-child { color: #c8dde5; }
+.subscription-node-empty,
+.subscription-node-error { padding: 28px 16px; color: #7895a3; text-align: center; }
+.subscription-node-error { color: #e2a0a4; }
+.subscription-edit-modal { width: min(560px, 92vw); }
+.subscription-edit-modal form { display: grid; gap: 13px; padding-top: 10px; }
+.subscription-edit-modal label { color: #7893a3; font-size: 9px; }
+.subscription-edit-modal input { display: block; width: 100%; margin-top: 7px; border: 1px solid #284e5d; background: #071923; color: #dbe9f1; border-radius: 9px; padding: 10px 12px; font-size: 10px; outline: none; }
+.subscription-edit-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 7px; }
 .subscription-empty { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 29px 16px; border: 1px dashed #274654; border-radius: 12px; color: #718d9d; text-align: center; }
 .subscription-empty strong { color: #a9bec9; font-size: 11px; }
 .subscription-empty span { font-size: 9px; }

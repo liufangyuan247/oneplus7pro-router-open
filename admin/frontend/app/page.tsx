@@ -314,9 +314,18 @@ type SubscriptionItem = {
     lastError?: string;
     matchedNodeCount?: number;
   };
+  cached: boolean;
+  nodeCount: number;
+  needsUpdate: boolean;
   active: boolean;
   createdAt: string;
   updatedAt: string;
+};
+type SubscriptionNodeInfo = {
+  name: string;
+  type?: string;
+  server?: string;
+  port?: string;
 };
 type SubscriptionList = {
   activeId: string;
@@ -4570,6 +4579,12 @@ function MihomoManager({
   });
   const [subscriptionName, setSubscriptionName] = useState("");
   const [subscriptionUrl, setSubscriptionUrl] = useState("");
+  const [viewingSubscription, setViewingSubscription] = useState<SubscriptionItem | null>(null);
+  const [subscriptionNodes, setSubscriptionNodes] = useState<SubscriptionNodeInfo[]>([]);
+  const [subscriptionNodesError, setSubscriptionNodesError] = useState("");
+  const [editingSubscription, setEditingSubscription] = useState<SubscriptionItem | null>(null);
+  const [editSubscriptionName, setEditSubscriptionName] = useState("");
+  const [editSubscriptionUrl, setEditSubscriptionUrl] = useState("");
   const [busy, setBusy] = useState("");
   const [speedTestJob, setSpeedTestJob] = useState<MihomoSpeedTestJob | null>(null);
   const [speedTestNow, setSpeedTestNow] = useState<number>(0);
@@ -5075,28 +5090,96 @@ function MihomoManager({
     setShowLogs(true);
   };
 
-  const changeSubscription = async (item: SubscriptionItem) => {
-    setBusy(`subscription-${item.id}`);
+  const subscriptionAction = async (
+    item: SubscriptionItem,
+    action: "activate" | "update",
+  ) => {
+    setBusy(`${action}-${item.id}`);
     try {
       const response = await fetch("/api/mihomo/subscriptions", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: item.id,
-          action: item.active ? "update" : "activate",
+          action,
         }),
       });
       if (!response.ok)
-        throw new Error(await responseError(response, "订阅更新失败"));
-      setSubscriptions((await response.json()) as SubscriptionList);
+        throw new Error(
+          await responseError(response, action === "activate" ? "启用订阅失败" : "更新订阅失败"),
+        );
+      const nextSubscriptions = (await response.json()) as SubscriptionList;
+      setSubscriptions(nextSubscriptions);
       setNotice(
-        item.active
-          ? "订阅已更新，配置已重新加载"
-          : `已切换到订阅“${item.name}”`,
+        action === "activate"
+          ? `已启用订阅“${item.name}”`
+          : item.active
+            ? "当前订阅已更新并重新加载"
+            : `订阅“${item.name}”已更新，当前订阅未切换`,
       );
       finishLater();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "订阅更新失败");
+      setNotice(error instanceof Error ? error.message : "订阅操作失败");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const viewSubscriptionNodes = async (item: SubscriptionItem) => {
+    setViewingSubscription(item);
+    setSubscriptionNodes([]);
+    setSubscriptionNodesError("");
+    setBusy(`nodes-${item.id}`);
+    try {
+      const response = await fetch(
+        `/api/mihomo/subscriptions/nodes?id=${encodeURIComponent(item.id)}`,
+        { cache: "no-store" },
+      );
+      const body = (await response.json()) as {
+        nodes?: SubscriptionNodeInfo[];
+        error?: string;
+      };
+      if (!response.ok) throw new Error(body.error || "读取订阅节点失败");
+      setSubscriptionNodes(body.nodes || []);
+    } catch (error) {
+      setSubscriptionNodesError(error instanceof Error ? error.message : "读取订阅节点失败");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const openEditSubscription = (item: SubscriptionItem) => {
+    setEditingSubscription(item);
+    setEditSubscriptionName(item.name);
+    setEditSubscriptionUrl("");
+  };
+
+  const saveEditedSubscription = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!editingSubscription) return;
+    setBusy(`edit-${editingSubscription.id}`);
+    try {
+      const response = await fetch("/api/mihomo/subscriptions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editingSubscription.id,
+          action: "edit",
+          name: editSubscriptionName.trim(),
+          url: editSubscriptionUrl.trim(),
+        }),
+      });
+      if (!response.ok)
+        throw new Error(await responseError(response, "保存订阅信息失败"));
+      setSubscriptions((await response.json()) as SubscriptionList);
+      setEditingSubscription(null);
+      setNotice(
+        editSubscriptionUrl.trim()
+          ? "订阅信息已保存，请更新订阅以获取新地址的节点"
+          : "订阅名称已保存",
+      );
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "保存订阅信息失败");
     } finally {
       setBusy("");
     }
@@ -5145,10 +5228,15 @@ function MihomoManager({
       });
       if (!response.ok)
         throw new Error(await responseError(response, "添加订阅失败"));
-      setSubscriptions((await response.json()) as SubscriptionList);
+      const nextSubscriptions = (await response.json()) as SubscriptionList;
+      setSubscriptions(nextSubscriptions);
       setSubscriptionName("");
       setSubscriptionUrl("");
-      setNotice("订阅已添加、校验并启用");
+      setNotice(
+        nextSubscriptions.items.length === 1
+          ? "订阅已添加、更新并启用"
+          : "订阅已添加并更新，当前订阅未切换",
+      );
       finishLater();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "添加订阅失败");
@@ -5802,19 +5890,39 @@ function MihomoManager({
                   {item.updatedAt
                     ? new Date(item.updatedAt).toLocaleString("zh-CN")
                     : "尚未更新"}
+                  {item.cached ? ` · ${item.nodeCount} 个节点` : " · 需要更新"}
                 </small>
               </div>
               <div className="subscription-card-actions">
+                {!item.active && (
+                  <button
+                    type="button"
+                    disabled={Boolean(busy) || !item.cached}
+                    onClick={() => subscriptionAction(item, "activate")}
+                  >
+                    {busy === `activate-${item.id}` ? "启用中…" : "启用"}
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={Boolean(busy)}
-                  onClick={() => changeSubscription(item)}
+                  onClick={() => subscriptionAction(item, "update")}
                 >
-                  {busy === `subscription-${item.id}`
-                    ? "更新中…"
-                    : item.active
-                      ? "立即更新"
-                      : "启用并更新"}
+                  {busy === `update-${item.id}` ? "更新中…" : "更新"}
+                </button>
+                <button
+                  type="button"
+                  disabled={Boolean(busy) || !item.cached}
+                  onClick={() => viewSubscriptionNodes(item)}
+                >
+                  {busy === `nodes-${item.id}` ? "读取中…" : "节点"}
+                </button>
+                <button
+                  type="button"
+                  disabled={Boolean(busy)}
+                  onClick={() => openEditSubscription(item)}
+                >
+                  编辑
                 </button>
                 <button
                   className="danger-quiet"
@@ -5832,7 +5940,7 @@ function MihomoManager({
           <div className="subscription-empty">
             <strong>还没有订阅</strong>
             <span>
-              在下方粘贴订阅地址，系统会先下载和校验，再替换当前配置。
+              在下方粘贴订阅地址，系统会先下载并校验节点；首个订阅会自动启用。
             </span>
           </div>
         )}
@@ -5860,15 +5968,104 @@ function MihomoManager({
             </label>
           </div>
           <button type="submit" disabled={Boolean(busy)}>
-            {busy === "add" ? "正在下载并校验…" : "添加并启用订阅"}
+            {busy === "add" ? "正在下载并校验…" : "添加并获取节点"}
           </button>
         </form>
         <p className="safe-note">
-          当前订阅每 {subscriptions.autoUpdateHours} 小时自动更新。完整 URL
-          只保存在手机本机，管理页面仅显示已隐藏敏感路径的地址。
+          当前使用的订阅每 {subscriptions.autoUpdateHours} 小时自动更新；其他订阅按需手动更新。
+          完整 URL 只保存在手机本机，页面仅显示隐藏敏感路径后的地址。
         </p>
       </article>
         </>
+      )}
+      {viewingSubscription && (
+        <div className="modal-backdrop" onClick={() => setViewingSubscription(null)}>
+          <section
+            className="log-modal subscription-nodes-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <strong>{viewingSubscription.name}</strong>
+                <p className="modal-header-desc">{subscriptionNodes.length} 个节点</p>
+              </div>
+              <button type="button" onClick={() => setViewingSubscription(null)}>
+                关闭
+              </button>
+            </header>
+            {subscriptionNodesError ? (
+              <div className="subscription-node-error">{subscriptionNodesError}</div>
+            ) : subscriptionNodes.length === 0 ? (
+              <div className="subscription-node-empty">正在读取节点…</div>
+            ) : (
+              <div className="subscription-node-table-wrap">
+                <table className="subscription-node-table">
+                  <thead>
+                    <tr>
+                      <th>节点</th>
+                      <th>协议</th>
+                      <th>服务器</th>
+                      <th>端口</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {subscriptionNodes.map((node, index) => (
+                      <tr key={`${node.name}-${index}`}>
+                        <td>{node.name}</td>
+                        <td>{node.type || "—"}</td>
+                        <td className="mono">{node.server || "—"}</td>
+                        <td>{node.port || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+      {editingSubscription && (
+        <div className="modal-backdrop" onClick={() => setEditingSubscription(null)}>
+          <section
+            className="log-modal subscription-edit-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <strong>编辑订阅</strong>
+              <button type="button" onClick={() => setEditingSubscription(null)}>
+                关闭
+              </button>
+            </header>
+            <form onSubmit={saveEditedSubscription}>
+              <label>
+                订阅名称
+                <input
+                  value={editSubscriptionName}
+                  maxLength={128}
+                  onChange={(event) => setEditSubscriptionName(event.target.value)}
+                />
+              </label>
+              <label>
+                新订阅 URL
+                <input
+                  type="url"
+                  value={editSubscriptionUrl}
+                  placeholder={`${editingSubscription.source}（留空保持不变）`}
+                  autoComplete="off"
+                  onChange={(event) => setEditSubscriptionUrl(event.target.value)}
+                />
+              </label>
+              <div className="subscription-edit-actions">
+                <button type="button" onClick={() => setEditingSubscription(null)}>
+                  取消
+                </button>
+                <button type="submit" disabled={Boolean(busy)}>
+                  {busy === `edit-${editingSubscription.id}` ? "保存中…" : "保存"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
       )}
       {showLogs && (
         <div className="modal-backdrop" onClick={() => setShowLogs(false)}>
