@@ -216,10 +216,32 @@ type TrafficAccountingSettings struct {
 	Subscriptions map[string]*SubscriptionAccountingConfig `json:"subscriptions"`
 }
 
+// UnpricedNodeInfo exposes the complete pending-pricing journal to the
+// settings UI. It is intentionally kept out of TrafficAccountingSettings so
+// runtime accounting state can never be persisted as configuration.
+type UnpricedNodeInfo struct {
+	SubscriptionID   string `json:"subscriptionId"`
+	SubscriptionName string `json:"subscriptionName,omitempty"`
+	Node             string `json:"node"`
+	UnpricedRawBytes uint64 `json:"unpricedRawBytes"`
+	LastSeenAt       string `json:"lastSeenAt,omitempty"`
+	Configurable     bool   `json:"configurable"`
+}
+
+type TrafficAccountingSettingsResponse struct {
+	Version       int                                      `json:"version"`
+	Enabled       bool                                     `json:"enabled"`
+	Subscriptions map[string]*SubscriptionAccountingConfig `json:"subscriptions"`
+	UnpricedNodes []UnpricedNodeInfo                       `json:"unpricedNodes"`
+}
+
 type SubscriptionAccountingConfig struct {
-	DefaultMultiplierMilli *uint32           `json:"defaultMultiplierMilli"`
-	NodeMultipliersMilli   map[string]uint32 `json:"nodeMultipliersMilli"`
-	KnownNodes             []string          `json:"knownNodes"`
+	DefaultMultiplierMilli        *uint32           `json:"defaultMultiplierMilli"`
+	NodeMultipliersMilli          map[string]uint32 `json:"nodeMultipliersMilli"`
+	AutomaticNodeMultipliersMilli map[string]uint32 `json:"automaticNodeMultipliersMilli,omitempty"`
+	AutomaticPricingEnabled       bool              `json:"automaticPricingEnabled,omitempty"`
+	AutomaticPricingUpdatedAt     string            `json:"automaticPricingUpdatedAt,omitempty"`
+	KnownNodes                    []string          `json:"knownNodes"`
 }
 
 type UpdateTrafficSettingsRequest struct {
@@ -559,6 +581,43 @@ func normalizeSubscriptionAccountingConfig(cfg *SubscriptionAccountingConfig) bo
 	}
 
 	cfg.NodeMultipliersMilli = normalizedMultipliers
+
+	originalAutomatic := cfg.AutomaticNodeMultipliersMilli
+	normalizedAutomatic := make(map[string]uint32, len(originalAutomatic))
+	for node, multiplier := range originalAutomatic {
+		canonical := normalizeNodeName(node)
+		if canonical != "" && !isBuiltinGroup(canonical) {
+			normalizedAutomatic[canonical] = multiplier
+		}
+	}
+	for node, multiplier := range originalAutomatic {
+		canonical := normalizeNodeName(node)
+		if strings.TrimSpace(node) == canonical && canonical != "" && !isBuiltinGroup(canonical) {
+			normalizedAutomatic[canonical] = multiplier
+		}
+	}
+	if len(originalAutomatic) != len(normalizedAutomatic) {
+		changed = true
+	} else {
+		for node, multiplier := range originalAutomatic {
+			if normalizedAutomatic[node] != multiplier {
+				changed = true
+				break
+			}
+		}
+	}
+	cfg.AutomaticNodeMultipliersMilli = normalizedAutomatic
+	for node := range normalizedAutomatic {
+		known[node] = struct{}{}
+	}
+	if len(known) != len(normalizedKnown) {
+		normalizedKnown = normalizedKnown[:0]
+		for node := range known {
+			normalizedKnown = append(normalizedKnown, node)
+		}
+		sort.Strings(normalizedKnown)
+		changed = true
+	}
 	cfg.KnownNodes = normalizedKnown
 	return changed
 }
@@ -1087,7 +1146,7 @@ func (m *TrafficAccountingManager) syncKnownNodesLocked(subID string, nodes []st
 		m.settings.Subscriptions[subID] = cfg
 	}
 
-	known := make(map[string]struct{}, len(nodes)+len(cfg.NodeMultipliersMilli))
+	known := make(map[string]struct{}, len(nodes)+len(cfg.NodeMultipliersMilli)+len(cfg.AutomaticNodeMultipliersMilli))
 	for _, node := range nodes {
 		canonical := normalizeNodeName(node)
 		if canonical != "" && !isBuiltinGroup(canonical) {
@@ -1095,6 +1154,12 @@ func (m *TrafficAccountingManager) syncKnownNodesLocked(subID string, nodes []st
 		}
 	}
 	for node := range cfg.NodeMultipliersMilli {
+		canonical := normalizeNodeName(node)
+		if canonical != "" && !isBuiltinGroup(canonical) {
+			known[canonical] = struct{}{}
+		}
+	}
+	for node := range cfg.AutomaticNodeMultipliersMilli {
 		canonical := normalizeNodeName(node)
 		if canonical != "" && !isBuiltinGroup(canonical) {
 			known[canonical] = struct{}{}
@@ -1132,6 +1197,17 @@ func (m *TrafficAccountingManager) resolveMultiplierLocked(subID, nodeName strin
 	}
 
 	exact := strings.TrimSpace(nodeName)
+	if subCfg.AutomaticPricingEnabled {
+		if mult, ok := subCfg.AutomaticNodeMultipliersMilli[exact]; ok && mult >= minMultiplierMilli && mult <= maxMultiplierMilli {
+			return &mult, "automatic"
+		}
+		norm := normalizeNodeName(exact)
+		if mult, ok := subCfg.AutomaticNodeMultipliersMilli[norm]; ok && mult >= minMultiplierMilli && mult <= maxMultiplierMilli {
+			return &mult, "automatic"
+		}
+		return nil, "unpriced"
+	}
+
 	if subCfg.NodeMultipliersMilli != nil {
 		if mult, ok := subCfg.NodeMultipliersMilli[exact]; ok && mult >= minMultiplierMilli && mult <= maxMultiplierMilli {
 			return &mult, "node_override"
@@ -2224,21 +2300,199 @@ func (m *TrafficAccountingManager) getSettingsLocked() TrafficAccountingSettings
 				c.NodeMultipliersMilli[k] = v
 			}
 		}
+		if cfg.AutomaticNodeMultipliersMilli != nil {
+			c.AutomaticNodeMultipliersMilli = make(map[string]uint32, len(cfg.AutomaticNodeMultipliersMilli))
+			for k, v := range cfg.AutomaticNodeMultipliersMilli {
+				c.AutomaticNodeMultipliersMilli[k] = v
+			}
+		}
+		c.AutomaticPricingEnabled = cfg.AutomaticPricingEnabled
+		c.AutomaticPricingUpdatedAt = cfg.AutomaticPricingUpdatedAt
 		res.Subscriptions[id] = c
 	}
 
 	return res
 }
 
-// GetSettings returns a deep copy of current settings.
-func (m *TrafficAccountingManager) GetSettings() TrafficAccountingSettings {
+// UpdateAutomaticMultipliers atomically replaces one subscription's last-good
+// provider pricing snapshot. Existing manually configured node multipliers keep
+// precedence, and newly resolvable pending traffic is priced immediately.
+func (m *TrafficAccountingManager) UpdateAutomaticMultipliers(subID string, values map[string]uint32, updatedAt string) (*TrafficAccountingSettingsResponse, error) {
+	canonical := make(map[string]uint32, len(values))
+	for node, multiplier := range values {
+		name := normalizeNodeName(node)
+		if name == "" || isBuiltinGroup(name) {
+			continue
+		}
+		if multiplier < minMultiplierMilli || multiplier > maxMultiplierMilli {
+			return nil, fmt.Errorf("node %q multiplier is outside 0.1x-100x", name)
+		}
+		if previous, exists := canonical[name]; exists && previous != multiplier {
+			return nil, fmt.Errorf("node %q has conflicting automatic multipliers", name)
+		}
+		canonical[name] = multiplier
+	}
+	if len(canonical) == 0 {
+		return nil, errors.New("automatic pricing returned no valid nodes")
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.getSettingsLocked()
+	if strings.TrimSpace(subID) == "" || len(subID) > 64 {
+		return nil, errors.New("invalid subscription ID")
+	}
+
+	previous := m.getSettingsLocked()
+	cfg := m.settings.Subscriptions[subID]
+	if cfg == nil {
+		cfg = &SubscriptionAccountingConfig{NodeMultipliersMilli: make(map[string]uint32)}
+		m.settings.Subscriptions[subID] = cfg
+	}
+	cfg.AutomaticNodeMultipliersMilli = canonical
+	cfg.AutomaticPricingEnabled = true
+	cfg.AutomaticPricingUpdatedAt = strings.TrimSpace(updatedAt)
+	// An enabled provider source is authoritative. Keeping old manual values
+	// would silently mask future provider rate changes, including removals.
+	cfg.NodeMultipliersMilli = make(map[string]uint32)
+	cfg.DefaultMultiplierMilli = nil
+	normalizeSubscriptionAccountingConfig(cfg)
+	if err := m.persistSettingsLocked(); err != nil {
+		m.settings = previous
+		return nil, fmt.Errorf("save automatic pricing: %w", err)
+	}
+
+	pricingChanged := m.repriceResolvedPendingLocked()
+	if m.reconcileLegacyUnpricedLocked() {
+		pricingChanged = true
+	}
+	if pricingChanged {
+		if err := m.persistLedgerLocked(); err != nil {
+			return nil, fmt.Errorf("automatic pricing applied but pending traffic persistence failed: %w", err)
+		}
+	}
+
+	result := m.getSettingsResponseLocked()
+	return &result, nil
+}
+
+// DisableAutomaticPricing stops using the cached provider snapshot without
+// deleting it. A later successful synchronization replaces and re-enables it.
+func (m *TrafficAccountingManager) DisableAutomaticPricing(subID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg := m.settings.Subscriptions[subID]
+	if cfg == nil || !cfg.AutomaticPricingEnabled {
+		return nil
+	}
+	cfg.AutomaticPricingEnabled = false
+	if err := m.persistSettingsLocked(); err != nil {
+		cfg.AutomaticPricingEnabled = true
+		return fmt.Errorf("disable automatic pricing: %w", err)
+	}
+	return nil
+}
+
+func (m *TrafficAccountingManager) getUnpricedNodesLocked() []UnpricedNodeInfo {
+	// Old ledgers can contain differently decorated spellings of the same
+	// node. Merge them into the canonical namespace used by multiplier keys.
+	byNode := make(map[string]*UnpricedNodeInfo, len(m.ledger.PendingPricing))
+	for _, pending := range m.ledger.PendingPricing {
+		if pending == nil {
+			continue
+		}
+		node := normalizeNodeName(pending.Node)
+		rawBytes := safeAddUint64(pending.Proxy.UploadBytes, pending.Proxy.DownloadBytes)
+		if node == "" || rawBytes == 0 {
+			continue
+		}
+
+		key := nodeCompositeKey(pending.SubscriptionID, node)
+		item := byNode[key]
+		if item == nil {
+			item = &UnpricedNodeInfo{
+				SubscriptionID: pending.SubscriptionID,
+				Node:           node,
+				Configurable:   pending.SubscriptionID != "",
+			}
+			byNode[key] = item
+		}
+		item.UnpricedRawBytes = safeAddUint64(item.UnpricedRawBytes, rawBytes)
+
+		if sub := m.ledger.Subscriptions[pending.SubscriptionID]; sub != nil {
+			if item.SubscriptionName == "" {
+				item.SubscriptionName = sub.Name
+			}
+			if sub.LastSeenAt > item.LastSeenAt {
+				item.LastSeenAt = sub.LastSeenAt
+			}
+		}
+		if ledgerNode := m.ledger.Nodes[key]; ledgerNode != nil {
+			if item.SubscriptionName == "" {
+				item.SubscriptionName = ledgerNode.SubscriptionName
+			}
+			if ledgerNode.LastSeenAt > item.LastSeenAt {
+				item.LastSeenAt = ledgerNode.LastSeenAt
+			}
+		}
+		for nodeKey := range pending.Nodes {
+			if ledgerNode := m.ledger.Nodes[nodeKey]; ledgerNode != nil {
+				if item.SubscriptionName == "" {
+					item.SubscriptionName = ledgerNode.SubscriptionName
+				}
+				if ledgerNode.LastSeenAt > item.LastSeenAt {
+					item.LastSeenAt = ledgerNode.LastSeenAt
+				}
+			}
+		}
+	}
+
+	if m.getValidSubscriptionIDs != nil {
+		valid := make(map[string]struct{})
+		for _, id := range m.getValidSubscriptionIDs() {
+			if id != "" {
+				valid[id] = struct{}{}
+			}
+		}
+		for _, item := range byNode {
+			_, item.Configurable = valid[item.SubscriptionID]
+		}
+	}
+
+	items := make([]UnpricedNodeInfo, 0, len(byNode))
+	for _, item := range byNode {
+		items = append(items, *item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].UnpricedRawBytes != items[j].UnpricedRawBytes {
+			return items[i].UnpricedRawBytes > items[j].UnpricedRawBytes
+		}
+		if items[i].SubscriptionID != items[j].SubscriptionID {
+			return items[i].SubscriptionID < items[j].SubscriptionID
+		}
+		return items[i].Node < items[j].Node
+	})
+	return items
+}
+
+func (m *TrafficAccountingManager) getSettingsResponseLocked() TrafficAccountingSettingsResponse {
+	settings := m.getSettingsLocked()
+	return TrafficAccountingSettingsResponse{
+		Version:       settings.Version,
+		Enabled:       settings.Enabled,
+		Subscriptions: settings.Subscriptions,
+		UnpricedNodes: m.getUnpricedNodesLocked(),
+	}
+}
+
+// GetSettings returns a deep copy of current settings.
+func (m *TrafficAccountingManager) GetSettings() TrafficAccountingSettingsResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.getSettingsResponseLocked()
 }
 
 // UpdateSettings validates and applies settings modifications.
-func (m *TrafficAccountingManager) UpdateSettings(req UpdateTrafficSettingsRequest) (*TrafficAccountingSettings, error) {
+func (m *TrafficAccountingManager) UpdateSettings(req UpdateTrafficSettingsRequest) (*TrafficAccountingSettingsResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -2340,7 +2594,7 @@ func (m *TrafficAccountingManager) UpdateSettings(req UpdateTrafficSettingsReque
 		}
 	}
 
-	settingsCopy := m.getSettingsLocked()
+	settingsCopy := m.getSettingsResponseLocked()
 	return &settingsCopy, nil
 }
 

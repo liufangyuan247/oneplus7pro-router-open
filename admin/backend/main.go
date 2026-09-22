@@ -81,6 +81,7 @@ type Server struct {
 	started                            time.Time
 	mu                                 sync.Mutex
 	subscriptionMu                     sync.Mutex
+	pricingSyncMu                      sync.Mutex
 	clientPolicyMu                     sync.Mutex
 	sessions                           map[string]authSession
 	lastCPU                            cpuCounters
@@ -348,11 +349,32 @@ type SubscriptionInfo struct {
 }
 
 type SubscriptionRecord struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	URL       string    `json:"url"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID            string                     `json:"id"`
+	Name          string                     `json:"name"`
+	URL           string                     `json:"url"`
+	PricingSource *SubscriptionPricingSource `json:"pricingSource,omitempty"`
+	CreatedAt     time.Time                  `json:"createdAt"`
+	UpdatedAt     time.Time                  `json:"updatedAt"`
+}
+
+type SubscriptionPricingSource struct {
+	Kind             string `json:"kind"`
+	Endpoint         string `json:"endpoint"`
+	Authorization    string `json:"authorization,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	LastSyncedAt     string `json:"lastSyncedAt,omitempty"`
+	LastError        string `json:"lastError,omitempty"`
+	MatchedNodeCount int    `json:"matchedNodeCount,omitempty"`
+}
+
+type PublicSubscriptionPricingSource struct {
+	Kind                 string `json:"kind"`
+	Endpoint             string `json:"endpoint"`
+	Enabled              bool   `json:"enabled"`
+	CredentialConfigured bool   `json:"credentialConfigured"`
+	LastSyncedAt         string `json:"lastSyncedAt,omitempty"`
+	LastError            string `json:"lastError,omitempty"`
+	MatchedNodeCount     int    `json:"matchedNodeCount,omitempty"`
 }
 
 type SubscriptionStore struct {
@@ -362,12 +384,13 @@ type SubscriptionStore struct {
 }
 
 type PublicSubscription struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Source    string `json:"source"`
-	Active    bool   `json:"active"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+	ID            string                           `json:"id"`
+	Name          string                           `json:"name"`
+	Source        string                           `json:"source"`
+	PricingSource *PublicSubscriptionPricingSource `json:"pricingSource,omitempty"`
+	Active        bool                             `json:"active"`
+	CreatedAt     string                           `json:"createdAt"`
+	UpdatedAt     string                           `json:"updatedAt"`
 }
 
 type MihomoSettings struct {
@@ -449,6 +472,7 @@ func main() {
 	s.startMetricSampler()
 	s.initSpeedTest()
 	s.initTrafficAccounting()
+	s.startSubscriptionPricingSync()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.health)
@@ -475,6 +499,7 @@ func main() {
 	mux.HandleFunc("/api/mihomo/connections", s.auth(s.mihomoConnections))
 	mux.HandleFunc("/api/mihomo/subscription", s.auth(s.mihomoSubscription))
 	mux.HandleFunc("/api/mihomo/subscriptions", s.auth(s.mihomoSubscriptions))
+	mux.HandleFunc("/api/mihomo/subscriptions/pricing", s.auth(s.mihomoSubscriptionPricing))
 	mux.HandleFunc("GET /api/mihomo/traffic-accounting", s.auth(s.mihomoTrafficAccounting))
 	mux.HandleFunc("POST /api/mihomo/traffic-accounting/reset", s.auth(s.mihomoTrafficAccountingReset))
 	mux.HandleFunc("GET /api/mihomo/traffic-accounting/settings", s.auth(s.mihomoTrafficAccountingSettings))
@@ -3808,7 +3833,19 @@ func (s *Server) publicSubscriptions(store SubscriptionStore) map[string]any {
 		if item.ID == store.ActiveID && activeUpdated != "" {
 			updated = activeUpdated
 		}
-		items = append(items, PublicSubscription{ID: item.ID, Name: item.Name, Source: maskedSubscriptionSource(item.URL), Active: item.ID == store.ActiveID, CreatedAt: item.CreatedAt.Format(time.RFC3339), UpdatedAt: updated})
+		publicItem := PublicSubscription{ID: item.ID, Name: item.Name, Source: maskedSubscriptionSource(item.URL), Active: item.ID == store.ActiveID, CreatedAt: item.CreatedAt.Format(time.RFC3339), UpdatedAt: updated}
+		if source := item.PricingSource; source != nil {
+			publicItem.PricingSource = &PublicSubscriptionPricingSource{
+				Kind:                 source.Kind,
+				Endpoint:             publicPricingEndpoint(source.Endpoint),
+				Enabled:              source.Enabled,
+				CredentialConfigured: strings.TrimSpace(source.Authorization) != "",
+				LastSyncedAt:         source.LastSyncedAt,
+				LastError:            source.LastError,
+				MatchedNodeCount:     source.MatchedNodeCount,
+			}
+		}
+		items = append(items, publicItem)
 	}
 	return map[string]any{"activeId": store.ActiveID, "items": items, "autoUpdateHours": 6}
 }
@@ -3934,6 +3971,9 @@ func (s *Server) mihomoSubscriptions(w http.ResponseWriter, r *http.Request) {
 			jsonOut(w, 500, map[string]string{"error": "保存订阅状态失败"})
 			return
 		}
+		go func(subscriptionID string) {
+			_ = s.syncSubscriptionPricing(subscriptionID)
+		}(store.Items[index].ID)
 		jsonOut(w, 200, s.publicSubscriptions(store))
 	case "DELETE":
 		id := r.URL.Query().Get("id")

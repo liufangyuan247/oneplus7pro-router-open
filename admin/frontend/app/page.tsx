@@ -305,6 +305,15 @@ type SubscriptionItem = {
   id: string;
   name: string;
   source: string;
+  pricingSource?: {
+    kind: string;
+    endpoint: string;
+    enabled: boolean;
+    credentialConfigured: boolean;
+    lastSyncedAt?: string;
+    lastError?: string;
+    matchedNodeCount?: number;
+  };
   active: boolean;
   createdAt: string;
   updatedAt: string;
@@ -348,7 +357,7 @@ type NodeAccounting = TrafficStats & {
   subscriptionId?: string;
   subscriptionName?: string;
   multiplierMilli?: number;
-  pricingStatus: "node_override" | "subscription_default" | "unpriced" | string;
+  pricingStatus: "node_override" | "automatic" | "subscription_default" | "unpriced" | string;
 };
 type GroupAccounting = TrafficStats & {
   group: string;
@@ -398,12 +407,24 @@ type TrafficAccountingSnapshot = {
 type SubscriptionAccountingConfig = {
   defaultMultiplierMilli: number | null;
   nodeMultipliersMilli: Record<string, number>;
+  automaticNodeMultipliersMilli?: Record<string, number>;
+  automaticPricingEnabled?: boolean;
+  automaticPricingUpdatedAt?: string;
   knownNodes: string[];
+};
+type UnpricedNodeInfo = {
+  subscriptionId: string;
+  subscriptionName?: string;
+  node: string;
+  unpricedRawBytes: number;
+  lastSeenAt?: string;
+  configurable: boolean;
 };
 type TrafficAccountingSettings = {
   version: number;
   enabled: boolean;
   subscriptions: Record<string, SubscriptionAccountingConfig>;
+  unpricedNodes: UnpricedNodeInfo[];
 };
 type UpdateTrafficSettingsRequest = {
   enabled?: boolean;
@@ -2929,9 +2950,11 @@ type TrafficTabId =
 
 function TrafficAccountingSection({
   subscriptions,
+  onSubscriptionsChange,
   setNotice,
 }: {
   subscriptions: SubscriptionList;
+  onSubscriptionsChange: (value: SubscriptionList) => void;
   setNotice: (value: string) => void;
 }) {
   const [snapshot, setSnapshot] = useState<TrafficAccountingSnapshot | null>(null);
@@ -2953,6 +2976,9 @@ function TrafficAccountingSection({
         knownNodes: string[];
         newNodeName: string;
         newNodeMultiplier: string;
+        pricingEndpoint: string;
+        pricingAuthorization: string;
+        pricingEnabled: boolean;
       }
     >
   >({});
@@ -3029,6 +3055,9 @@ function TrafficAccountingSection({
       for (const node of Object.keys(nodeMap)) {
         if (knownList.indexOf(node) === -1) knownList.push(node);
       }
+      for (const node of Object.keys(cfg?.automaticNodeMultipliersMilli || {})) {
+        if (knownList.indexOf(node) === -1) knownList.push(node);
+      }
       knownList.sort();
 
       map[item.id] = {
@@ -3037,7 +3066,36 @@ function TrafficAccountingSection({
         knownNodes: knownList,
         newNodeName: "",
         newNodeMultiplier: "",
+        pricingEndpoint: "",
+        pricingAuthorization: "",
+        pricingEnabled: item.pricingSource?.enabled || false,
       };
+    }
+    for (const pending of settings.unpricedNodes || []) {
+      if (!pending.configurable) continue;
+      if (!map[pending.subscriptionId]) {
+        const cfg = settings.subscriptions?.[pending.subscriptionId];
+        const nodeMap: Record<string, string> = {};
+        for (const [node, milli] of Object.entries(cfg?.nodeMultipliersMilli || {})) {
+          nodeMap[node] = (milli / 1000).toString();
+        }
+        map[pending.subscriptionId] = {
+          defaultMultiplier:
+            cfg?.defaultMultiplierMilli != null
+              ? (cfg.defaultMultiplierMilli / 1000).toString()
+              : "",
+          nodeMultipliers: nodeMap,
+          knownNodes: [...(cfg?.knownNodes || [])],
+          newNodeName: "",
+          newNodeMultiplier: "",
+          pricingEndpoint: "",
+          pricingAuthorization: "",
+          pricingEnabled: false,
+        };
+      }
+      const knownNodes = map[pending.subscriptionId].knownNodes;
+      if (!knownNodes.includes(pending.node)) knownNodes.push(pending.node);
+      knownNodes.sort();
     }
     setEditSubs(map);
     setShowSettingsModal(true);
@@ -3049,23 +3107,28 @@ function TrafficAccountingSection({
       subscriptions: {},
     };
 
-    for (const item of subscriptions.items) {
-      const sub = editSubs[item.id];
-      if (!sub) continue;
+    for (const [subscriptionId, sub] of Object.entries(editSubs)) {
+      const subscriptionName =
+        subscriptions.items.find((item) => item.id === subscriptionId)?.name ||
+        settings?.unpricedNodes.find((item) => item.subscriptionId === subscriptionId)
+          ?.subscriptionName ||
+        subscriptionId;
 
       let defMilli: number | null = null;
       const defStr = sub.defaultMultiplier.trim();
-      if (defStr !== "") {
+      if (!sub.pricingEnabled && defStr !== "") {
         const num = parseFloat(defStr);
         if (isNaN(num) || num < 0.1 || num > 100) {
-          setNotice(`订阅 “${item.name}” 的默认倍率无效（需在 0.1 ~ 100 之间）`);
+          setNotice(`订阅 “${subscriptionName}” 的默认倍率无效（需在 0.1 ~ 100 之间）`);
           return;
         }
         defMilli = Math.round(num * 1000);
       }
 
       const nodeMultsMilli: Record<string, number> = {};
-      for (const [nodeName, val] of Object.entries(sub.nodeMultipliers)) {
+      for (const [nodeName, val] of Object.entries(
+        sub.pricingEnabled ? {} : sub.nodeMultipliers,
+      )) {
         const valTrimmed = val.trim();
         if (valTrimmed === "") continue;
         const num = parseFloat(valTrimmed);
@@ -3076,10 +3139,24 @@ function TrafficAccountingSection({
         nodeMultsMilli[nodeName] = Math.round(num * 1000);
       }
 
-      payload.subscriptions![item.id] = {
+      payload.subscriptions![subscriptionId] = {
         defaultMultiplierMilli: defMilli,
         nodeMultipliersMilli: nodeMultsMilli,
       };
+
+      if (sub.pricingEnabled && (sub.pricingEndpoint.trim() || !subscriptions.items.find((item) => item.id === subscriptionId)?.pricingSource)) {
+        let parsed: URL;
+        try {
+          parsed = new URL(sub.pricingEndpoint.trim());
+        } catch {
+          setNotice(`订阅 “${subscriptionName}” 的自动倍率接口地址无效`);
+          return;
+        }
+        if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+          setNotice(`订阅 “${subscriptionName}” 的自动倍率接口必须使用 HTTP 或 HTTPS`);
+          return;
+        }
+      }
     }
 
     setSavingSettings(true);
@@ -3094,8 +3171,39 @@ function TrafficAccountingSection({
         throw new Error(body.error || "保存倍率配置失败");
       }
       setSettings(body);
+      let updatedSubscriptions = subscriptions;
+      const pricingErrors: string[] = [];
+      for (const item of subscriptions.items) {
+        const sub = editSubs[item.id];
+        if (!sub || (!sub.pricingEndpoint.trim() && !item.pricingSource)) continue;
+        const pricingRes = await fetch("/api/mihomo/subscriptions/pricing", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: item.id,
+            kind: "panel-json",
+            endpoint: sub.pricingEndpoint.trim(),
+            authorization: sub.pricingAuthorization.trim(),
+            enabled: sub.pricingEnabled,
+          }),
+        });
+        const pricingBody = (await pricingRes.json()) as SubscriptionList & { error?: string };
+        if (!pricingRes.ok) {
+          throw new Error(pricingBody.error || `保存 “${item.name}” 的自动倍率源失败`);
+        }
+        updatedSubscriptions = pricingBody;
+        const updatedItem = pricingBody.items.find((candidate) => candidate.id === item.id);
+        if (updatedItem?.pricingSource?.lastError) {
+          pricingErrors.push(`${item.name}：${updatedItem.pricingSource.lastError}`);
+        }
+      }
+      onSubscriptionsChange(updatedSubscriptions);
       setShowSettingsModal(false);
-      setNotice("流量审计倍率配置已保存，未计价流量已自动补算");
+      setNotice(
+        pricingErrors.length > 0
+          ? `倍率配置已保存；自动同步失败：${pricingErrors.join("；")}`
+          : "倍率配置已保存，已匹配的未计价流量已自动补算",
+      );
       const snapRes = await fetch("/api/mihomo/traffic-accounting", { cache: "no-store" });
       if (snapRes.ok) {
         setSnapshot((await snapRes.json()) as TrafficAccountingSnapshot);
@@ -3459,6 +3567,11 @@ function TrafficAccountingSection({
                           )}
                           {item.pricingStatus === "subscription_default" && (
                             <span className="badge-tag pricing-default" title="订阅默认倍率">
+                              {formatMultiplier(item.multiplierMilli)}
+                            </span>
+                          )}
+                          {item.pricingStatus === "automatic" && (
+                            <span className="badge-tag pricing-automatic" title="自动倍率">
                               {formatMultiplier(item.multiplierMilli)}
                             </span>
                           )}
@@ -4039,6 +4152,67 @@ function TrafficAccountingSection({
                 </span>
               </label>
 
+              {(settings?.unpricedNodes?.length || 0) > 0 && (
+                <section className="unpriced-node-settings">
+                  <div className="unpriced-node-settings-header">
+                    <strong>未计价节点</strong>
+                    <span>{settings?.unpricedNodes?.length || 0} 个</span>
+                  </div>
+                  <div className="unpriced-node-settings-list">
+                    {(settings?.unpricedNodes || []).map((pending) => {
+                      const subEdit = editSubs[pending.subscriptionId];
+                      const value = subEdit?.nodeMultipliers[pending.node] || "";
+                      const owner =
+                        pending.subscriptionName || pending.subscriptionId || "未归属订阅";
+                      return (
+                        <div
+                          key={`${pending.subscriptionId}\u0000${pending.node}`}
+                          className="unpriced-node-setting-item"
+                        >
+                          <div className="unpriced-node-setting-copy">
+                            <strong title={pending.node}>{pending.node}</strong>
+                            <span title={owner}>{owner}</span>
+                          </div>
+                          <span className="unpriced-node-bytes">
+                            {bytes(pending.unpricedRawBytes)}
+                          </span>
+                          <input
+                            type="number"
+                            step="0.05"
+                            min="0.1"
+                            max="100"
+                            placeholder="倍率"
+                            aria-label={`${pending.node} 倍率`}
+                            disabled={!pending.configurable}
+                            value={value}
+                            onChange={(e) => {
+                              const nextValue = e.target.value;
+                              setEditSubs((old) => {
+                                const current = old[pending.subscriptionId];
+                                if (!current) return old;
+                                return {
+                                  ...old,
+                                  [pending.subscriptionId]: {
+                                    ...current,
+                                    nodeMultipliers: {
+                                      ...current.nodeMultipliers,
+                                      [pending.node]: nextValue,
+                                    },
+                                  },
+                                };
+                              });
+                            }}
+                          />
+                          {!pending.configurable && (
+                            <small>订阅已删除或无法归属</small>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
               {subscriptions.items.length === 0 ? (
                 <div className="subscription-empty">
                   <strong>暂无配置的订阅</strong>
@@ -4061,7 +4235,7 @@ function TrafficAccountingSection({
                           <strong>{item.name || item.id}</strong>
                           <span className="mono sub-id-badge">ID: {item.id}</span>
                         </div>
-                        <div className="sub-default-mult-wrap">
+                        {!subEdit.pricingEnabled && <div className="sub-default-mult-wrap">
                           <label>
                             <span>订阅默认倍率：</span>
                             <input
@@ -4083,12 +4257,75 @@ function TrafficAccountingSection({
                               }}
                             />
                           </label>
-                        </div>
+                        </div>}
                       </div>
 
-                      <div className="sub-nodes-setting-section">
+                      <div className="pricing-source-settings">
+                        <div className="pricing-source-heading">
+                          <strong>自动倍率源</strong>
+                          <label className="pricing-source-toggle">
+                            <input
+                              type="checkbox"
+                              checked={subEdit.pricingEnabled}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setEditSubs((old) => ({
+                                  ...old,
+                                  [item.id]: { ...old[item.id], pricingEnabled: checked },
+                                }));
+                              }}
+                            />
+                            启用
+                          </label>
+                        </div>
+                        <div className="pricing-source-fields">
+                          <input
+                            type="url"
+                            placeholder={item.pricingSource?.endpoint || "节点倍率 JSON API"}
+                            value={subEdit.pricingEndpoint}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setEditSubs((old) => ({
+                                ...old,
+                                [item.id]: { ...old[item.id], pricingEndpoint: value },
+                              }));
+                            }}
+                          />
+                          <input
+                            type="password"
+                            autoComplete="new-password"
+                            placeholder={
+                              item.pricingSource?.credentialConfigured
+                                ? "Authorization 已配置（留空保持）"
+                                : "Authorization"
+                            }
+                            value={subEdit.pricingAuthorization}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setEditSubs((old) => ({
+                                ...old,
+                                [item.id]: { ...old[item.id], pricingAuthorization: value },
+                              }));
+                            }}
+                          />
+                        </div>
+                        {item.pricingSource && (
+                          <div className="pricing-source-status">
+                            <span>
+                              {item.pricingSource.lastSyncedAt
+                                ? `上次同步 ${formatAccountingTime(item.pricingSource.lastSyncedAt)} · ${item.pricingSource.matchedNodeCount || 0} 个节点`
+                                : "尚未同步"}
+                            </span>
+                            {item.pricingSource.lastError && (
+                              <span className="pricing-source-error">{item.pricingSource.lastError}</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {!subEdit.pricingEnabled && <div className="sub-nodes-setting-section">
                         <span className="sub-nodes-title">
-                          节点覆盖倍率 (留空则继承订阅默认)：
+                          节点覆盖倍率 (留空则使用自动倍率或订阅默认)：
                         </span>
                         {subEdit.knownNodes.length === 0 &&
                         Object.keys(subEdit.nodeMultipliers).length === 0 ? (
@@ -4099,10 +4336,18 @@ function TrafficAccountingSection({
                           <div className="traffic-node-multipliers-grid">
                             {subEdit.knownNodes.map((node) => {
                               const multVal = subEdit.nodeMultipliers[node] || "";
+                              const automaticMilli =
+                                settings?.subscriptions?.[item.id]
+                                  ?.automaticNodeMultipliersMilli?.[node];
                               return (
                                 <div key={node} className="node-multiplier-item">
-                                  <span className="node-name-label" title={node}>
-                                    {node}
+                                  <span className="node-rate-label">
+                                    <span className="node-name-label" title={node}>
+                                      {node}
+                                    </span>
+                                    {automaticMilli != null && (
+                                      <small>自动 {formatMultiplier(automaticMilli)}</small>
+                                    )}
                                   </span>
                                   <div className="node-mult-input-wrap">
                                     <input
@@ -4224,7 +4469,7 @@ function TrafficAccountingSection({
                             + 添加节点覆盖
                           </button>
                         </div>
-                      </div>
+                      </div>}
                     </div>
                   );
                 })
@@ -5440,6 +5685,7 @@ function MihomoManager({
       {section === "traffic" && (
         <TrafficAccountingSection
           subscriptions={subscriptions}
+          onSubscriptionsChange={setSubscriptions}
           setNotice={setNotice}
         />
       )}

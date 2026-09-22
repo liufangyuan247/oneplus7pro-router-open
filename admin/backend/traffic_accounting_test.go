@@ -568,6 +568,10 @@ func TestMultiplierBackfillsPendingTrafficAcrossAllDimensions(t *testing.T) {
 	if before.Proxy.UnpricedRawBytes != 700 || before.Proxy.WeightedBytes != 0 {
 		t.Fatalf("unexpected pending totals before multiplier: %+v", before.Proxy)
 	}
+	settingsBefore := mgr.GetSettings()
+	if len(settingsBefore.UnpricedNodes) != 2 {
+		t.Fatalf("settings did not expose every pending node: %+v", settingsBefore.UnpricedNodes)
+	}
 
 	multA, multB := uint32(1500), uint32(2000)
 	if _, err := mgr.UpdateSettings(UpdateTrafficSettingsRequest{
@@ -624,6 +628,9 @@ func TestMultiplierBackfillsPendingTrafficAcrossAllDimensions(t *testing.T) {
 	if pendingCount != 0 {
 		t.Fatalf("pending pricing journal was not cleared: %d entries", pendingCount)
 	}
+	if unpriced := mgr.GetSettings().UnpricedNodes; len(unpriced) != 0 {
+		t.Fatalf("resolved nodes remained in settings unpriced list: %+v", unpriced)
+	}
 
 	// A later rate change does not rewrite the traffic that has already been
 	// priced by the one-time backfill.
@@ -639,6 +646,74 @@ func TestMultiplierBackfillsPendingTrafficAcrossAllDimensions(t *testing.T) {
 	}
 	if got := mgr.GetSnapshot().Proxy.WeightedBytes; got != 1200 {
 		t.Fatalf("already-priced history changed after rate update: got %d want 1200", got)
+	}
+}
+
+func TestSettingsReturnsCompleteCanonicalUnpricedNodeList(t *testing.T) {
+	mgr := NewTrafficAccountingManager(TrafficAccountingConfig{
+		DataDir: t.TempDir(),
+		GetValidSubscriptionIDs: func() []string {
+			return []string{"sub-1"}
+		},
+	})
+
+	mgr.mu.Lock()
+	mgr.settings.Subscriptions["sub-1"] = &SubscriptionAccountingConfig{
+		NodeMultipliersMilli: make(map[string]uint32),
+		KnownNodes:           []string{},
+	}
+	mgr.ledger.PendingPricing = make(map[string]*PendingNodePricing)
+	for i := 0; i < maxAPIRankingRows+5; i++ {
+		node := fmt.Sprintf("Node %03d", i)
+		pending := newPendingNodePricing("sub-1", node)
+		pending.Proxy.Add(uint64(i+1), uint64(i+2))
+		mgr.ledger.PendingPricing[fmt.Sprintf("legacy-%03d", i)] = pending
+	}
+	// Simulate a pre-normalization ledger entry for the same node. The API must
+	// expose one canonical row and include all of its pending bytes.
+	duplicate := newPendingNodePricing("sub-1", "🇯🇵 Node 000")
+	duplicate.Proxy.Add(10, 20)
+	mgr.ledger.PendingPricing["decorated-duplicate"] = duplicate
+
+	orphan := newPendingNodePricing("", "Orphan Node")
+	orphan.Proxy.Add(40, 60)
+	mgr.ledger.PendingPricing["orphan"] = orphan
+	deleted := newPendingNodePricing("deleted-sub", "Deleted Node")
+	deleted.Proxy.Add(70, 80)
+	mgr.ledger.PendingPricing["deleted"] = deleted
+	mgr.mu.Unlock()
+
+	settings := mgr.GetSettings()
+	wantCount := maxAPIRankingRows + 7 // 205 valid nodes + orphan + deleted
+	if len(settings.UnpricedNodes) != wantCount {
+		t.Fatalf("unpriced list was truncated or lost nodes: got %d want %d", len(settings.UnpricedNodes), wantCount)
+	}
+
+	seenCanonical := 0
+	for _, item := range settings.UnpricedNodes {
+		switch item.Node {
+		case "Node 000":
+			seenCanonical++
+			if item.UnpricedRawBytes != 33 {
+				t.Errorf("canonical duplicate bytes = %d, want 33", item.UnpricedRawBytes)
+			}
+			if !item.Configurable {
+				t.Error("valid subscription pending node should be configurable")
+			}
+		case "Orphan Node", "Deleted Node":
+			if item.Configurable {
+				t.Errorf("unowned/deleted node %q should not be configurable", item.Node)
+			}
+		}
+		if item.Node == "🇯🇵 Node 000" {
+			t.Error("decorated node name leaked instead of canonical name")
+		}
+	}
+	if seenCanonical != 1 {
+		t.Fatalf("canonical node appeared %d times, want exactly once", seenCanonical)
+	}
+	if len(settings.Subscriptions["sub-1"].KnownNodes) != 0 {
+		t.Fatal("test precondition failed: pending nodes unexpectedly depended on knownNodes")
 	}
 }
 
