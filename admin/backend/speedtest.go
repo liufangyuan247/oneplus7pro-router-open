@@ -61,10 +61,9 @@ var (
 	speedTestBodyIdleTimeout = 5 * time.Second
 	speedTestRunTimeout      = 30 * time.Second
 
-	reMetadataFilter = regexp.MustCompile(`(?i)剩余|到期|官网|重置`)
-	reHK             = regexp.MustCompile(`(?i)🇭🇰|香港|HK|Hong Kong|HongKong`)
-	reJP             = regexp.MustCompile(`(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)`)
-	reTWSG           = regexp.MustCompile(`(?i)🇹🇼|台湾|台灣|TW|Taiwan|🇸🇬|新加坡|狮城|SG|Singapore`)
+	reHK   = regexp.MustCompile(`(?i)🇭🇰|香港|HK|Hong Kong|HongKong`)
+	reJP   = regexp.MustCompile(`(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)`)
+	reTWSG = regexp.MustCompile(`(?i)🇹🇼|台湾|台灣|TW|Taiwan|🇸🇬|新加坡|狮城|SG|Singapore`)
 )
 
 type MihomoSpeedTestRun struct {
@@ -445,7 +444,7 @@ func isExcludedCandidate(name string, groupNames map[string]bool) bool {
 	if groupNames[trimmed] {
 		return true
 	}
-	if reMetadataFilter.MatchString(trimmed) {
+	if isSubscriptionMetadataNode(trimmed) {
 		return true
 	}
 	return false

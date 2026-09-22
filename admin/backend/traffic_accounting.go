@@ -175,7 +175,7 @@ type NodeAccounting struct {
 	SubscriptionID   string  `json:"subscriptionId,omitempty"`
 	SubscriptionName string  `json:"subscriptionName,omitempty"`
 	MultiplierMilli  *uint32 `json:"multiplierMilli,omitempty"`
-	PricingStatus    string  `json:"pricingStatus"` // "node_override" | "subscription_default" | "unpriced"
+	PricingStatus    string  `json:"pricingStatus"` // "node_override" | "automatic" | "subscription_default" | "unpriced" | "metadata"
 	TrafficStats
 }
 
@@ -439,7 +439,10 @@ func NewTrafficAccountingManager(cfg TrafficAccountingConfig) *TrafficAccounting
 
 	m.initSettings()
 	m.initLedger()
-	pricingChanged := m.repriceResolvedPendingLocked()
+	pricingChanged := m.discardMetadataPendingLocked()
+	if m.repriceResolvedPendingLocked() {
+		pricingChanged = true
+	}
 	if m.reconcileLegacyUnpricedLocked() {
 		pricingChanged = true
 	}
@@ -533,7 +536,7 @@ func normalizeSubscriptionAccountingConfig(cfg *SubscriptionAccountingConfig) bo
 	normalizedMultipliers := make(map[string]uint32, len(originalMultipliers))
 	for node, multiplier := range originalMultipliers {
 		canonical := normalizeNodeName(node)
-		if canonical != "" && !isBuiltinGroup(canonical) {
+		if canonical != "" && !isBuiltinGroup(canonical) && !isSubscriptionMetadataNode(canonical) {
 			normalizedMultipliers[canonical] = multiplier
 		}
 	}
@@ -541,7 +544,7 @@ func normalizeSubscriptionAccountingConfig(cfg *SubscriptionAccountingConfig) bo
 	// wins deterministically rather than depending on Go map iteration order.
 	for node, multiplier := range originalMultipliers {
 		canonical := normalizeNodeName(node)
-		if strings.TrimSpace(node) == canonical && canonical != "" && !isBuiltinGroup(canonical) {
+		if strings.TrimSpace(node) == canonical && canonical != "" && !isBuiltinGroup(canonical) && !isSubscriptionMetadataNode(canonical) {
 			normalizedMultipliers[canonical] = multiplier
 		}
 	}
@@ -549,7 +552,7 @@ func normalizeSubscriptionAccountingConfig(cfg *SubscriptionAccountingConfig) bo
 	known := make(map[string]struct{}, len(cfg.KnownNodes)+len(normalizedMultipliers))
 	for _, node := range cfg.KnownNodes {
 		canonical := normalizeNodeName(node)
-		if canonical != "" && !isBuiltinGroup(canonical) {
+		if canonical != "" && !isBuiltinGroup(canonical) && !isSubscriptionMetadataNode(canonical) {
 			known[canonical] = struct{}{}
 		}
 	}
@@ -586,13 +589,13 @@ func normalizeSubscriptionAccountingConfig(cfg *SubscriptionAccountingConfig) bo
 	normalizedAutomatic := make(map[string]uint32, len(originalAutomatic))
 	for node, multiplier := range originalAutomatic {
 		canonical := normalizeNodeName(node)
-		if canonical != "" && !isBuiltinGroup(canonical) {
+		if canonical != "" && !isBuiltinGroup(canonical) && !isSubscriptionMetadataNode(canonical) {
 			normalizedAutomatic[canonical] = multiplier
 		}
 	}
 	for node, multiplier := range originalAutomatic {
 		canonical := normalizeNodeName(node)
-		if strings.TrimSpace(node) == canonical && canonical != "" && !isBuiltinGroup(canonical) {
+		if strings.TrimSpace(node) == canonical && canonical != "" && !isBuiltinGroup(canonical) && !isSubscriptionMetadataNode(canonical) {
 			normalizedAutomatic[canonical] = multiplier
 		}
 	}
@@ -1112,7 +1115,7 @@ func (m *TrafficAccountingManager) calculateCurrentRateLocked() ProxyRate {
 // Returns true if a new node was added to knownNodes, false otherwise.
 func (m *TrafficAccountingManager) discoverNodeLocked(subID, nodeName string) bool {
 	trimmed := normalizeNodeName(nodeName)
-	if trimmed == "" || isBuiltinGroup(trimmed) || subID == "" {
+	if trimmed == "" || isBuiltinGroup(trimmed) || isSubscriptionMetadataNode(trimmed) || subID == "" {
 		return false
 	}
 
@@ -1149,19 +1152,19 @@ func (m *TrafficAccountingManager) syncKnownNodesLocked(subID string, nodes []st
 	known := make(map[string]struct{}, len(nodes)+len(cfg.NodeMultipliersMilli)+len(cfg.AutomaticNodeMultipliersMilli))
 	for _, node := range nodes {
 		canonical := normalizeNodeName(node)
-		if canonical != "" && !isBuiltinGroup(canonical) {
+		if canonical != "" && !isBuiltinGroup(canonical) && !isSubscriptionMetadataNode(canonical) {
 			known[canonical] = struct{}{}
 		}
 	}
 	for node := range cfg.NodeMultipliersMilli {
 		canonical := normalizeNodeName(node)
-		if canonical != "" && !isBuiltinGroup(canonical) {
+		if canonical != "" && !isBuiltinGroup(canonical) && !isSubscriptionMetadataNode(canonical) {
 			known[canonical] = struct{}{}
 		}
 	}
 	for node := range cfg.AutomaticNodeMultipliersMilli {
 		canonical := normalizeNodeName(node)
-		if canonical != "" && !isBuiltinGroup(canonical) {
+		if canonical != "" && !isBuiltinGroup(canonical) && !isSubscriptionMetadataNode(canonical) {
 			known[canonical] = struct{}{}
 		}
 	}
@@ -1188,6 +1191,10 @@ func (m *TrafficAccountingManager) syncKnownNodesLocked(subID string, nodes []st
 }
 
 func (m *TrafficAccountingManager) resolveMultiplierLocked(subID, nodeName string) (*uint32, string) {
+	if isSubscriptionMetadataNode(nodeName) {
+		zero := uint32(0)
+		return &zero, "metadata"
+	}
 	if subID == "" {
 		return nil, "unpriced"
 	}
@@ -1740,6 +1747,37 @@ func (m *TrafficAccountingManager) applyPendingNodePricingLocked(pending *Pendin
 			applyPendingBytes(&item.TrafficStats, value, multiplier)
 		}
 	}
+}
+
+// discardMetadataPendingLocked removes pending-cost flags for subscription
+// notice nodes without rewriting raw or already-priced history. These entries
+// are not billable exits; any traffic attributed to them came from an invalid
+// selector candidate that is filtered at configuration generation time.
+func (m *TrafficAccountingManager) discardMetadataPendingLocked() bool {
+	changed := false
+	for key, pending := range m.ledger.PendingPricing {
+		if pending == nil {
+			delete(m.ledger.PendingPricing, key)
+			changed = true
+			continue
+		}
+		if !isSubscriptionMetadataNode(pending.Node) {
+			continue
+		}
+		m.applyPendingNodePricingLocked(pending, 0)
+		for nodeKey := range pending.Nodes {
+			if node := m.ledger.Nodes[nodeKey]; node != nil {
+				node.MultiplierMilli = nil
+				node.PricingStatus = "metadata"
+			}
+		}
+		delete(m.ledger.PendingPricing, key)
+		changed = true
+	}
+	if changed {
+		m.ledgerDirty = true
+	}
+	return changed
 }
 
 // repriceResolvedPendingLocked replays every exact pending journal whose node
@@ -2321,7 +2359,7 @@ func (m *TrafficAccountingManager) UpdateAutomaticMultipliers(subID string, valu
 	canonical := make(map[string]uint32, len(values))
 	for node, multiplier := range values {
 		name := normalizeNodeName(node)
-		if name == "" || isBuiltinGroup(name) {
+		if name == "" || isBuiltinGroup(name) || isSubscriptionMetadataNode(name) {
 			continue
 		}
 		if multiplier < minMultiplierMilli || multiplier > maxMultiplierMilli {
@@ -2361,7 +2399,10 @@ func (m *TrafficAccountingManager) UpdateAutomaticMultipliers(subID string, valu
 		return nil, fmt.Errorf("save automatic pricing: %w", err)
 	}
 
-	pricingChanged := m.repriceResolvedPendingLocked()
+	pricingChanged := m.discardMetadataPendingLocked()
+	if m.repriceResolvedPendingLocked() {
+		pricingChanged = true
+	}
 	if m.reconcileLegacyUnpricedLocked() {
 		pricingChanged = true
 	}
@@ -2584,7 +2625,10 @@ func (m *TrafficAccountingManager) UpdateSettings(req UpdateTrafficSettingsReque
 		return nil, fmt.Errorf("保存配置失败: %w", err)
 	}
 
-	pricingChanged := m.repriceResolvedPendingLocked()
+	pricingChanged := m.discardMetadataPendingLocked()
+	if m.repriceResolvedPendingLocked() {
+		pricingChanged = true
+	}
 	if m.reconcileLegacyUnpricedLocked() {
 		pricingChanged = true
 	}
