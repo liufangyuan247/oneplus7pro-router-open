@@ -195,6 +195,7 @@ full_health() {
   child="$1"
   basic_health "$child" || return 1
   grep -q '^active=yes$' "$BASE/runtime/supervisor-status.$$" || return 1
+  ! grep -q '^firewall=' "$BASE/runtime/supervisor-status.$$" || grep -q '^firewall=active$' "$BASE/runtime/supervisor-status.$$" || return 1
   ppp="$(sed -n 's/^ppp=//p' "$BASE/runtime/supervisor-status.$$" | head -n 1)"
   [ -n "$ppp" ] && [ "$ppp" != down ] || return 1
   /system/bin/ip -4 route show table 100 2>/dev/null | grep -q "^default dev $ppp" || return 1

@@ -18,6 +18,7 @@ health_check() {
   "$ACTIVE" status > "$status" 2>&1 || return 1
   grep -q '^armed=yes$' "$status" || return 1
   grep -q '^active=yes$' "$status" || return 1
+  ! grep -q '^firewall=' "$status" || grep -q '^firewall=active$' "$status" || return 1
   ppp="$(sed -n 's/^ppp=//p' "$status" | head -n 1)"
   lan="$(sed -n 's/^lan=\([^ ]*\).*/\1/p' "$status" | head -n 1)"
   dnsmasq_pid="$(sed -n 's/^dnsmasq=//p' "$status" | head -n 1)"

@@ -37,6 +37,7 @@ LOG_MAINTENANCE_LOOPS="${ROUTER_LOG_MAINTENANCE_LOOPS:-720}"
 PREFIX=/data/data/com.termux/files/usr
 IP="$PREFIX/bin/ip"
 IPTABLES="$PREFIX/bin/iptables"
+IP6TABLES="$PREFIX/bin/ip6tables"
 TC="$PREFIX/bin/tc"
 DNSMASQ="$PREFIX/bin/dnsmasq"
 PPPOE="$PREFIX/bin/pppoe"
@@ -944,6 +945,23 @@ remove_jump() {
   "$IPTABLES" -t "$table" -X "$chain" 2>/dev/null || true
 }
 
+ensure_jump6() {
+  table="$1" hook="$2" chain="$3"
+  "$IP6TABLES" -t "$table" -N "$chain" 2>/dev/null || true
+  "$IP6TABLES" -t "$table" -C "$hook" -j "$chain" 2>/dev/null || \
+    "$IP6TABLES" -t "$table" -I "$hook" 1 -j "$chain"
+  "$IP6TABLES" -t "$table" -F "$chain"
+}
+
+remove_jump6() {
+  table="$1" hook="$2" chain="$3"
+  while "$IP6TABLES" -t "$table" -C "$hook" -j "$chain" 2>/dev/null; do
+    "$IP6TABLES" -t "$table" -D "$hook" -j "$chain" 2>/dev/null || break
+  done
+  "$IP6TABLES" -t "$table" -F "$chain" 2>/dev/null || true
+  "$IP6TABLES" -t "$table" -X "$chain" 2>/dev/null || true
+}
+
 apply_ethernet_dhcp_guard() {
   # Both USB Ethernet roles use router-owned static addresses. Install this
   # before interface discovery so Android's IpClient cannot acquire a stale
@@ -991,6 +1009,11 @@ sanitize_lan_ipv4() {
   fi
 }
 
+firewall_ready() {
+  "$IPTABLES" -C FORWARD -j OP7_FORWARD >/dev/null 2>&1 && \
+    "$IPTABLES" -t nat -C POSTROUTING -j OP7_POSTROUTING >/dev/null 2>&1
+}
+
 apply_firewall() {
   wan="$1" lan="$2" ppp="$3"
   ensure_jump filter INPUT OP7_INPUT
@@ -1008,6 +1031,7 @@ apply_firewall() {
     -m mark ! --mark "$TPROXY_MARK/$TPROXY_MASK" -j DROP
   "$IPTABLES" -A OP7_INPUT -i "$lan" -j ACCEPT
   "$IPTABLES" -A OP7_INPUT -i tailscale0 -j ACCEPT 2>/dev/null || true
+  "$IPTABLES" -A OP7_INPUT -p udp --dport 41641 -j ACCEPT
   "$IPTABLES" -A OP7_INPUT -i "$ppp" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   "$IPTABLES" -A OP7_INPUT -i "$ppp" -j DROP
   "$IPTABLES" -A OP7_INPUT -j RETURN
@@ -1029,6 +1053,28 @@ apply_firewall() {
 
   "$IPTABLES" -t nat -A OP7_POSTROUTING -s "$LAN_SUBNET" -o "$ppp" -j MASQUERADE
   "$IPTABLES" -t nat -A OP7_POSTROUTING -s "$LAN_SUBNET" -d 192.168.1.1/32 -o "$wan" -j SNAT --to-source 192.168.1.2
+
+  ensure_jump6 filter INPUT OP7_INPUT
+  ensure_jump6 filter FORWARD OP7_FORWARD
+
+  "$IP6TABLES" -A OP7_INPUT -i lo -j ACCEPT
+  "$IP6TABLES" -A OP7_INPUT -i "$lan" -j ACCEPT
+  "$IP6TABLES" -A OP7_INPUT -i tailscale0 -j ACCEPT 2>/dev/null || true
+  "$IP6TABLES" -A OP7_INPUT -p ipv6-icmp -j ACCEPT
+  "$IP6TABLES" -A OP7_INPUT -p udp --dport 41641 -j ACCEPT
+  "$IP6TABLES" -A OP7_INPUT -i "$ppp" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  "$IP6TABLES" -A OP7_INPUT -i "$ppp" -j DROP
+  "$IP6TABLES" -A OP7_INPUT -j RETURN
+
+  "$IP6TABLES" -A OP7_FORWARD -i "$lan" -o "$ppp" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+  "$IP6TABLES" -A OP7_FORWARD -i "$lan" -o "$ppp" -j ACCEPT
+  "$IP6TABLES" -A OP7_FORWARD -i "$ppp" -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  "$IP6TABLES" -A OP7_FORWARD -i "$lan" -o "$MIHOMO_TUN" -j ACCEPT 2>/dev/null || true
+  "$IP6TABLES" -A OP7_FORWARD -i "$MIHOMO_TUN" -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+  "$IP6TABLES" -A OP7_FORWARD -i "$ppp" -o "$lan" -j DROP
+  "$IP6TABLES" -A OP7_FORWARD -i tailscale0 -o "$lan" -j ACCEPT 2>/dev/null || true
+  "$IP6TABLES" -A OP7_FORWARD -i "$lan" -o tailscale0 -j ACCEPT 2>/dev/null || true
+  "$IP6TABLES" -A OP7_FORWARD -j RETURN
 }
 
 mihomo_router_listening() {
@@ -1543,6 +1589,8 @@ cleanup_runtime() {
   remove_jump filter OUTPUT OP7_OUTPUT
   remove_jump nat OUTPUT OP7_DNS_OUTPUT
   remove_jump nat POSTROUTING OP7_POSTROUTING
+  remove_jump6 filter INPUT OP7_INPUT
+  remove_jump6 filter FORWARD OP7_FORWARD
   remove_routes
   if [ -s "$RUNTIME/interfaces" ]; then
     set -- $(cat "$RUNTIME/interfaces")
@@ -1555,7 +1603,7 @@ cleanup_runtime() {
 
 validate() {
   load_config
-  for binary in "$IP" "$IPTABLES" "$TC" "$DNSMASQ" "$PPPOE" "$PPPD" "$CURL" "$GAWK" "$SS"; do
+  for binary in "$IP" "$IPTABLES" "$IP6TABLES" "$TC" "$DNSMASQ" "$PPPOE" "$PPPD" "$CURL" "$GAWK" "$SS"; do
     [ -x "$binary" ] || { echo "missing $binary" >&2; exit 1; }
   done
   wan="$(resolve_wan_iface)"
@@ -1628,6 +1676,7 @@ status() {
   echo "codex_dns=integrated"
   echo "codex_targets=geosite"
   echo "codex_policy=$(mihomo_tun_ready && [ "$mode" = rule ] && echo active || echo inactive)"
+  echo "firewall=$(firewall_ready && echo active || echo inactive)"
 }
 
 daemon() {
@@ -1710,7 +1759,7 @@ daemon() {
     if [ -n "$ppp" ] && has_carrier "$lan"; then
       current="$(cat "$RUNTIME/interfaces" 2>/dev/null || true)"
       desired="$wan $lan $ppp"
-      if [ ! -f "$ACTIVE" ] || [ "$current" != "$desired" ]; then
+      if [ ! -f "$ACTIVE" ] || [ "$current" != "$desired" ] || ! firewall_ready; then
         activate_router "$wan" "$lan" "$ppp"
       else
         "$IP" addr replace "$LAN_ADDRESS" dev "$lan"
