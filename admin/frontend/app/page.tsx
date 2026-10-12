@@ -1482,7 +1482,7 @@ function Overview({
         <article className="panel">
           <div className="panel-title">
             <div>
-              <p className="eyebrow">最近 10 分钟</p>
+              <p className="eyebrow">最近 2 小时</p>
               <h2>CPU 与温度趋势</h2>
             </div>
             <strong>{data.cpu.usage.toFixed(1)}%</strong>
@@ -1737,6 +1737,7 @@ function TimeSeriesChart({
   format,
   zeroBaseline = true,
   domain,
+  windowMs = 2 * 60 * 60 * 1000,
 }: {
   history: HistoryPoint[];
   series: {
@@ -1747,6 +1748,7 @@ function TimeSeriesChart({
   format: (value: number) => string;
   zeroBaseline?: boolean;
   domain?: readonly [number, number];
+  windowMs?: number;
 }) {
   const points = history.length
     ? history
@@ -1775,7 +1777,6 @@ function TimeSeriesChart({
           usbPower: 0,
         },
       ];
-  const windowMs = 10 * 60 * 1000;
   const endAt = points[points.length - 1].at;
   const startAt = endAt - windowMs;
   const visiblePoints = points.filter((point) => point.at >= startAt);
@@ -1919,7 +1920,7 @@ function Network({
           <article className="panel history-panel">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均</p>
+            <p className="eyebrow">最近 2 小时 · 5 秒滑动平均</p>
             <h2>WAN / LAN 吞吐</h2>
           </div>
         </div>
@@ -2409,7 +2410,7 @@ function Clients({
           <article className="panel history-panel client-chart-panel">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均 · WAN vs LAN 双域对比</p>
+            <p className="eyebrow">最近 2 小时 · 5 秒滑动平均 · WAN vs LAN 双域对比</p>
             <h2>外网 / 内网实时吞吐走势</h2>
           </div>
           <div className="chart-legend-row">
@@ -7628,7 +7629,7 @@ function System({
         <article className="panel history-panel">
           <div className="panel-title">
             <div>
-              <p className="eyebrow">最近 10 分钟</p>
+              <p className="eyebrow">最近 2 小时</p>
               <h2>电池温度趋势</h2>
             </div>
             <span
@@ -7657,7 +7658,7 @@ function System({
         <article className="panel history-panel">
           <div className="panel-title">
             <div>
-              <p className="eyebrow">最近 10 分钟</p>
+              <p className="eyebrow">最近 2 小时</p>
               <h2>电池电流趋势（正值为放电）</h2>
             </div>
           </div>
@@ -7674,7 +7675,7 @@ function System({
         <article className="panel history-panel">
           <div className="panel-title">
             <div>
-              <p className="eyebrow">最近 10 分钟</p>
+              <p className="eyebrow">最近 2 小时</p>
               <h2>电池与 USB 输入电压</h2>
             </div>
           </div>
@@ -7695,7 +7696,7 @@ function System({
           <article className="panel history-panel system-history">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">最近 10 分钟</p>
+            <p className="eyebrow">最近 2 小时</p>
             <h2>CPU、内存与温度趋势</h2>
           </div>
         </div>

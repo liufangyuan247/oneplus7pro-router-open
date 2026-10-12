@@ -135,7 +135,7 @@ const (
 	snapshotCacheTTL               = 8 * time.Second
 	mihomoConnectionsCacheTTL      = 2 * time.Second
 	metricSampleInterval           = 5 * time.Second
-	metricHistoryWindow            = 10 * time.Minute
+	metricHistoryWindow            = 2 * time.Hour
 	scrcpyServerVersion            = "3.3.1"
 	scrcpyVideoChannel        byte = 0
 	scrcpyControlChannel      byte = 1

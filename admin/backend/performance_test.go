@@ -103,10 +103,10 @@ func TestMihomoConnectionsCoalescesConsumers(t *testing.T) {
 	}
 }
 
-func TestMetricHistoryRetainsCompleteTenMinuteWindow(t *testing.T) {
+func TestMetricHistoryRetainsCompleteTwoHourWindow(t *testing.T) {
 	s := &Server{}
 	base := time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 130; i++ {
+	for i := 0; i < 1500; i++ {
 		s.appendMetricPoint(MetricHistoryPoint{
 			At:  base.Add(time.Duration(i) * metricSampleInterval).UnixMilli(),
 			CPU: float64(i),
@@ -114,8 +114,8 @@ func TestMetricHistoryRetainsCompleteTenMinuteWindow(t *testing.T) {
 	}
 
 	history := s.metricHistorySnapshot()
-	if len(history) != 121 {
-		t.Fatalf("history contains %d points, want 121 inclusive five-second samples", len(history))
+	if len(history) != 1441 {
+		t.Fatalf("history contains %d points, want 1441 inclusive five-second samples", len(history))
 	}
 	if span := time.Duration(history[len(history)-1].At-history[0].At) * time.Millisecond; span != metricHistoryWindow {
 		t.Fatalf("history span = %v, want %v", span, metricHistoryWindow)
