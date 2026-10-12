@@ -41,7 +41,7 @@ export const navItems: { id: Tab; label: string; icon: string }[] = [
   { id: "storage", label: "存储", icon: "SSD" },
   { id: "logs", label: "日志", icon: "LOG" },
   { id: "system", label: "系统", icon: "SYS" },
-  { id: "remote", label: "远程", icon: "WEB" },
+  { id: "remote", label: "远程 ↗", icon: "WEB" },
 ];
 
 export const secondaryNavItems: Partial<
@@ -72,8 +72,8 @@ export const secondaryNavItems: Partial<
     { id: "performance", label: "性能与温度" },
   ],
   remote: [
-    { id: "terminal", label: "终端" },
-    { id: "screen", label: "屏幕" },
+    { id: "screen", label: "全屏控制" },
+    { id: "terminal", label: "网页终端" },
   ],
 };
 

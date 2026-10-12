@@ -103,3 +103,305 @@ button { font:inherit; }
   .battery-guard-presets{gap:4px}
   .battery-guard-preset-btn{flex:1;min-width:90px;text-align:center;padding:5px 6px}
 }
+
+/* Service Upgrade & Rollback Controls */
+.service-check-btn {
+  border: 1px solid #244857;
+  background: #0b222d;
+  color: #8da9b7;
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 8.5px;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.service-check-btn:hover:not(:disabled) {
+  border-color: #3ecbc2;
+  color: #dcf7fa;
+  background: #102e3d;
+}
+.service-check-btn:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+
+.service-version-tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 7.5px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.service-version-tag.current {
+  background: #0d2835;
+  border: 1px solid #1c4b5e;
+  color: #72bfce;
+}
+.service-version-tag.upgradable {
+  background: #0b3429;
+  border: 1px solid #1d6e53;
+  color: #4ce5af;
+  font-weight: 600;
+  box-shadow: 0 0 8px #28e09e22;
+}
+.service-version-tag.latest {
+  background: #082522;
+  border: 1px solid #14584e;
+  color: #38c89b;
+}
+
+.service-upgrade-btn {
+  appearance: none;
+  border: 1px solid #2fa589 !important;
+  background: linear-gradient(135deg, #114c45, #0c3e34) !important;
+  color: #63ffcf !important;
+  font-weight: 700 !important;
+  padding: 5px 9px !important;
+  border-radius: 7px !important;
+  cursor: pointer;
+  box-shadow: 0 0 10px #2fa58933;
+  transition: all .15s ease;
+}
+.service-upgrade-btn:hover {
+  border-color: #5cf2cb !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 14px #2fa58966;
+  transform: translateY(-1px);
+}
+
+.service-upgrade-modal {
+  width: min(600px, 94%) !important;
+}
+.upgrade-modal-body {
+  padding: 16px 18px 20px;
+}
+
+.rollback-safety-card {
+  background: linear-gradient(145deg, #091f2c, #071924);
+  border: 1px solid #1c4e63;
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: inset 0 1px 0 #28637c33;
+}
+.safety-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #4ce5af;
+  font-size: 11px;
+}
+.safety-icon {
+  font-size: 13px;
+}
+.safety-steps {
+  margin: 11px 0 0 0;
+  padding-left: 16px;
+  color: #8faec0;
+  font-size: 9px;
+  line-height: 1.7;
+}
+.safety-steps li {
+  margin-bottom: 7px;
+}
+.safety-steps li:last-child {
+  margin-bottom: 0;
+}
+.safety-steps strong {
+  color: #e0eff5;
+}
+.safety-steps code {
+  color: #5edbd0;
+  background: #0e2936;
+  border: 1px solid #1b495b;
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 8px;
+}
+
+.upgrade-progress-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px 14px;
+  margin-top: 14px;
+  background: #061620;
+  border: 1px dashed #204d60;
+  border-radius: 10px;
+}
+.upgrade-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #1c4656;
+  border-top-color: #3ddbc2;
+  border-radius: 50%;
+  animation: guard-spin .8s linear infinite;
+}
+.upgrade-progress-text {
+  margin: 0;
+  color: #61f2cb;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-align: center;
+}
+.upgrade-progress-box small {
+  color: #698797;
+  font-size: 8px;
+}
+
+.upgrade-error-banner {
+  margin-top: 13px;
+  padding: 10px 12px;
+  border: 1px solid #75333c;
+  background: #2e1418;
+  border-radius: 8px;
+  color: #ffa1a7;
+  font-size: 9px;
+  line-height: 1.55;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.upgrade-error-banner strong {
+  color: #ffb7bc;
+}
+
+.upgrade-actions-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #1a3644;
+}
+.primary-upgrade-btn {
+  appearance: none;
+  border: 1px solid #2fa589 !important;
+  background: linear-gradient(135deg, #136a5a, #11816e) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  padding: 8px 16px !important;
+  border-radius: 8px !important;
+  font-size: 9.5px !important;
+  cursor: pointer;
+  box-shadow: 0 4px 14px #12826f44;
+  transition: all .15s ease;
+}
+.primary-upgrade-btn:hover:not(:disabled) {
+  border-color: #5df4ce !important;
+  background: linear-gradient(135deg, #167e6c, #149b84) !important;
+  box-shadow: 0 4px 18px #12826f77;
+}
+.primary-upgrade-btn:disabled, .secondary-btn:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+
+.secondary-btn {
+  appearance: none;
+  border: 1px solid #244857 !important;
+  background: #0f2835 !important;
+  color: #9ab3c0 !important;
+  padding: 8px 14px !important;
+  border-radius: 8px !important;
+  font-size: 9.5px !important;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.secondary-btn:hover:not(:disabled) {
+  border-color: #3dc0cc !important;
+  color: #e2f5fc !important;
+}
+
+/* Standalone Remote Shell (Pop-out Window / Independent Tab) */
+.standalone-shell {
+  min-height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: #06151d;
+  color: var(--ink);
+  overflow: hidden;
+}
+.standalone-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #091c26;
+  border-bottom: 1px solid #1d3845;
+  flex-shrink: 0;
+  gap: 12px;
+}
+.standalone-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.standalone-brand strong {
+  font-size: 13px;
+  color: #dbe9f0;
+}
+.standalone-badge {
+  font-size: 9px;
+  border: 1px solid #236577;
+  background: #0d2e38;
+  color: #45d4e4;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.standalone-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.standalone-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.standalone-content .remote-console {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.standalone-content .module-context {
+  display: none;
+}
+.standalone-content .terminal-panel,
+.standalone-content .screen-panel {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+  border: none;
+  background: #06151d;
+}
+.standalone-content .terminal-host {
+  flex: 1;
+  height: 100%;
+  max-height: none;
+  min-height: 0;
+  padding: 8px;
+}
+.standalone-content .screen-stage {
+  flex: 1;
+  height: calc(100dvh - 90px);
+  max-height: none;
+  min-height: 0;
+}
+.screen-actions button.btn-active {
+  border-color: #30c7d8 !important;
+  background: #174252 !important;
+  color: #e2f9fb !important;
+  box-shadow: 0 0 8px #30c7d833;
+}
+

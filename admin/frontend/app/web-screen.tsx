@@ -74,7 +74,11 @@ async function writeBrowserClipboard(text: string) {
   if (!copied) throw new Error("浏览器拒绝写入剪切板");
 }
 
-export function BrowserScreenControl() {
+export function BrowserScreenControl({
+  standalone = true,
+}: {
+  standalone?: boolean;
+} = {}) {
   const panelRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -91,6 +95,7 @@ export function BrowserScreenControl() {
   const [generation, setGeneration] = useState(0);
   const [pageVisible, setPageVisible] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [keepAlive, setKeepAlive] = useState(true);
   const [powerPending, setPowerPending] = useState<"unlock" | "lock" | null>(null);
   const [deviceClipboard, setDeviceClipboard] = useState<string | null>(null);
   const [clipboardStatus, setClipboardStatus] = useState(
@@ -99,7 +104,7 @@ export function BrowserScreenControl() {
 
   useEffect(() => {
     const syncVisibility = () => {
-      const visible = !document.hidden;
+      const visible = keepAlive || !document.hidden;
       setPageVisible(visible);
       if (!visible) {
         setState("closed");
@@ -109,7 +114,7 @@ export function BrowserScreenControl() {
     document.addEventListener("visibilitychange", syncVisibility);
     syncVisibility();
     return () => document.removeEventListener("visibilitychange", syncVisibility);
-  }, []);
+  }, [keepAlive]);
 
   useEffect(() => {
     document.body.classList.add("screen-control-active");
@@ -726,6 +731,14 @@ export function BrowserScreenControl() {
               重新连接
             </button>
           )}
+          <button
+            type="button"
+            className={keepAlive ? "btn-active" : ""}
+            onClick={() => setKeepAlive((v) => !v)}
+            title={keepAlive ? "已开启后台保活：切换标签页保持串流不中断（耗电稍高）" : "已开启后台节电：切换标签页自动暂停串流"}
+          >
+            {keepAlive ? "后台保活: 开" : "后台保活: 关"}
+          </button>
         </div>
       </header>
       <div

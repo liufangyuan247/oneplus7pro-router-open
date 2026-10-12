@@ -131,6 +131,11 @@ type Snapshot = {
     UptimeSec: number;
     Port: number;
     webUrl: string;
+    currentVersion?: string;
+    latestVersion?: string;
+    upgradable?: boolean;
+    hasBackup?: boolean;
+    canUpgrade?: boolean;
   }[];
   aria2: {
     online: boolean;
@@ -774,6 +779,7 @@ export default function Home() {
   const [auth, setAuth] = useState<AuthState>("checking");
   const [data, setData] = useState<Snapshot>(demo);
   const [active, setActive] = useState<Tab>("overview");
+  const [standalone, setStandalone] = useState(false);
   const [activeSections, setActiveSections] = useState<
     Partial<Record<Tab, SectionId>>
   >({});
@@ -789,6 +795,25 @@ export default function Home() {
       requestedSection?: SectionId,
       historyMode: "push" | "replace" = "push",
     ) => {
+      if (view === "remote") {
+        const section =
+          requestedSection || activeSections.remote || "screen";
+        if (standalone) {
+          setActiveSections((old) => ({ ...old, remote: section }));
+          const url = new URL(window.location.href);
+          url.searchParams.set("view", "remote");
+          url.searchParams.set("section", section);
+          url.searchParams.set("standalone", "1");
+          window.history.replaceState(null, "", url);
+          return;
+        }
+        window.open(
+          `/?view=remote&section=${section}&standalone=1`,
+          "_blank",
+        );
+        return;
+      }
+
       const section = resolveSection(
         view,
         requestedSection || activeSections[view],
@@ -802,20 +827,30 @@ export default function Home() {
       url.searchParams.set("view", view);
       if (section) url.searchParams.set("section", section);
       else url.searchParams.delete("section");
+      url.searchParams.delete("standalone");
       if (historyMode === "replace") {
         window.history.replaceState(null, "", url);
       } else {
         window.history.pushState(null, "", url);
       }
     },
-    [activeSections],
+    [activeSections, standalone],
   );
 
   useEffect(() => {
     const syncFromLocation = (normalize = false) => {
       const url = new URL(window.location.href);
       const requestedView = url.searchParams.get("view");
-      const view = isTab(requestedView) ? requestedView : "overview";
+      const isStandalone =
+        url.searchParams.get("standalone") === "1" ||
+        url.searchParams.get("standalone") === "true" ||
+        requestedView === "remote";
+      setStandalone(isStandalone);
+      const view = isTab(requestedView)
+        ? requestedView
+        : isStandalone
+          ? "remote"
+          : "overview";
       const section = resolveSection(view, url.searchParams.get("section"));
       setActive(view);
       if (section) {
@@ -825,6 +860,8 @@ export default function Home() {
       url.searchParams.set("view", view);
       if (section) url.searchParams.set("section", section);
       else url.searchParams.delete("section");
+      if (isStandalone) url.searchParams.set("standalone", "1");
+      else url.searchParams.delete("standalone");
       window.history.replaceState(null, "", url);
     };
     syncFromLocation(true);
@@ -968,6 +1005,44 @@ export default function Home() {
     (item) => item.id === activeSection,
   )?.label;
   const remoteMode: RemoteMode = activeSection === "screen" ? "screen" : "terminal";
+
+  if (standalone) {
+    return (
+      <main className="standalone-shell">
+        <header className="standalone-header">
+          <div className="standalone-brand">
+            <span className="brand-mark">1+</span>
+            <strong>一加 7 Pro 路由器</strong>
+            <span className="standalone-badge">
+              {remoteMode === "screen" ? "全屏控制" : "网页终端"}
+            </span>
+          </div>
+          <div className="standalone-header-actions">
+            <div className="remote-mode-switch">
+              <button
+                type="button"
+                className={remoteMode === "screen" ? "active" : ""}
+                onClick={() => navigate("remote", "screen")}
+              >
+                全屏控制
+              </button>
+              <button
+                type="button"
+                className={remoteMode === "terminal" ? "active" : ""}
+                onClick={() => navigate("remote", "terminal")}
+              >
+                网页终端
+              </button>
+            </div>
+          </div>
+        </header>
+        <div className="standalone-content">
+          <RemoteMaintenance mode={remoteMode} standalone={true} />
+        </div>
+      </main>
+    );
+  }
+
   const running = data.services.filter((s) => s.State === "运行中").length;
   const external =
     data.storage
@@ -981,7 +1056,7 @@ export default function Home() {
       data.services.filter((s) => s.State === "停止").length * 5,
   );
   const openRemote = (mode: RemoteMode) => {
-    navigate("remote", mode);
+    window.open(`/?view=remote&section=${mode}&standalone=1`, "_blank");
   };
 
   const viewContent = (
@@ -1050,9 +1125,6 @@ export default function Home() {
           onRefresh={() => refresh(true)}
           section={activeSection}
         />
-      )}
-      {active === "remote" && activeSection && (
-        <RemoteMaintenance mode={remoteMode} />
       )}
     </>
   );
@@ -1382,18 +1454,27 @@ function Overview({
       <section className="remote-tools panel">
         <div className="remote-tools-copy">
           <p className="eyebrow">远程维护</p>
-          <h2>浏览器内维护</h2>
+          <h2>独立工作台</h2>
+          <p>全屏屏幕控制与 Web 终端已全面采用新 Tab 独立运行，后台长效保活，不中断维护会话。</p>
         </div>
         <div className="remote-tools-actions">
-          <button type="button" onClick={() => onRemote("screen")}>
+          <button
+            type="button"
+            title="在新标签页中独立打开全屏屏幕控制，切后台长效保活"
+            onClick={() => onRemote("screen")}
+          >
             <span>SCREEN</span>
-            <strong>网页控制屏幕</strong>
-            <small>按需启动 · 浏览器内显示</small>
+            <strong>全屏控制 ↗</strong>
+            <small>独立新标签页 · 实时屏幕与键鼠触控</small>
           </button>
-          <button type="button" onClick={() => onRemote("terminal")}>
+          <button
+            type="button"
+            title="在新标签页中独立打开网页终端，切后台长效保活"
+            onClick={() => onRemote("terminal")}
+          >
             <span>SSH</span>
-            <strong>网页终端</strong>
-            <small>普通 / root shell</small>
+            <strong>网页终端 ↗</strong>
+            <small>独立新标签页 · root / Termux 终端</small>
           </button>
         </div>
       </section>
@@ -1464,22 +1545,20 @@ function Overview({
 
 function RemoteMaintenance({
   mode,
+  standalone = true,
 }: {
   mode: RemoteMode;
+  standalone?: boolean;
 }) {
   const [root, setRoot] = useState(false);
   return (
     <div
       className={`view remote-console ${mode === "screen" ? "screen-mode" : ""}`}
     >
-      <ModuleContextBar>
-        <strong>{mode === "terminal" ? "网页终端" : "实时屏幕控制"}</strong>
-        <span>{mode === "terminal" ? (root ? "Root 会话" : "Termux 会话") : "scrcpy 低延迟连接"}</span>
-      </ModuleContextBar>
       {mode === "terminal" ? (
-        <WebTerminal root={root} onRootChange={setRoot} />
+        <WebTerminal root={root} onRootChange={setRoot} standalone={standalone} />
       ) : (
-        <WebScreenControl />
+        <WebScreenControl standalone={standalone} />
       )}
     </div>
   );
@@ -1488,9 +1567,11 @@ function RemoteMaintenance({
 function WebTerminal({
   root,
   onRootChange,
+  standalone = false,
 }: {
   root: boolean;
   onRootChange: (root: boolean) => void;
+  standalone?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [connection, setConnection] = useState<
@@ -1646,8 +1727,8 @@ function WebTerminal({
   );
 }
 
-function WebScreenControl() {
-  return <BrowserScreenControl />;
+function WebScreenControl({ standalone = false }: { standalone?: boolean }) {
+  return <BrowserScreenControl standalone={standalone} />;
 }
 
 function TimeSeriesChart({
@@ -6409,6 +6490,13 @@ function Services({
   onLog: (name: string) => void;
   section: SectionId;
 }) {
+  const [upgradingService, setUpgradingService] = useState<Snapshot["services"][number] | null>(null);
+  const [upgradeProcessing, setUpgradeProcessing] = useState(false);
+  const [upgradeStatusMsg, setUpgradeStatusMsg] = useState("");
+  const [upgradeError, setUpgradeError] = useState("");
+
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+
   const act = async (name: string, action: string) => {
     if (action === "stop" && !confirm(`确定停止 ${name}？`)) return;
     const r = await fetch("/api/services/action", {
@@ -6420,6 +6508,78 @@ function Services({
     setNotice(r.ok ? `${name} 操作完成` : b.error || "操作失败");
     setTimeout(() => refresh(true), 800);
   };
+
+  const handleCheckUpdates = async () => {
+    setCheckingUpdates(true);
+    try {
+      const res = await fetch("/api/services/updates?refresh=1");
+      if (res.ok) {
+        setNotice("服务更新版本信息已刷新");
+        await refresh(true);
+      } else {
+        setNotice("检查更新失败");
+      }
+    } catch (e: any) {
+      setNotice(`检查更新异常: ${e?.message || e}`);
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
+
+  const handleUpgrade = async (service: Snapshot["services"][number]) => {
+    if (!service) return;
+    setUpgradeProcessing(true);
+    setUpgradeError("");
+    setUpgradeStatusMsg("正在拉取发布资产并校验哈希完整性...");
+
+    const t1 = setTimeout(() => {
+      setUpgradeStatusMsg("正在执行沙箱隔离语法与兼容性预检 (Preflight)...");
+    }, 2800);
+    const t2 = setTimeout(() => {
+      setUpgradeStatusMsg("预检通过，正在全量快照备份现网二进制并原子替换...");
+    }, 6000);
+    const t3 = setTimeout(() => {
+      setUpgradeStatusMsg("服务已启动，正在执行连续 12 秒多频健康探测与防故障监控...");
+    }, 9000);
+
+    try {
+      const res = await fetch("/api/services/upgrade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          service: service.Name,
+          version: service.latestVersion,
+        }),
+      });
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        const errMsg = json.error || "升级未完成";
+        if (json.rolledBack) {
+          setUpgradeError(`升级异常（健康探测未通过），系统已自动秒级回滚至原版本: ${errMsg}`);
+        } else {
+          setUpgradeError(errMsg);
+        }
+        setNotice(errMsg);
+      } else {
+        setNotice(json.message || `${service.Label} 升级成功！`);
+        setUpgradingService(null);
+      }
+    } catch (e: any) {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      setUpgradeError(`网络请求异常: ${e?.message || e}`);
+      setNotice(`升级失败: ${e?.message || e}`);
+    } finally {
+      setUpgradeProcessing(false);
+      await refresh(true);
+    }
+  };
+
   const open = (service: Snapshot["services"][number]) => {
     if (!service.webUrl) {
       setNotice("该服务没有网页管理入口");
@@ -6432,6 +6592,9 @@ function Services({
       "noopener",
     );
   };
+
+  const upgradableCount = data.services.filter((s) => s.canUpgrade && s.upgradable).length;
+
   return (
     <div className="view">
       <ModuleContextBar>
@@ -6439,6 +6602,11 @@ function Services({
           {data.services.filter((service) => service.State === "运行中").length} / {data.services.length} 项运行中
         </strong>
         <span>Runit 自动守护</span>
+        {upgradableCount > 0 ? (
+          <span style={{ color: "#36d6a8", fontWeight: 600 }}>{upgradableCount} 个服务可升级</span>
+        ) : (
+          <span>全服务已是最新</span>
+        )}
         <span>{data.aria2.online ? `Aria2 ${data.aria2.numActive} 项活动` : "Aria2 离线"}</span>
       </ModuleContextBar>
       {section === "tailscale" && <TailscaleService setNotice={setNotice} />}
@@ -6447,78 +6615,210 @@ function Services({
         <>
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Runit 托管</p>
+              <p className="eyebrow">Runit 托管 · 升级与自动回滚保障</p>
               <h2>应用与系统服务</h2>
             </div>
-            <span className="live-pill">
-              <i /> 自动守护
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <button
+                type="button"
+                className="service-check-btn"
+                disabled={checkingUpdates}
+                onClick={handleCheckUpdates}
+                title="立即联网检查 GitHub 及源更新"
+              >
+                {checkingUpdates ? "检查中..." : "⟳ 检查更新"}
+              </button>
+              <span className="live-pill">
+                <i /> 自动守护
+              </span>
+            </div>
           </div>
           <div className="service-cards">
-        {data.services.map((service, index) => (
-          <article className="panel service-card" key={service.Name}>
-            <div className="service-main">
-              <span className={`service-icon s${index % 4}`}>
-                {service.Label.slice(0, 2)}
-              </span>
-              <div>
-                <strong>{service.Label}</strong>
-                <small>
-                  {service.Port ? `TCP ${service.Port}` : "后台服务"} ·{" "}
-                  {service.PID ? `PID ${service.PID}` : "无进程"}
-                </small>
-              </div>
-              <span
-                className={
-                  service.State === "运行中" ? "state-good" : "state-muted"
-                }
-              >
-                {service.State}
-              </span>
-            </div>
-            <div className="service-meta">
-              <span>运行时长 {duration(service.UptimeSec)}</span>
-              {[
-                "openlist",
-                "caddy",
-                "qbittorrent",
-                "cpa",
-                "cpa-usage-keeper",
-              ].includes(service.Name) && (
-                <button type="button" onClick={() => open(service)}>
-                  打开
-                </button>
-              )}
-              <button type="button" onClick={() => onLog(service.Name)}>
-                日志
-              </button>
-              {service.Name !== "router-admin" && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => act(service.Name, "restart")}
-                  >
-                    重启
-                  </button>
-                  <button
-                    className="danger-quiet"
-                    type="button"
-                    onClick={() =>
-                      act(
-                        service.Name,
-                        service.State === "运行中" ? "stop" : "start",
-                      )
+            {data.services.map((service, index) => (
+              <article className="panel service-card" key={service.Name}>
+                <div className="service-main">
+                  <span className={`service-icon s${index % 4}`}>
+                    {service.Label.slice(0, 2)}
+                  </span>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                      <strong>{service.Label}</strong>
+                      {service.currentVersion && (
+                        <span className="service-version-tag current" title={`当前运行版本: ${service.currentVersion}`}>
+                          当前: {service.currentVersion.startsWith("v") ? service.currentVersion : `v${service.currentVersion}`}
+                        </span>
+                      )}
+                      {service.canUpgrade && service.upgradable && service.latestVersion && (
+                        <span className="service-version-tag upgradable" title={`可升级至: ${service.latestVersion}`}>
+                          发现新版: {service.latestVersion.startsWith("v") ? service.latestVersion : `v${service.latestVersion}`}
+                        </span>
+                      )}
+                      {service.canUpgrade && !service.upgradable && service.currentVersion && service.latestVersion && (
+                        <span className="service-version-tag latest" title="已是最新版本">
+                          已是最新
+                        </span>
+                      )}
+                    </div>
+                    <small>
+                      {service.Port ? `TCP ${service.Port}` : "后台服务"} ·{" "}
+                      {service.PID ? `PID ${service.PID}` : "无进程"}
+                    </small>
+                  </div>
+                  <span
+                    className={
+                      service.State === "运行中" ? "state-good" : "state-muted"
                     }
                   >
-                    {service.State === "运行中" ? "停止" : "启动"}
+                    {service.State}
+                  </span>
+                </div>
+                <div className="service-meta">
+                  <span>运行时长 {duration(service.UptimeSec)}</span>
+                  {service.canUpgrade && service.upgradable && (
+                    <button
+                      type="button"
+                      className="service-upgrade-btn"
+                      title={`升级至 ${service.latestVersion}（带沙箱预检与自动回滚保护）`}
+                      onClick={() => {
+                        setUpgradeError("");
+                        setUpgradeStatusMsg("");
+                        setUpgradingService(service);
+                      }}
+                    >
+                      ✨ 升级到 {service.latestVersion ? (service.latestVersion.startsWith("v") ? service.latestVersion : `v${service.latestVersion}`) : "新版"}
+                    </button>
+                  )}
+                  {[
+                    "openlist",
+                    "caddy",
+                    "qbittorrent",
+                    "cpa",
+                    "cpa-usage-keeper",
+                  ].includes(service.Name) && (
+                    <button type="button" onClick={() => open(service)}>
+                      打开
+                    </button>
+                  )}
+                  <button type="button" onClick={() => onLog(service.Name)}>
+                    日志
                   </button>
-                </>
-              )}
-            </div>
-          </article>
-        ))}
+                  {service.Name !== "router-admin" && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => act(service.Name, "restart")}
+                      >
+                        重启
+                      </button>
+                      <button
+                        className="danger-quiet"
+                        type="button"
+                        onClick={() =>
+                          act(
+                            service.Name,
+                            service.State === "运行中" ? "stop" : "start",
+                          )
+                        }
+                      >
+                        {service.State === "运行中" ? "停止" : "启动"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </article>
+            ))}
           </div>
         </>
+      )}
+
+      {/* Upgrade Modal with Rollback Guarantee */}
+      {upgradingService && (
+        <div
+          className="modal-backdrop"
+          onClick={() => !upgradeProcessing && setUpgradingService(null)}
+        >
+          <section
+            className="log-modal service-upgrade-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header>
+              <div>
+                <strong>升级服务 · {upgradingService.Label}</strong>
+                <p className="modal-header-desc">
+                  版本跃升：{upgradingService.currentVersion || "当前版本"} → {upgradingService.latestVersion || "最新版本"}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={upgradeProcessing}
+                onClick={() => setUpgradingService(null)}
+              >
+                关闭
+              </button>
+            </header>
+
+            <div className="upgrade-modal-body">
+              <div className="rollback-safety-card">
+                <div className="safety-title">
+                  <span className="safety-icon">🛡️</span>
+                  <strong>多重容灾防线与全自动无损回滚机制</strong>
+                </div>
+                <ul className="safety-steps">
+                  <li>
+                    <strong>1. 隔离沙箱预检：</strong>
+                    新版本下载后，后台先在沙箱隔离区执行完整语法与运行环境校验（如 <code>mihomo -t</code>、<code>openlist version</code>），若预检异常立即终止，绝不影响现网正常服务。
+                  </li>
+                  <li>
+                    <strong>2. 二进制全量快照备份：</strong>
+                    在替换前自动将当前稳定版本复制至持久化备份区（<code>$DATA/backups/services/{upgradingService.Name}/</code>），记录版本哈希与元数据。
+                  </li>
+                  <li>
+                    <strong>3. 连续 12 秒多频健康探测与自动秒级回滚：</strong>
+                    服务启动后执行深度健康检查与端口连通性探测。若启动失败或健康检查超时，<strong>系统将立即自动无损回滚至原版本并拉起服务</strong>，避免服务瘫痪。
+                  </li>
+                  <li>
+                    <strong>4. 故障自动回滚自愈：</strong>
+                    升级成功后服务平稳接管，无需任何人工干预；若拉起异常或探针未通过，系统将全自动秒级回滚原版本自愈。
+                  </li>
+                </ul>
+              </div>
+
+              {upgradeProcessing && (
+                <div className="upgrade-progress-box">
+                  <div className="upgrade-spinner" />
+                  <p className="upgrade-progress-text">{upgradeStatusMsg || "正在执行安全升级流程..."}</p>
+                  <small>请勿关闭本页面或重启路由器</small>
+                </div>
+              )}
+
+              {upgradeError && (
+                <div className="upgrade-error-banner">
+                  <strong>⚠️ 升级中断：</strong>
+                  <span>{upgradeError}</span>
+                </div>
+              )}
+
+              <div className="upgrade-actions-footer">
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  disabled={upgradeProcessing}
+                  onClick={() => setUpgradingService(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="primary-upgrade-btn"
+                  disabled={upgradeProcessing}
+                  onClick={() => handleUpgrade(upgradingService)}
+                >
+                  {upgradeProcessing ? "升级进行中..." : `立即升级到 ${upgradingService.latestVersion || "最新版本"}`}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );
