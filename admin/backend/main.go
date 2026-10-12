@@ -103,6 +103,7 @@ type Server struct {
 	terminalSessions                   atomic.Int32
 	screenSessions                     atomic.Int32
 	runSu                              func(command string) ([]byte, error)
+	commandRunner                      func(name string, args ...string) string
 	subscriptionUpdater                func(item SubscriptionRecord, activate, useCache bool) ([]byte, error)
 	mihomoController                   string
 	speedTestMu                        sync.Mutex
@@ -299,6 +300,11 @@ type ServiceInfo struct {
 	Name, Label, State   string
 	PID, UptimeSec, Port int
 	WebURL               string `json:"webUrl"`
+	CurrentVersion       string `json:"currentVersion,omitempty"`
+	LatestVersion        string `json:"latestVersion,omitempty"`
+	Upgradable           bool   `json:"upgradable,omitempty"`
+	HasBackup            bool   `json:"hasBackup,omitempty"`
+	CanUpgrade           bool   `json:"canUpgrade,omitempty"`
 }
 type Aria2Info struct {
 	Online        bool        `json:"online"`
@@ -454,6 +460,17 @@ type MihomoConnection struct {
 }
 
 func main() {
+	if os.Getenv("SSL_CERT_FILE") == "" {
+		for _, certPath := range []string{
+			"/data/data/com.termux/files/usr/etc/tls/cert.pem",
+			"/data/data/com.termux/files/usr/etc/ssl/cert.pem",
+		} {
+			if _, err := os.Stat(certPath); err == nil {
+				_ = os.Setenv("SSL_CERT_FILE", certPath)
+				break
+			}
+		}
+	}
 	home := env("ROUTER_HOME", defaultHome)
 	s := &Server{
 		home:    home,
@@ -479,6 +496,7 @@ func main() {
 	s.initSpeedTest()
 	s.initTrafficAccounting()
 	s.startSubscriptionPricingSync()
+	s.initServiceUpdates()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.health)
@@ -487,6 +505,9 @@ func main() {
 	mux.HandleFunc("/api/snapshot", s.auth(s.snapshot))
 	mux.HandleFunc("/api/clients/static-lease", s.auth(s.staticLeaseAPI))
 	mux.HandleFunc("/api/services/action", s.auth(s.serviceAction))
+	mux.HandleFunc("/api/services/updates", s.auth(s.servicesUpdatesAPI))
+	mux.HandleFunc("/api/services/upgrade", s.auth(s.servicesUpgradeAPI))
+	mux.HandleFunc("/api/services/rollback", s.auth(s.servicesRollbackAPI))
 	mux.HandleFunc("/api/logs", s.auth(s.logs))
 	mux.HandleFunc("/api/system-logs", s.auth(s.systemLogs))
 	mux.HandleFunc("/api/tailscale", s.auth(s.tailscaleAPI))
@@ -2320,6 +2341,7 @@ func (s *Server) readServices() []ServiceInfo {
 		}
 		out = append(out, ServiceInfo{Name: name, Label: meta.Label, State: state, PID: pid, UptimeSec: up, Port: meta.Port, WebURL: web})
 	}
+	s.enrichServiceUpdates(out)
 	return out
 }
 
@@ -4144,6 +4166,13 @@ func readFirstFloat(path string) (float64, error) {
 	}
 	return strconv.ParseFloat(f[0], 64)
 }
+func (s *Server) runCmd(name string, args ...string) string {
+	if s != nil && s.commandRunner != nil {
+		return s.commandRunner(name, args...)
+	}
+	return commandText(name, args...)
+}
+
 func commandText(name string, args ...string) string {
 	b, e := exec.Command(name, args...).CombinedOutput()
 	if e != nil {
