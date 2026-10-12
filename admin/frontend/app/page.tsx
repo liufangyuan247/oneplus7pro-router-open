@@ -1482,7 +1482,7 @@ function Overview({
         <article className="panel">
           <div className="panel-title">
             <div>
-              <p className="eyebrow">最近 2 小时</p>
+              <p className="eyebrow">最近 10 分钟</p>
               <h2>CPU 与温度趋势</h2>
             </div>
             <strong>{data.cpu.usage.toFixed(1)}%</strong>
@@ -1737,7 +1737,7 @@ function TimeSeriesChart({
   format,
   zeroBaseline = true,
   domain,
-  windowMs = 2 * 60 * 60 * 1000,
+  windowMs = 10 * 60 * 1000,
 }: {
   history: HistoryPoint[];
   series: {
@@ -1920,7 +1920,7 @@ function Network({
           <article className="panel history-panel">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">最近 2 小时 · 5 秒滑动平均</p>
+            <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均</p>
             <h2>WAN / LAN 吞吐</h2>
           </div>
         </div>
@@ -2410,7 +2410,7 @@ function Clients({
           <article className="panel history-panel client-chart-panel">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">最近 2 小时 · 5 秒滑动平均 · WAN vs LAN 双域对比</p>
+            <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均 · WAN vs LAN 双域对比</p>
             <h2>外网 / 内网实时吞吐走势</h2>
           </div>
           <div className="chart-legend-row">
@@ -7644,6 +7644,7 @@ function System({
           </div>
           <TimeSeriesChart
             history={history}
+            windowMs={2 * 60 * 60 * 1000}
             series={[
               {
                 label: "电池 °C",
@@ -7664,6 +7665,7 @@ function System({
           </div>
           <TimeSeriesChart
             history={history}
+            windowMs={2 * 60 * 60 * 1000}
             series={[
               { label: "瞬时 mA", color: "#ffad66", value: (p) => p.batteryCurrent },
               { label: "BMS 平均 mA", color: "#a897ff", value: (p) => p.batteryAverageCurrent },
@@ -7681,6 +7683,7 @@ function System({
           </div>
           <TimeSeriesChart
             history={history}
+            windowMs={2 * 60 * 60 * 1000}
             series={[
               { label: "电池 V", color: "#52d395", value: (p) => p.batteryVoltage },
               { label: "USB 输入 V", color: "#30c7d8", value: (p) => p.usbVoltage },
@@ -7696,7 +7699,7 @@ function System({
           <article className="panel history-panel system-history">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">最近 2 小时</p>
+            <p className="eyebrow">最近 10 分钟</p>
             <h2>CPU、内存与温度趋势</h2>
           </div>
         </div>
