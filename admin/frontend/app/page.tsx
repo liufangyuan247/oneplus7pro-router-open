@@ -921,8 +921,8 @@ export default function Home() {
       setAuth("ready");
       setHistory((old) =>
         next.history?.length
-          ? next.history.slice(-240)
-          : [...old.slice(-239), point],
+          ? next.history.slice(-1500)
+          : [...old.slice(-1499), point],
       );
       if (!quiet) setNotice("数据已刷新");
     } catch {
@@ -933,7 +933,7 @@ export default function Home() {
       ) {
         setAuth("demo");
         setHistory((old) => [
-          ...old.slice(-239),
+          ...old.slice(-1499),
           {
             at: Date.now(),
             cpu: demo.cpu.usage,
