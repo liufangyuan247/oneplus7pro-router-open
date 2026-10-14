@@ -1,6 +1,6 @@
 # CLIProxyAPI on the OnePlus 7 Pro router
 
-The phone runs CLIProxyAPI `v7.2.140-op7` as the `cpa` runit service. The
+The phone runs a device-specific CLIProxyAPI build as the `cpa` runit service. The
 binary is built for Android/ARM64 from the matching upstream tag. A small local
 replacement for `github.com/wlynxg/anet` avoids its obsolete Go 1.26 Android
 `go:linkname` references while retaining the public interface-enumeration API
@@ -10,6 +10,7 @@ used by Pion.
 
 - Binary: `/data/data/com.termux/files/usr/bin/cli-proxy-api`
 - Persistent configuration: `~/router-data/cpa/config.yaml`
+- Build metadata: `~/router-data/cpa/build-info.json` (custom and upstream base versions)
 - OAuth/account files: `~/router-data/cpa/auth`
 - Client API key: `~/router-data/cpa/api-key`
 - Management key: `~/router-data/cpa/management-key`
@@ -34,6 +35,9 @@ protection loop.
 - `source/third_party/anet-android/`: Android build compatibility module
 - `build/cli-proxy-api-android`: deployed Android/ARM64 binary
 - `install-cpa.sh`: idempotent binary, data and runit installer
+- `deploy-cpa-build.sh`: checksum-verifies and atomically deploys a custom build
+  plus its build manifest, then health-checks the API and a real model request;
+  any failure restores the previous binary and metadata
 - `cpa-start.sh`: bounded readiness gate that starts CPA only after configured
   Mihomo-backed model and Antigravity egress are usable; stage it as
   `~/.stage/cpa-start` alongside the CPA binary before installation

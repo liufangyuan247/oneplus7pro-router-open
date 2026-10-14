@@ -13,7 +13,10 @@ BACKUPS="$DATA/backups/router-admin"
 
 [ -f "$STAGE/router-admin" ] || { echo 'missing staged router-admin binary' >&2; exit 1; }
 [ -f "$STAGE/router-admin-web.tar.gz" ] || { echo 'missing staged web archive' >&2; exit 1; }
-[ -f "$STAGE/scrcpy-server-v3.3.1" ] || { echo 'missing staged scrcpy server' >&2; exit 1; }
+[ -f "$STAGE/scrcpy-server-v3.3.1" ] || [ -f "$REMOTE/scrcpy-server-v3.3.1" ] || {
+  echo 'scrcpy server is neither staged nor already installed' >&2
+  exit 1
+}
 
 STAMP="$(date '+%Y%m%d-%H%M%S')"
 BACKUP="$BACKUPS/$STAMP"
@@ -36,9 +39,11 @@ cp "$STAGE/router-admin" "$PREFIX/bin/router-admin.new"
 chmod 700 "$PREFIX/bin/router-admin.new"
 mv "$PREFIX/bin/router-admin.new" "$PREFIX/bin/router-admin"
 
-cp "$STAGE/scrcpy-server-v3.3.1" "$REMOTE/scrcpy-server-v3.3.1.new"
-chmod 600 "$REMOTE/scrcpy-server-v3.3.1.new"
-mv "$REMOTE/scrcpy-server-v3.3.1.new" "$REMOTE/scrcpy-server-v3.3.1"
+if [ -f "$STAGE/scrcpy-server-v3.3.1" ]; then
+  cp "$STAGE/scrcpy-server-v3.3.1" "$REMOTE/scrcpy-server-v3.3.1.new"
+  chmod 600 "$REMOTE/scrcpy-server-v3.3.1.new"
+  mv "$REMOTE/scrcpy-server-v3.3.1.new" "$REMOTE/scrcpy-server-v3.3.1"
+fi
 
 cat > "$SERVICE/run" <<EOF
 #!/data/data/com.termux/files/usr/bin/sh

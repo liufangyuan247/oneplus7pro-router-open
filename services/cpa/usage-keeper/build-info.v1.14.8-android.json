@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "service": "cpa-usage-keeper",
+  "product": "CPA Usage Keeper",
+  "customVersion": "v1.14.8-android",
+  "upstreamVersion": "v1.14.8",
+  "upstreamCommit": "c0129050def1f3e980ed68492014326d35710917",
+  "upstreamRepository": "Willxup/cpa-usage-keeper",
+  "variant": "op7-android",
+  "buildDate": "",
+  "platform": "android/arm64",
+  "sha256": "4cbd3ba408f10b899c35db96134ac56e4b3a8b429d507269bd40bfa765f2a052",
+  "patches": []
+}

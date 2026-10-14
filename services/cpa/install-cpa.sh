@@ -8,6 +8,7 @@ DATA="$HOME/router-data/cpa"
 SERVICE="$STACK/services/cpa"
 STAGE="$HOME/.stage"
 BIN="$PREFIX/bin/cli-proxy-api"
+BUILD_INFO="$DATA/build-info.json"
 START="$SERVICE/start"
 
 termux_uid="$("$PREFIX/bin/stat" -c '%u' "$HOME")"
@@ -53,6 +54,14 @@ random_hex() {
   echo "missing staged cpa-start wrapper" >&2
   exit 1
 }
+if [ -s "$STAGE/cli-proxy-api.build.json" ]; then
+  expected_sha="$($PREFIX/bin/jq -r 'select(.product == "CLIProxyAPI") | .sha256 // empty' "$STAGE/cli-proxy-api.build.json")"
+  actual_sha="$(sha256sum "$STAGE/cli-proxy-api" | awk '{print $1}')"
+  [ -n "$expected_sha" ] && [ "$actual_sha" = "$expected_sha" ] || {
+    echo "CPA build manifest does not match staged binary" >&2
+    exit 1
+  }
+fi
 
 mkdir -p "$DATA/auth" "$SERVICE/log/main"
 chmod 700 "$DATA" "$DATA/auth"
@@ -61,6 +70,12 @@ cp "$STAGE/cli-proxy-api" "$BIN.new"
 chmod 700 "$BIN.new"
 fix_termux_owner "$BIN.new"
 mv "$BIN.new" "$BIN"
+if [ -s "$STAGE/cli-proxy-api.build.json" ]; then
+  cp "$STAGE/cli-proxy-api.build.json" "$BUILD_INFO.new"
+  chmod 600 "$BUILD_INFO.new"
+  fix_termux_owner "$BUILD_INFO.new"
+  mv "$BUILD_INFO.new" "$BUILD_INFO"
+fi
 cp "$STAGE/cpa-start" "$START.new"
 chmod 700 "$START.new"
 fix_termux_owner "$START.new"
@@ -161,7 +176,7 @@ assert_termux_executable "$SERVICE/run"
 assert_termux_executable "$SERVICE/finish"
 assert_termux_executable "$SERVICE/log/run"
 rm -f "$SERVICE/down"
-rm -f "$STAGE/cli-proxy-api" "$STAGE/cpa-start"
+rm -f "$STAGE/cli-proxy-api" "$STAGE/cli-proxy-api.build.json" "$STAGE/cpa-start"
 
 "$PREFIX/bin/sv" restart "$SERVICE" >/dev/null 2>&1 || true
 echo CPA_INSTALLED

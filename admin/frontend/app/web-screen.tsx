@@ -74,11 +74,7 @@ async function writeBrowserClipboard(text: string) {
   if (!copied) throw new Error("浏览器拒绝写入剪切板");
 }
 
-export function BrowserScreenControl({
-  standalone = true,
-}: {
-  standalone?: boolean;
-} = {}) {
+export function BrowserScreenControl() {
   const panelRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);

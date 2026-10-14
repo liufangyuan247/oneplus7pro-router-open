@@ -3,14 +3,17 @@ set -eu
 
 PREFIX=/data/data/com.termux/files/usr
 HOME_DIR=/data/data/com.termux/files/home
-BUILD_DIR="$HOME_DIR/.build/cpa-usage-keeper-v1.14.8"
-EXPECTED_BUILD_DIR=/data/data/com.termux/files/home/.build/cpa-usage-keeper-v1.14.8
+BUILD_DIR="$HOME_DIR/.build/cpa-usage-keeper-v1.15.11"
+EXPECTED_BUILD_DIR=/data/data/com.termux/files/home/.build/cpa-usage-keeper-v1.15.11
 INSTALLED_BIN="$PREFIX/bin/cpa-usage-keeper"
-EXPECTED_SHA256=4cbd3ba408f10b899c35db96134ac56e4b3a8b429d507269bd40bfa765f2a052
+BUILD_INFO="$HOME_DIR/router-data/cpa-usage-keeper/build-info.json"
 
 export HOME="$HOME_DIR" PREFIX PATH="$PREFIX/bin:/system/bin"
 
 test -x "$INSTALLED_BIN"
+test -s "$BUILD_INFO"
+EXPECTED_SHA256=$(jq -r '.sha256 // empty' "$BUILD_INFO")
+test -n "$EXPECTED_SHA256"
 ACTUAL_SHA256=$(sha256sum "$INSTALLED_BIN" | awk '{print $1}')
 test "$ACTUAL_SHA256" = "$EXPECTED_SHA256"
 curl -fsS --max-time 3 http://127.0.0.1:8320/healthz >/dev/null
@@ -31,8 +34,9 @@ if test -d "$BUILD_DIR"; then
   find "$BUILD_DIR" -depth -delete
 fi
 rm -f \
-  "$HOME_DIR/.stage/cpa-usage-keeper-v1.14.8-android-source.tar.gz" \
-  "$HOME_DIR/.stage/cpa-usage-keeper-v1.14.8-android" \
+  "$HOME_DIR/.stage/cpa-usage-keeper-v1.15.11-android-source.tar.gz" \
+  "$HOME_DIR/.stage/cpa-usage-keeper-v1.15.11-android" \
+  "$HOME_DIR/.stage/cpa-usage-keeper-v1.15.11-android.build.json" \
   "$HOME_DIR/.stage/build-on-android.sh" \
   "$HOME_DIR/.stage/install-cpa-usage-keeper.sh"
 

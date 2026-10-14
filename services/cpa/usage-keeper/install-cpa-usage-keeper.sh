@@ -9,10 +9,11 @@ DATA_ROOT="$HOME_DIR/router-data/cpa-usage-keeper"
 WORK_DIR="$DATA_ROOT/data"
 ENV_FILE="$DATA_ROOT/.env"
 BIN="$PREFIX/bin/cpa-usage-keeper"
-STAGED_BIN="$HOME_DIR/.stage/cpa-usage-keeper-v1.14.8-android"
+STAGED_BIN="$HOME_DIR/.stage/cpa-usage-keeper-v1.15.11-android"
+STAGED_INFO="$STAGED_BIN.build.json"
 MANAGEMENT_KEY_FILE="$HOME_DIR/router-data/cpa/management-key"
 ADMIN_PASSWORD_FILE="$HOME_DIR/router-data/admin/password"
-EXPECTED_SHA256=4cbd3ba408f10b899c35db96134ac56e4b3a8b429d507269bd40bfa765f2a052
+BUILD_INFO="$DATA_ROOT/build-info.json"
 STAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP_DIR="$DATA_ROOT/install-backups/$STAMP"
 SERVICE_GUARD="$HOME_DIR/router-stack/bin/termux-service-guard"
@@ -21,6 +22,7 @@ HAD_BIN=0
 HAD_ENV=0
 HAD_RUN=0
 HAD_LOG_RUN=0
+HAD_BUILD_INFO=0
 
 export HOME="$HOME_DIR" PREFIX PATH="$PREFIX/bin:/system/bin"
 umask 077
@@ -35,22 +37,32 @@ dotenv_escape() {
 }
 
 test -s "$STAGED_BIN" || fail "staged binary is missing"
+test -s "$STAGED_INFO" || fail "staged build manifest is missing"
 test -s "$MANAGEMENT_KEY_FILE" || fail "CPA management key is missing"
 test -s "$ADMIN_PASSWORD_FILE" || fail "router admin password is missing"
 
+EXPECTED_SHA256=$(jq -r 'select(.service == "cpa-usage-keeper" and .product == "CPA Usage Keeper") | .sha256 // empty' "$STAGED_INFO")
+EXPECTED_VERSION=$(jq -r '.customVersion // empty' "$STAGED_INFO")
+UPSTREAM_VERSION=$(jq -r '.upstreamVersion // empty' "$STAGED_INFO")
+UPSTREAM_REPOSITORY=$(jq -r '.upstreamRepository // empty' "$STAGED_INFO")
+test -n "$EXPECTED_SHA256" || fail "invalid build manifest"
+test -n "$EXPECTED_VERSION" || fail "build manifest has no custom version"
+test -n "$UPSTREAM_VERSION" || fail "build manifest has no upstream version"
+test "$UPSTREAM_REPOSITORY" = "Willxup/cpa-usage-keeper" || fail "unexpected upstream repository"
 ACTUAL_SHA256=$(sha256sum "$STAGED_BIN" | awk '{print $1}')
 test "$ACTUAL_SHA256" = "$EXPECTED_SHA256" || fail "staged binary checksum mismatch"
 chmod 0755 "$STAGED_BIN"
 
 VERSION_OUTPUT=$(env -u LD_PRELOAD -u TERMUX_EXEC__PROC_SELF_EXE /system/bin/sh -c \
   "'$STAGED_BIN' --version")
-test "$VERSION_OUTPUT" = "v1.14.8-android" || fail "unexpected binary version"
+test "$VERSION_OUTPUT" = "$EXPECTED_VERSION" || fail "unexpected binary version"
 
 mkdir -p "$BACKUP_DIR" "$WORK_DIR" "$SERVICE_DIR/log/main"
 if test -f "$BIN"; then HAD_BIN=1; cp -p "$BIN" "$BACKUP_DIR/cpa-usage-keeper"; fi
 if test -f "$ENV_FILE"; then HAD_ENV=1; cp -p "$ENV_FILE" "$BACKUP_DIR/app.env"; fi
 if test -f "$SERVICE_DIR/run"; then HAD_RUN=1; cp -p "$SERVICE_DIR/run" "$BACKUP_DIR/service-run"; fi
 if test -f "$SERVICE_DIR/log/run"; then HAD_LOG_RUN=1; cp -p "$SERVICE_DIR/log/run" "$BACKUP_DIR/log-run"; fi
+if test -f "$BUILD_INFO"; then HAD_BUILD_INFO=1; cp -p "$BUILD_INFO" "$BACKUP_DIR/build-info.json"; fi
 
 MANAGEMENT_KEY=$(tr -d '\r\n' < "$MANAGEMENT_KEY_FILE")
 LOGIN_PASSWORD=$(tr -d '\r\n' < "$ADMIN_PASSWORD_FILE")
@@ -112,15 +124,18 @@ BIN_NEW="$BIN.new.$STAMP"
 cp "$STAGED_BIN" "$BIN_NEW"
 chmod 0755 "$BIN_NEW"
 mv -f "$BIN_NEW" "$BIN"
+cp "$STAGED_INFO" "$BUILD_INFO.new.$STAMP"
+chmod 0600 "$BUILD_INFO.new.$STAMP"
+mv -f "$BUILD_INFO.new.$STAMP" "$BUILD_INFO"
 mv -f "$ENV_NEW" "$ENV_FILE"
 mv -f "$RUN_NEW" "$SERVICE_DIR/run"
 mv -f "$LOG_RUN_NEW" "$SERVICE_DIR/log/run"
-printf '%s\n' 'v1.14.8-android' > "$DATA_ROOT/installed-version"
+printf '%s\n' "$EXPECTED_VERSION" > "$DATA_ROOT/installed-version"
 printf '%s  %s\n' "$EXPECTED_SHA256" "$BIN" > "$DATA_ROOT/installed-sha256"
 
 "$SERVICE_GUARD" repair
 
-sv up "$SERVICE_DIR" >/dev/null 2>&1 || true
+sv restart "$SERVICE_DIR" >/dev/null 2>&1 || true
 COUNT=0
 while test "$COUNT" -lt 15; do
   if curl -fsS --max-time 2 http://127.0.0.1:8320/healthz >/dev/null 2>&1; then
@@ -139,6 +154,11 @@ if test "$HAD_BIN" -eq 1 && test "$HAD_ENV" -eq 1 && test "$HAD_RUN" -eq 1; then
   cp -p "$BACKUP_DIR/service-run" "$SERVICE_DIR/run"
   if test "$HAD_LOG_RUN" -eq 1; then
     cp -p "$BACKUP_DIR/log-run" "$SERVICE_DIR/log/run"
+  fi
+  if test "$HAD_BUILD_INFO" -eq 1; then
+    cp -p "$BACKUP_DIR/build-info.json" "$BUILD_INFO"
+  else
+    rm -f "$BUILD_INFO"
   fi
   sv up "$SERVICE_DIR" >/dev/null 2>&1 || true
   echo "ERROR: health check failed; previous installation was restored" >&2

@@ -27,6 +27,7 @@ func TestVersionComparison(t *testing.T) {
 		{"5.2.4", "5.2.3", 1, false},
 		{"v1.102.3", "v1.102.5", -1, true},
 		{"v7.2.140-op7", "v8.0.4", -1, true},
+		{"v8.0.28-op7.1", "v8.0.29", -1, true},
 		{"", "v1.0.0", -1, false},
 		{"v1.0.0", "", 1, false},
 	}
@@ -40,6 +41,93 @@ func TestVersionComparison(t *testing.T) {
 		if newer != c.newer {
 			t.Errorf("isNewerVersion(%q, %q) = %v, expected %v", c.v1, c.v2, newer, c.newer)
 		}
+	}
+}
+
+func TestDetectCPACustomBuildInfo(t *testing.T) {
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "router-data")
+	manifestDir := filepath.Join(dataDir, "cpa")
+	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{
+  "schemaVersion": 1,
+  "product": "CLIProxyAPI",
+  "customVersion": "v8.0.28-op7.1",
+  "upstreamVersion": "v8.0.28",
+  "upstreamCommit": "0d18d3b365be000eeaee7de4615f9da596b2059d",
+  "variant": "op7.1"
+}`
+	if err := os.WriteFile(filepath.Join(manifestDir, "build-info.json"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		prefix: filepath.Join(tempDir, "usr"),
+		data:   dataDir,
+		commandRunner: func(name string, args ...string) string {
+			return "CLIProxyAPI Version: v7.2.140-op7, Commit: old"
+		},
+	}
+	current, base, custom, info := s.detectVersionInfo("cpa")
+	if current != "v8.0.28-op7.1" || base != "v8.0.28" || !custom {
+		t.Fatalf("detectVersionInfo(cpa) = (%q, %q, %v)", current, base, custom)
+	}
+	if info == nil || info.Product != "CLIProxyAPI" {
+		t.Fatalf("expected parsed generic build metadata, got %#v", info)
+	}
+	if isNewerVersion(base, "v8.0.29") != true {
+		t.Fatal("expected an upstream version newer than the recorded build base")
+	}
+}
+
+func TestDetectGenericServiceBuildInfo(t *testing.T) {
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "router-data")
+	manifestDir := filepath.Join(dataDir, "cpa-usage-keeper")
+	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{
+  "schemaVersion": 1,
+  "service": "cpa-usage-keeper",
+  "product": "CPA Usage Keeper",
+  "customVersion": "v1.14.8-android",
+  "upstreamVersion": "v1.14.8",
+  "upstreamRepository": "Willxup/cpa-usage-keeper"
+}`
+	if err := os.WriteFile(filepath.Join(manifestDir, "build-info.json"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		prefix: filepath.Join(tempDir, "usr"),
+		data:   dataDir,
+		commandRunner: func(name string, args ...string) string {
+			return "v1.14.8-android"
+		},
+	}
+	current, base, custom, info := s.detectVersionInfo("cpa-usage-keeper")
+	if current != "v1.14.8-android" || base != "v1.14.8" || !custom {
+		t.Fatalf("detectVersionInfo(cpa-usage-keeper) = (%q, %q, %v)", current, base, custom)
+	}
+	if info == nil || info.UpstreamRepository != "Willxup/cpa-usage-keeper" {
+		t.Fatalf("unexpected generic build metadata: %#v", info)
+	}
+}
+
+func TestResolveUpdateTrackingForCustomBuild(t *testing.T) {
+	info := &serviceBuildInfo{UpstreamRepository: "owner/upstream"}
+	repo, tracked, detectionOnly := resolveUpdateTracking(serviceUpdaterSpec{}, false, true, info)
+	if repo != "owner/upstream" || !tracked || !detectionOnly {
+		t.Fatalf("generic custom build tracking = (%q, %v, %v)", repo, tracked, detectionOnly)
+	}
+
+	spec := serviceUpdaterSpec{GitHubRepo: "owner/default", DetectionOnly: false}
+	repo, tracked, detectionOnly = resolveUpdateTracking(spec, true, true, info)
+	if repo != "owner/upstream" || !tracked || !detectionOnly {
+		t.Fatalf("custom build should override generic updater = (%q, %v, %v)", repo, tracked, detectionOnly)
 	}
 }
 

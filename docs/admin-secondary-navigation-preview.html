@@ -228,7 +228,7 @@
 
     <main class="op7-main">
       <header class="op7-heading">
-        <div><small id="op7-breadcrumb">代理 / 流量审计</small><h1 id="op7-title">代理 · 流量审计</h1></div>
+        <div><small id="op7-breadcrumb">代理 / 运行概览</small><h1 id="op7-title">代理 · 运行概览</h1></div>
         <button class="op7-refresh" type="button">刷新</button>
       </header>
 
@@ -253,18 +253,15 @@
         network: { label: "网络", tabs: ["运行状态", "接口配置"] },
         clients: { label: "客户端", tabs: ["流量概览", "设备管理"] },
         services: { label: "服务", tabs: ["全部服务", "Tailscale", "Aria2"] },
-        mihomo: { label: "代理", tabs: ["运行概览", "策略与节点", "体验测速", "流量审计", "设置"] },
+        mihomo: { label: "代理", tabs: ["运行概览", "策略与节点", "体验测速", "设置"] },
         system: { label: "系统", tabs: ["供电与电池", "性能与温度"] }
       };
-      const state = { view: "mihomo", activeByView: { mihomo: "流量审计" }, compactContext: true };
+      const state = { view: "mihomo", activeByView: { mihomo: "运行概览" }, compactContext: true };
       const tabs = root.querySelector(".op7-tabs");
       const panel = root.querySelector("#op7-panel");
       const context = root.querySelector(".op7-context");
 
       function panelCopy(view, tab) {
-        if (view === "mihomo" && tab === "流量审计") {
-          return `<h2>通用流量审计</h2><p>这里只保留审计摘要、倍率设置，以及终端 / 订阅 / 节点 / 目标等局部数据视图。</p><div class="op7-metrics"><div class="op7-metric"><small>观察流量</small><strong>18.4 GB</strong><span>全部连接</span></div><div class="op7-metric"><small>代理原始流量</small><strong>12.7 GB</strong><span>69%</span></div><div class="op7-metric"><small>预计计费</small><strong>16.1 GB</strong><span>含倍率</span></div><div class="op7-metric"><small>采集状态</small><strong>正常</strong><span>刚刚更新</span></div></div><div class="op7-placeholder" aria-label="流量审计明细表占位"></div>`;
-        }
         return `<h2>${tab}</h2><p>当前只挂载“${tab}”所属内容，兄弟子页不会出现在本页下方。</p><div class="op7-placeholder" aria-label="${tab}内容占位"></div><p class="op7-note">顶部状态条保留必要上下文，跨页动作可以直接跳到负责处理的子页。</p>`;
       }
 

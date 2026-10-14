@@ -64,7 +64,6 @@ export const secondaryNavItems: Partial<
     { id: "overview", label: "运行概览" },
     { id: "policies", label: "策略与节点" },
     { id: "speedtest", label: "体验测速" },
-    { id: "traffic", label: "流量审计" },
     { id: "settings", label: "设置" },
   ],
   system: [

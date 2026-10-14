@@ -18,6 +18,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func isBuiltinGroup(name string) bool {
+	value := strings.ToUpper(strings.TrimSpace(name))
+	return value == "DIRECT" || value == "REJECT" || value == "GLOBAL" || value == "COMPATIBLE" || value == "PASS"
+}
+
 const maxSubscriptionCacheBytes = 16 << 20
 
 var safeSubscriptionIDRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -419,9 +424,6 @@ func (s *Server) mihomoSubscriptionsV2(w http.ResponseWriter, r *http.Request) {
 		if err := s.saveSubscriptionStore(store); err != nil {
 			jsonOut(w, http.StatusInternalServerError, map[string]string{"error": "保存订阅状态失败"})
 			return
-		}
-		if body.Action == "activate" || body.Action == "update" {
-			go func(subscriptionID string) { _ = s.syncSubscriptionPricing(subscriptionID) }(item.ID)
 		}
 		jsonOut(w, http.StatusOK, s.publicSubscriptions(store))
 	case http.MethodDelete:

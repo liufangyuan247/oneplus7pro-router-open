@@ -28,12 +28,15 @@ type ServiceUpdateInfo struct {
 	Name           string `json:"name"`
 	Label          string `json:"label"`
 	CurrentVersion string `json:"currentVersion"`
+	BaseVersion    string `json:"baseVersion,omitempty"`
+	CustomBuild    bool   `json:"customBuild,omitempty"`
 	LatestVersion  string `json:"latestVersion"`
 	Upgradable     bool   `json:"upgradable"`
 	HasBackup      bool   `json:"hasBackup"`
 	BackupVersion  string `json:"backupVersion,omitempty"`
 	BackupTime     string `json:"backupTime,omitempty"`
 	CanUpgrade     bool   `json:"canUpgrade"`
+	UpgradeHint    string `json:"upgradeHint,omitempty"`
 	Upgrading      bool   `json:"upgrading"`
 	LastChecked    string `json:"lastChecked"`
 	Error          string `json:"error,omitempty"`
@@ -47,15 +50,30 @@ type serviceBackupMeta struct {
 }
 
 type serviceUpdaterSpec struct {
-	Name           string
-	Binary         string
-	GitHubRepo     string
-	IsAptPackage   bool
-	AptPackage     string
-	Port           int
-	ExtractBinary  string
-	PreflightTest  func(s *Server, candidatePath string) error
-	HealthProbe    func(s *Server) bool
+	Name          string
+	Binary        string
+	GitHubRepo    string
+	IsAptPackage  bool
+	AptPackage    string
+	Port          int
+	ExtractBinary string
+	PreflightTest func(s *Server, candidatePath string) error
+	HealthProbe   func(s *Server) bool
+	DetectionOnly bool
+}
+
+type serviceBuildInfo struct {
+	SchemaVersion      int      `json:"schemaVersion"`
+	Service            string   `json:"service,omitempty"`
+	Product            string   `json:"product"`
+	CustomVersion      string   `json:"customVersion"`
+	UpstreamVersion    string   `json:"upstreamVersion"`
+	UpstreamCommit     string   `json:"upstreamCommit"`
+	UpstreamRepository string   `json:"upstreamRepository,omitempty"`
+	Variant            string   `json:"variant"`
+	BuildDate          string   `json:"buildDate"`
+	SHA256             string   `json:"sha256"`
+	Patches            []string `json:"patches,omitempty"`
 }
 
 var (
@@ -64,8 +82,21 @@ var (
 	serviceUpgrading    = make(map[string]bool)
 	serviceUpdatesAt    time.Time
 
-	// Supported upgradable services with safe atomic rollback pipelines
+	// Services with upstream release tracking. DetectionOnly entries deliberately
+	// do not use the generic binary updater because they require a custom build.
 	supportedServiceUpdaters = map[string]serviceUpdaterSpec{
+		"cpa": {
+			Name:          "cpa",
+			Binary:        "cli-proxy-api",
+			GitHubRepo:    "router-for-me/CLIProxyAPI",
+			DetectionOnly: true,
+		},
+		"cpa-usage-keeper": {
+			Name:          "cpa-usage-keeper",
+			Binary:        "cpa-usage-keeper",
+			GitHubRepo:    "Willxup/cpa-usage-keeper",
+			DetectionOnly: true,
+		},
 		"openlist": {
 			Name:          "openlist",
 			Binary:        "openlist",
@@ -192,6 +223,54 @@ func isNewerVersion(current, latest string) bool {
 	return compareVersions(current, latest) < 0
 }
 
+func versionBase(version string) string {
+	re := regexp.MustCompile(`(?i)^v?[0-9]+(?:\.[0-9]+){1,3}`)
+	return re.FindString(strings.TrimSpace(version))
+}
+
+func (s *Server) readServiceBuildInfo(name string) *serviceBuildInfo {
+	manifestPath := filepath.Join(s.data, name, "build-info.json")
+	if raw, err := os.ReadFile(manifestPath); err == nil {
+		var info serviceBuildInfo
+		if json.Unmarshal(raw, &info) == nil && strings.TrimSpace(info.Product) != "" && strings.TrimSpace(info.CustomVersion) != "" {
+			manifestService := strings.TrimSpace(info.Service)
+			if manifestService == "" || strings.EqualFold(manifestService, name) {
+				return &info
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Server) detectVersionInfo(name string) (current, base string, custom bool, buildInfo *serviceBuildInfo) {
+	current = s.detectCurrentVersion(name)
+	if info := s.readServiceBuildInfo(name); info != nil {
+		current = strings.TrimSpace(info.CustomVersion)
+		base = strings.TrimSpace(info.UpstreamVersion)
+		if base == "" {
+			base = versionBase(current)
+		}
+		return current, base, true, info
+	}
+
+	base = versionBase(current)
+	custom = base != "" && !strings.EqualFold(strings.TrimPrefix(current, "v"), strings.TrimPrefix(base, "v"))
+	if base == "" {
+		base = current
+	}
+	return current, base, custom, nil
+}
+
+func resolveUpdateTracking(spec serviceUpdaterSpec, supported, custom bool, buildInfo *serviceBuildInfo) (upstreamRepo string, tracked, detectionOnly bool) {
+	upstreamRepo = spec.GitHubRepo
+	if buildInfo != nil && strings.TrimSpace(buildInfo.UpstreamRepository) != "" {
+		upstreamRepo = strings.TrimSpace(buildInfo.UpstreamRepository)
+	}
+	tracked = supported || upstreamRepo != ""
+	detectionOnly = spec.DetectionOnly || custom
+	return upstreamRepo, tracked, detectionOnly
+}
+
 func (s *Server) detectCurrentVersion(name string) string {
 	switch name {
 	case "openlist":
@@ -213,13 +292,15 @@ func (s *Server) detectCurrentVersion(name string) string {
 			return m[1]
 		}
 	case "cpa":
-		out := commandText(filepath.Join(s.prefix, "bin", "cli-proxy-api"))
+		// CPA prints build information before flag validation; --version makes it
+		// exit immediately instead of accidentally starting a second server.
+		out := s.runCmd(filepath.Join(s.prefix, "bin", "cli-proxy-api"), "--version")
 		re := regexp.MustCompile(`CLIProxyAPI Version:\s*([^\s,]+)`)
 		if m := re.FindStringSubmatch(out); len(m) >= 2 {
 			return m[1]
 		}
 	case "cpa-usage-keeper":
-		out := commandText(filepath.Join(s.prefix, "bin", "cpa-usage-keeper"), "--version")
+		out := s.runCmd(filepath.Join(s.prefix, "bin", "cpa-usage-keeper"), "--version")
 		return strings.TrimSpace(out)
 	case "aria2":
 		out := commandText(filepath.Join(s.prefix, "bin", "aria2c"), "-v")
@@ -353,7 +434,7 @@ func (s *Server) refreshServiceUpdates(forceRemote bool) {
 	needRemote := forceRemote || serviceUpdatesAt.IsZero() || now.Sub(serviceUpdatesAt) > 30*time.Minute
 
 	for name, meta := range allowedServices {
-		cur := s.detectCurrentVersion(name)
+		cur, base, custom, buildInfo := s.detectVersionInfo(name)
 		hasBak, bakVer, bakTime := s.getBackupInfo(name)
 
 		existing, ok := serviceUpdatesCache[name]
@@ -365,31 +446,39 @@ func (s *Server) refreshServiceUpdates(forceRemote bool) {
 			serviceUpdatesCache[name] = existing
 		}
 		existing.CurrentVersion = cur
+		existing.BaseVersion = base
+		existing.CustomBuild = custom
 		existing.HasBackup = hasBak
 		existing.BackupVersion = bakVer
 		existing.BackupTime = bakTime
 
 		spec, supported := supportedServiceUpdaters[name]
-		existing.CanUpgrade = supported
+		upstreamRepo, tracked, detectionOnly := resolveUpdateTracking(spec, supported, custom, buildInfo)
+		existing.CanUpgrade = tracked && !detectionOnly
+		if tracked && detectionOnly {
+			existing.UpgradeHint = "检测到上游新版本后，需要重新构建并部署此设备的定制版本"
+		} else {
+			existing.UpgradeHint = ""
+		}
 
-		if supported && needRemote {
+		if tracked && needRemote {
 			var latest string
 			var err error
-			if spec.IsAptPackage {
+			if supported && spec.IsAptPackage {
 				latest, err = s.fetchAptCandidate(spec.AptPackage)
-			} else if spec.GitHubRepo != "" {
-				latest, err = fetchGitHubLatestRelease(spec.GitHubRepo)
+			} else if upstreamRepo != "" {
+				latest, err = fetchGitHubLatestRelease(upstreamRepo)
 			}
 			if err == nil && latest != "" {
 				existing.LatestVersion = latest
-				existing.Upgradable = isNewerVersion(cur, latest)
+				existing.Upgradable = isNewerVersion(base, latest)
 				existing.LastChecked = now.Format(time.RFC3339)
 				existing.Error = ""
 			} else if err != nil {
 				existing.Error = err.Error()
 			}
-		} else if supported && existing.LatestVersion != "" {
-			existing.Upgradable = isNewerVersion(cur, existing.LatestVersion)
+		} else if tracked && existing.LatestVersion != "" {
+			existing.Upgradable = isNewerVersion(base, existing.LatestVersion)
 		}
 	}
 	if needRemote {
@@ -419,10 +508,13 @@ func (s *Server) enrichServiceUpdates(services []ServiceInfo) {
 		name := services[i].Name
 		if info, ok := serviceUpdatesCache[name]; ok {
 			services[i].CurrentVersion = info.CurrentVersion
+			services[i].BaseVersion = info.BaseVersion
+			services[i].CustomBuild = info.CustomBuild
 			services[i].LatestVersion = info.LatestVersion
 			services[i].Upgradable = info.Upgradable
 			services[i].HasBackup = info.HasBackup
 			services[i].CanUpgrade = info.CanUpgrade
+			services[i].UpgradeHint = info.UpgradeHint
 		}
 	}
 }
@@ -685,6 +777,10 @@ func (s *Server) servicesUpgradeAPI(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("服务 %s 不支持一键升级", serviceName)})
 		return
 	}
+	if spec.DetectionOnly || s.readServiceBuildInfo(serviceName) != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "此服务使用设备定制构建，请在项目中重新构建并部署，不能直接安装上游二进制"})
+		return
+	}
 
 	serviceUpdatesMu.Lock()
 	if serviceUpgrading[serviceName] {
@@ -764,11 +860,11 @@ func (s *Server) servicesUpgradeAPI(w http.ResponseWriter, r *http.Request) {
 
 		s.refreshServiceUpdates(false)
 		jsonOut(w, http.StatusOK, map[string]any{
-			"ok":         true,
-			"service":    serviceName,
-			"version":    targetVer,
-			"backupDir":  backupDir,
-			"message":    fmt.Sprintf("%s 成功升级至 %s", allowedServices[serviceName].Label, targetVer),
+			"ok":        true,
+			"service":   serviceName,
+			"version":   targetVer,
+			"backupDir": backupDir,
+			"message":   fmt.Sprintf("%s 成功升级至 %s", allowedServices[serviceName].Label, targetVer),
 		})
 		return
 	}

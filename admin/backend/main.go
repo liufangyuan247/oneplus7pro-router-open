@@ -44,9 +44,8 @@ const (
 	mihomoDashboardPrefix  = "/mihomo-dashboard/"
 	mihomoAPIPrefix        = "/mihomo-api/"
 	mihomoDefaultMixedPort = 17890
-	mihomoCodexPort        = 17891
-	mihomoCodexGroup       = "Codex-日本"
-	mihomoCodexAutoGroup   = "Codex-日本自动"
+	mihomoRequestTimeout   = 800 * time.Millisecond
+	mihomoMaxResponseBytes = 16 * 1024 * 1024
 	routerNetworkManager   = "/data/adb/router-network/router-network"
 	clientPolicyManager    = routerNetworkManager
 	tailscaleControl       = "/data/adb/tailscale/bin/tailscale-control"
@@ -70,6 +69,30 @@ type ServiceMeta struct {
 	Port  int
 }
 
+type mihomoRawConnectionsResponse struct {
+	DownloadTotal uint64                `json:"downloadTotal"`
+	UploadTotal   uint64                `json:"uploadTotal"`
+	Memory        uint64                `json:"memory"`
+	Connections   []mihomoRawConnection `json:"connections"`
+}
+
+type mihomoRawConnection struct {
+	ID       string   `json:"id"`
+	Upload   uint64   `json:"upload"`
+	Download uint64   `json:"download"`
+	Start    string   `json:"start"`
+	Chains   []string `json:"chains"`
+	Rule     string   `json:"rule"`
+	Metadata struct {
+		Host          string `json:"host"`
+		DestinationIP string `json:"destinationIP"`
+		SourceIP      string `json:"sourceIP"`
+		SourcePort    string `json:"sourcePort"`
+		Network       string `json:"network"`
+		Type          string `json:"type"`
+	} `json:"metadata"`
+}
+
 type authSession struct {
 	Expires    time.Time `json:"expires"`
 	Persistent bool      `json:"persistent,omitempty"`
@@ -81,7 +104,6 @@ type Server struct {
 	started                            time.Time
 	mu                                 sync.Mutex
 	subscriptionMu                     sync.Mutex
-	pricingSyncMu                      sync.Mutex
 	clientPolicyMu                     sync.Mutex
 	sessions                           map[string]authSession
 	lastCPU                            cpuCounters
@@ -112,8 +134,6 @@ type Server struct {
 	speedTestHTTP                      func(ctx context.Context, proxyURL, targetURL string, sampleBytes int64) (int64, time.Duration, time.Duration, int, error)
 	speedTestSampleWAN                 func(ctx context.Context) (float64, error)
 	speedTestCheckListener             func() bool
-	trafficAccounting                  *TrafficAccountingManager
-	accountingCancel                   context.CancelFunc
 	snapshotMu                         sync.Mutex
 	snapshotCache                      Snapshot
 	snapshotAt                         time.Time
@@ -301,10 +321,13 @@ type ServiceInfo struct {
 	PID, UptimeSec, Port int
 	WebURL               string `json:"webUrl"`
 	CurrentVersion       string `json:"currentVersion,omitempty"`
+	BaseVersion          string `json:"baseVersion,omitempty"`
+	CustomBuild          bool   `json:"customBuild,omitempty"`
 	LatestVersion        string `json:"latestVersion,omitempty"`
 	Upgradable           bool   `json:"upgradable,omitempty"`
 	HasBackup            bool   `json:"hasBackup,omitempty"`
 	CanUpgrade           bool   `json:"canUpgrade,omitempty"`
+	UpgradeHint          string `json:"upgradeHint,omitempty"`
 }
 type Aria2Info struct {
 	Online        bool        `json:"online"`
@@ -356,34 +379,13 @@ type SubscriptionInfo struct {
 }
 
 type SubscriptionRecord struct {
-	ID            string                     `json:"id"`
-	Name          string                     `json:"name"`
-	URL           string                     `json:"url"`
-	CachedURL     string                     `json:"cachedUrl,omitempty"`
-	NodeCount     int                        `json:"nodeCount,omitempty"`
-	PricingSource *SubscriptionPricingSource `json:"pricingSource,omitempty"`
-	CreatedAt     time.Time                  `json:"createdAt"`
-	UpdatedAt     time.Time                  `json:"updatedAt"`
-}
-
-type SubscriptionPricingSource struct {
-	Kind             string `json:"kind"`
-	Endpoint         string `json:"endpoint"`
-	Authorization    string `json:"authorization,omitempty"`
-	Enabled          bool   `json:"enabled"`
-	LastSyncedAt     string `json:"lastSyncedAt,omitempty"`
-	LastError        string `json:"lastError,omitempty"`
-	MatchedNodeCount int    `json:"matchedNodeCount,omitempty"`
-}
-
-type PublicSubscriptionPricingSource struct {
-	Kind                 string `json:"kind"`
-	Endpoint             string `json:"endpoint"`
-	Enabled              bool   `json:"enabled"`
-	CredentialConfigured bool   `json:"credentialConfigured"`
-	LastSyncedAt         string `json:"lastSyncedAt,omitempty"`
-	LastError            string `json:"lastError,omitempty"`
-	MatchedNodeCount     int    `json:"matchedNodeCount,omitempty"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	URL       string    `json:"url"`
+	CachedURL string    `json:"cachedUrl,omitempty"`
+	NodeCount int       `json:"nodeCount,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type SubscriptionStore struct {
@@ -393,16 +395,15 @@ type SubscriptionStore struct {
 }
 
 type PublicSubscription struct {
-	ID            string                           `json:"id"`
-	Name          string                           `json:"name"`
-	Source        string                           `json:"source"`
-	PricingSource *PublicSubscriptionPricingSource `json:"pricingSource,omitempty"`
-	Cached        bool                             `json:"cached"`
-	NodeCount     int                              `json:"nodeCount"`
-	NeedsUpdate   bool                             `json:"needsUpdate"`
-	Active        bool                             `json:"active"`
-	CreatedAt     string                           `json:"createdAt"`
-	UpdatedAt     string                           `json:"updatedAt"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Source      string `json:"source"`
+	Cached      bool   `json:"cached"`
+	NodeCount   int    `json:"nodeCount"`
+	NeedsUpdate bool   `json:"needsUpdate"`
+	Active      bool   `json:"active"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
 }
 
 type MihomoSettings struct {
@@ -494,8 +495,6 @@ func main() {
 	s.startNetworkSampler()
 	s.startMetricSampler()
 	s.initSpeedTest()
-	s.initTrafficAccounting()
-	s.startSubscriptionPricingSync()
 	s.initServiceUpdates()
 
 	mux := http.NewServeMux()
@@ -527,16 +526,14 @@ func main() {
 	mux.HandleFunc("/api/mihomo/subscription", s.auth(s.mihomoSubscription))
 	mux.HandleFunc("/api/mihomo/subscriptions", s.auth(s.mihomoSubscriptionsV2))
 	mux.HandleFunc("/api/mihomo/subscriptions/nodes", s.auth(s.mihomoSubscriptionNodes))
-	mux.HandleFunc("/api/mihomo/subscriptions/pricing", s.auth(s.mihomoSubscriptionPricing))
-	mux.HandleFunc("GET /api/mihomo/traffic-accounting", s.auth(s.mihomoTrafficAccounting))
-	mux.HandleFunc("POST /api/mihomo/traffic-accounting/reset", s.auth(s.mihomoTrafficAccountingReset))
-	mux.HandleFunc("GET /api/mihomo/traffic-accounting/settings", s.auth(s.mihomoTrafficAccountingSettings))
-	mux.HandleFunc("PUT /api/mihomo/traffic-accounting/settings", s.auth(s.mihomoTrafficAccountingSettings))
 	mux.HandleFunc(mihomoDashboardPrefix, s.auth(s.mihomoDashboard))
 	mux.HandleFunc(mihomoAPIPrefix, s.auth(s.mihomoAPIProxy))
 	mux.HandleFunc("/_nuxt/", s.auth(s.mihomoDashboardAssets))
 	mux.HandleFunc("/_fonts/", s.auth(s.mihomoDashboardFonts))
 	mux.HandleFunc("/api/network-draft", s.auth(s.networkDraft))
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, http.StatusNotFound, map[string]string{"error": "API not found"})
+	})
 	mux.HandleFunc("/", s.static)
 
 	listen := env("ROUTER_ADMIN_LISTEN", defaultListen)
@@ -3209,9 +3206,6 @@ func (s *Server) mihomoStatus(w http.ResponseWriter, r *http.Request) {
 			"mixedPort": mihomoDefaultMixedPort, "httpPort": 0, "socksPort": 0,
 			"redirPort": 0, "tproxyPort": 0, "allowLan": false,
 			"bindAddress": "127.0.0.1", "tunEnabled": false, "tunStack": "",
-			"cpaLinked": false, "cpaUsageEnabled": false, "cpaAccountCount": 0,
-			"cpaProxyPort": mihomoCodexPort, "cpaProxyGroup": mihomoCodexGroup,
-			"cpaProxyNode": "", "cpaAutoNode": "", "cpaJapaneseNodeCount": 0,
 		})
 		return
 	}
@@ -3223,16 +3217,6 @@ func (s *Server) mihomoStatus(w http.ResponseWriter, r *http.Request) {
 		Proxies map[string]json.RawMessage `json:"proxies"`
 	}
 	_ = s.mihomoRequest("GET", "/proxies", nil, &proxyData)
-	var codexGroup struct {
-		Now string   `json:"now"`
-		All []string `json:"all"`
-	}
-	_ = s.mihomoRequest("GET", "/proxies/"+url.PathEscape(mihomoCodexGroup), nil, &codexGroup)
-	var codexAutoGroup struct {
-		Now string   `json:"now"`
-		All []string `json:"all"`
-	}
-	_ = s.mihomoRequest("GET", "/proxies/"+url.PathEscape(mihomoCodexAutoGroup), nil, &codexAutoGroup)
 	var connections struct {
 		DownloadTotal uint64            `json:"downloadTotal"`
 		UploadTotal   uint64            `json:"uploadTotal"`
@@ -3243,17 +3227,6 @@ func (s *Server) mihomoStatus(w http.ResponseWriter, r *http.Request) {
 	if connections.Memory == 0 {
 		connections.Memory = processRSSBytes("mihomo")
 	}
-	cpaConfig := readText(filepath.Join(s.data, "cpa", "config.yaml"))
-	cpaLinked := regexp.MustCompile(`(?m)^proxy-url:\s*["']?socks5://127\.0\.0\.1:17891["']?\s*$`).MatchString(cpaConfig)
-	cpaUsage := regexp.MustCompile(`(?m)^usage-statistics-enabled:\s*true\s*$`).MatchString(cpaConfig)
-	cpaAccounts := 0
-	if entries, err := os.ReadDir(filepath.Join(s.data, "cpa", "auth")); err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
-				cpaAccounts++
-			}
-		}
-	}
 	jsonOut(w, 200, map[string]any{
 		"online": true, "mode": strings.ToLower(config.Mode), "version": version.Version,
 		"proxyCount": len(proxyData.Proxies), "connections": len(connections.Connections),
@@ -3261,10 +3234,6 @@ func (s *Server) mihomoStatus(w http.ResponseWriter, r *http.Request) {
 		"mixedPort": config.MixedPort, "httpPort": config.HTTPPort, "socksPort": config.SocksPort,
 		"redirPort": config.RedirPort, "tproxyPort": config.TProxyPort, "allowLan": config.AllowLAN,
 		"bindAddress": config.BindAddress, "tunEnabled": config.Tun.Enable, "tunStack": config.Tun.Stack,
-		"cpaLinked": cpaLinked, "cpaUsageEnabled": cpaUsage, "cpaAccountCount": cpaAccounts,
-		"cpaProxyPort": mihomoCodexPort, "cpaProxyGroup": mihomoCodexGroup,
-		"cpaProxyNode": codexGroup.Now, "cpaAutoNode": codexAutoGroup.Now,
-		"cpaJapaneseNodeCount": len(codexAutoGroup.All),
 	})
 }
 
@@ -3657,8 +3626,8 @@ func (s *Server) mihomoDelay(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, 200, map[string]any{"group": group, "delays": delays})
 }
 
-// getMihomoConnections coalesces the traffic auditor, dashboard summary and
-// client list onto one Mihomo /connections decode. Returned snapshots are
+// getMihomoConnections coalesces the dashboard summary and client list onto
+// one Mihomo /connections decode. Returned snapshots are
 // immutable after publication and can therefore be shared safely.
 func (s *Server) getMihomoConnections(ctx context.Context, maxAge time.Duration) (*mihomoRawConnectionsResponse, error) {
 	for {
@@ -3685,7 +3654,7 @@ func (s *Server) getMihomoConnections(ctx context.Context, maxAge time.Duration)
 		s.mihomoConnectionsMu.Unlock()
 
 		var response mihomoRawConnectionsResponse
-		err := s.mihomoRequestWithTimeout(ctx, "GET", "/connections", nil, &response, maxAccountingPollTimeout, maxAccountingResponseBytes)
+		err := s.mihomoRequestWithTimeout(ctx, "GET", "/connections", nil, &response, mihomoRequestTimeout, mihomoMaxResponseBytes)
 
 		s.mihomoConnectionsMu.Lock()
 		if err == nil {
@@ -3872,17 +3841,6 @@ func (s *Server) publicSubscriptions(store SubscriptionStore) map[string]any {
 		if !cached {
 			publicItem.NodeCount = 0
 		}
-		if source := item.PricingSource; source != nil {
-			publicItem.PricingSource = &PublicSubscriptionPricingSource{
-				Kind:                 source.Kind,
-				Endpoint:             publicPricingEndpoint(source.Endpoint),
-				Enabled:              source.Enabled,
-				CredentialConfigured: strings.TrimSpace(source.Authorization) != "",
-				LastSyncedAt:         source.LastSyncedAt,
-				LastError:            source.LastError,
-				MatchedNodeCount:     source.MatchedNodeCount,
-			}
-		}
 		items = append(items, publicItem)
 	}
 	return map[string]any{"activeId": store.ActiveID, "items": items, "autoUpdateHours": 6}
@@ -4009,9 +3967,6 @@ func (s *Server) mihomoSubscriptions(w http.ResponseWriter, r *http.Request) {
 			jsonOut(w, 500, map[string]string{"error": "保存订阅状态失败"})
 			return
 		}
-		go func(subscriptionID string) {
-			_ = s.syncSubscriptionPricing(subscriptionID)
-		}(store.Items[index].ID)
 		jsonOut(w, 200, s.publicSubscriptions(store))
 	case "DELETE":
 		id := r.URL.Query().Get("id")
@@ -4224,7 +4179,7 @@ func (s *Server) mihomoRequestWithTimeout(ctx context.Context, method, path stri
 	}
 	if target != nil {
 		if maxBytes <= 0 {
-			maxBytes = maxAccountingResponseBytes
+			maxBytes = mihomoMaxResponseBytes
 		}
 		return json.NewDecoder(io.LimitReader(resp.Body, maxBytes)).Decode(target)
 	}
@@ -4296,203 +4251,4 @@ func (s *Server) resolveClientHostname(ip string) string {
 		return name
 	}
 	return trimmed
-}
-
-func (s *Server) initTrafficAccounting() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.trafficAccounting != nil {
-		return
-	}
-
-	mgr := NewTrafficAccountingManager(TrafficAccountingConfig{
-		DataDir:      filepath.Join(s.data, "mihomo"),
-		PollInterval: defaultAccountingPollInterval,
-		SaveInterval: defaultAccountingSaveInterval,
-		FetchConnections: func(ctx context.Context) (*mihomoRawConnectionsResponse, error) {
-			return s.getMihomoConnections(ctx, 750*time.Millisecond)
-		},
-		GetActiveSubscription: func() (string, string) {
-			s.subscriptionMu.Lock()
-			defer s.subscriptionMu.Unlock()
-			store, err := s.loadSubscriptionStore()
-			if err != nil || store.ActiveID == "" {
-				return "", ""
-			}
-			for _, it := range store.Items {
-				if it.ID == store.ActiveID {
-					return it.ID, it.Name
-				}
-			}
-			return store.ActiveID, ""
-		},
-		GetValidSubscriptionIDs: func() []string {
-			s.subscriptionMu.Lock()
-			defer s.subscriptionMu.Unlock()
-			store, err := s.loadSubscriptionStore()
-			if err != nil {
-				return nil
-			}
-			ids := make([]string, 0, len(store.Items))
-			for _, it := range store.Items {
-				ids = append(ids, it.ID)
-			}
-			return ids
-		},
-		GetClientHostnames: func() map[string]string {
-			return s.readClientHostnames()
-		},
-		GetKnownNodes: func() []string {
-			var data struct {
-				Proxies map[string]struct {
-					All []string `json:"all"`
-				} `json:"proxies"`
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
-			defer cancel()
-			err := s.mihomoRequestWithTimeout(ctx, "GET", "/proxies", nil, &data, 800*time.Millisecond, maxAccountingResponseBytes)
-			if err != nil || data.Proxies == nil {
-				return nil
-			}
-			benchGroup, ok := data.Proxies[speedTestBenchmarkGroup]
-			if !ok {
-				return nil
-			}
-			return benchGroup.All
-		},
-	})
-
-	s.trafficAccounting = mgr
-	ctx, cancel := context.WithCancel(context.Background())
-	s.accountingCancel = cancel
-	go mgr.Start(ctx)
-}
-
-func (s *Server) mihomoTrafficAccounting(w http.ResponseWriter, r *http.Request) {
-	if !method(w, r, "GET") {
-		return
-	}
-	if s.trafficAccounting == nil {
-		jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": "流量审计模块未初始化"})
-		return
-	}
-	jsonOut(w, http.StatusOK, s.trafficAccounting.GetSnapshot())
-}
-
-func (s *Server) mihomoTrafficAccountingReset(w http.ResponseWriter, r *http.Request) {
-	if !method(w, r, "POST") {
-		return
-	}
-	if s.trafficAccounting == nil {
-		jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": "流量审计模块未初始化"})
-		return
-	}
-	const maxResetBodyBytes = 4096
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxResetBodyBytes+1))
-	if err != nil {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体读取失败"})
-		return
-	}
-	if int64(len(bodyBytes)) > maxResetBodyBytes {
-		jsonOut(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "请求体大小超过限制 (最大 4096 字节)"})
-		return
-	}
-	if len(strings.TrimSpace(string(bodyBytes))) == 0 {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "重置请求体不能为空，必须确认 confirm=true"})
-		return
-	}
-	var body struct {
-		Confirm *bool `json:"confirm"`
-	}
-	dec := json.NewDecoder(bytes.NewReader(bodyBytes))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误: " + err.Error()})
-		return
-	}
-	var extra json.RawMessage
-	if err := dec.Decode(&extra); err != io.EOF {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体包含多余的内容"})
-		return
-	}
-	if body.Confirm == nil || !*body.Confirm {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "重置操作必须明确确认 confirm=true"})
-		return
-	}
-	startedAt, err := s.trafficAccounting.Reset()
-	if err != nil {
-		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "startedAt": startedAt})
-}
-
-func (s *Server) mihomoTrafficAccountingSettings(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.mihomoTrafficAccountingGetSettings(w, r)
-	case http.MethodPut:
-		s.mihomoTrafficAccountingPutSettings(w, r)
-	default:
-		w.Header().Set("Allow", "GET, PUT")
-		jsonOut(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-	}
-}
-
-func (s *Server) mihomoTrafficAccountingGetSettings(w http.ResponseWriter, r *http.Request) {
-	if !method(w, r, "GET") {
-		return
-	}
-	if s.trafficAccounting == nil {
-		jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": "流量审计模块未初始化"})
-		return
-	}
-	jsonOut(w, http.StatusOK, s.trafficAccounting.GetSettings())
-}
-
-func (s *Server) mihomoTrafficAccountingPutSettings(w http.ResponseWriter, r *http.Request) {
-	if !method(w, r, "PUT") {
-		return
-	}
-	if s.trafficAccounting == nil {
-		jsonOut(w, http.StatusServiceUnavailable, map[string]string{"error": "流量审计模块未初始化"})
-		return
-	}
-	const maxSettingsBodyBytes = 65536
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxSettingsBodyBytes+1))
-	if err != nil {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体读取失败"})
-		return
-	}
-	if int64(len(bodyBytes)) > maxSettingsBodyBytes {
-		jsonOut(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "请求体大小超过限制 (最大 65536 字节)"})
-		return
-	}
-	if len(strings.TrimSpace(string(bodyBytes))) == 0 {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体不能为空"})
-		return
-	}
-	var body UpdateTrafficSettingsRequest
-	dec := json.NewDecoder(bytes.NewReader(bodyBytes))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误: " + err.Error()})
-		return
-	}
-	var extra json.RawMessage
-	if err := dec.Decode(&extra); err != io.EOF {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求体包含多余的内容"})
-		return
-	}
-	updated, err := s.trafficAccounting.UpdateSettings(body)
-	if err != nil {
-		status := http.StatusBadRequest
-		if strings.Contains(err.Error(), "保存配置失败") {
-			status = http.StatusInternalServerError
-		}
-		jsonOut(w, status, map[string]string{"error": err.Error()})
-		return
-	}
-	jsonOut(w, http.StatusOK, updated)
 }

@@ -23,7 +23,7 @@ wait_controller() {
 }
 
 echo API_STATUS
-"$CURL" -fsS "$ADMIN/api/mihomo/status" | "$JQ" '{online,mode,mixedPort,allowLan,tunEnabled,cpaLinked,cpaProxyPort,cpaProxyGroup,cpaProxyNode,cpaAutoNode,cpaJapaneseNodeCount,cpaUsageEnabled,cpaAccountCount}'
+"$CURL" -fsS "$ADMIN/api/mihomo/status" | "$JQ" '{online,mode,mixedPort,allowLan,tunEnabled}'
 
 echo SUBSCRIPTIONS
 SUBSCRIPTIONS=$("$CURL" -fsS "$ADMIN/api/mihomo/subscriptions")
