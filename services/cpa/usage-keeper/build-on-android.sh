@@ -28,6 +28,12 @@ find "$BUILD_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 tar -xzf "$ARCHIVE" -C "$BUILD_DIR"
 cd "$BUILD_DIR"
 
+test -s web/dist/index.html || {
+  echo "prepared source archive has no built web/dist/index.html" >&2
+  echo "run prepare-android-source.ps1 before staging the archive" >&2
+  exit 1
+}
+
 run_android_binary "$GOROOT/bin/go" build -trimpath \
   -ldflags="-s -w -X cpa-usage-keeper/internal/version.Version=$CUSTOM_VERSION" \
   -o cpa-usage-keeper ./cmd/server/main.go

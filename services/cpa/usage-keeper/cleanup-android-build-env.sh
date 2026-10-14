@@ -12,11 +12,12 @@ export HOME="$HOME_DIR" PREFIX PATH="$PREFIX/bin:/system/bin"
 
 test -x "$INSTALLED_BIN"
 test -s "$BUILD_INFO"
-EXPECTED_SHA256=$(jq -r '.sha256 // empty' "$BUILD_INFO")
+EXPECTED_SHA256=$("$PREFIX/bin/jq" -r '.sha256 // empty' "$BUILD_INFO")
 test -n "$EXPECTED_SHA256"
 ACTUAL_SHA256=$(sha256sum "$INSTALLED_BIN" | awk '{print $1}')
 test "$ACTUAL_SHA256" = "$EXPECTED_SHA256"
 curl -fsS --max-time 3 http://127.0.0.1:8320/healthz >/dev/null
+curl -fsS --max-time 3 http://127.0.0.1:8320/ | grep -qi '<!doctype html'
 
 if test -d "$BUILD_DIR"; then
   RESOLVED_BUILD_DIR=$(realpath "$BUILD_DIR")
@@ -41,4 +42,5 @@ rm -f \
   "$HOME_DIR/.stage/install-cpa-usage-keeper.sh"
 
 curl -fsS --max-time 3 http://127.0.0.1:8320/healthz >/dev/null
+curl -fsS --max-time 3 http://127.0.0.1:8320/ | grep -qi '<!doctype html'
 echo CPA_USAGE_KEEPER_BUILD_ENV_CLEANED

@@ -41,10 +41,10 @@ test -s "$STAGED_INFO" || fail "staged build manifest is missing"
 test -s "$MANAGEMENT_KEY_FILE" || fail "CPA management key is missing"
 test -s "$ADMIN_PASSWORD_FILE" || fail "router admin password is missing"
 
-EXPECTED_SHA256=$(jq -r 'select(.service == "cpa-usage-keeper" and .product == "CPA Usage Keeper") | .sha256 // empty' "$STAGED_INFO")
-EXPECTED_VERSION=$(jq -r '.customVersion // empty' "$STAGED_INFO")
-UPSTREAM_VERSION=$(jq -r '.upstreamVersion // empty' "$STAGED_INFO")
-UPSTREAM_REPOSITORY=$(jq -r '.upstreamRepository // empty' "$STAGED_INFO")
+EXPECTED_SHA256=$("$PREFIX/bin/jq" -r 'select(.service == "cpa-usage-keeper" and .product == "CPA Usage Keeper") | .sha256 // empty' "$STAGED_INFO")
+EXPECTED_VERSION=$("$PREFIX/bin/jq" -r '.customVersion // empty' "$STAGED_INFO")
+UPSTREAM_VERSION=$("$PREFIX/bin/jq" -r '.upstreamVersion // empty' "$STAGED_INFO")
+UPSTREAM_REPOSITORY=$("$PREFIX/bin/jq" -r '.upstreamRepository // empty' "$STAGED_INFO")
 test -n "$EXPECTED_SHA256" || fail "invalid build manifest"
 test -n "$EXPECTED_VERSION" || fail "build manifest has no custom version"
 test -n "$UPSTREAM_VERSION" || fail "build manifest has no upstream version"
@@ -138,7 +138,10 @@ printf '%s  %s\n' "$EXPECTED_SHA256" "$BIN" > "$DATA_ROOT/installed-sha256"
 sv restart "$SERVICE_DIR" >/dev/null 2>&1 || true
 COUNT=0
 while test "$COUNT" -lt 15; do
-  if curl -fsS --max-time 2 http://127.0.0.1:8320/healthz >/dev/null 2>&1; then
+  INDEX_HTML=""
+  if curl -fsS --max-time 2 http://127.0.0.1:8320/healthz >/dev/null 2>&1 && \
+     INDEX_HTML=$(curl -fsS --max-time 3 http://127.0.0.1:8320/ 2>/dev/null) && \
+     printf '%s' "$INDEX_HTML" | grep -qi '<!doctype html'; then
     echo CPA_USAGE_KEEPER_INSTALL_OK
     echo "URL=http://192.168.2.1:8320"
     exit 0

@@ -7,10 +7,16 @@
 - Binary: `build/cpa-usage-keeper-v1.15.11-android`
 - Build manifest: `cpa-usage-keeper.build.json` beside the binary; stage it as
   `~/.stage/cpa-usage-keeper-v1.15.11-android.build.json`
-- SHA-256: `33a4bb13756576c8a3666c23ff4358a2328d6504fb25c491fa8a8ed2662992c7`
+- SHA-256: `1ce86bcdf835194285515b9208bd65a1d55d1b3154d935afcc98d72eb850ef5e`
 - Phone service: `~/router-stack/services/cpa-usage-keeper`
 - Persistent data: `~/router-data/cpa-usage-keeper`
 - Web address: `http://192.168.2.1:8320`
 
 The installer verifies the checksum and version before replacing files, backs up an existing installation, and restores it if the new service fails its health check.
 The installed manifest is stored at `~/router-data/cpa-usage-keeper/build-info.json`.
+
+Before staging the Android source archive, run `prepare-android-source.ps1`
+against a clean checkout of the recorded upstream commit. It builds the Vite
+frontend and packages the resulting `web/dist` with the Go source. The Android
+build refuses archives without `web/dist/index.html`, and installation verifies
+both `/healthz` and the embedded dashboard page.
