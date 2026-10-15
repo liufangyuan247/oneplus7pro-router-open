@@ -151,6 +151,24 @@ button { font:inherit; }
   border: 1px solid #14584e;
   color: #38c89b;
 }
+.service-main .service-rebuild-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  margin-top: 5px;
+  color: #6f8996;
+  font-size: 7.5px;
+  line-height: 1.25;
+}
+.service-rebuild-note::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #718b96;
+}
 
 .service-upgrade-btn {
   appearance: none;

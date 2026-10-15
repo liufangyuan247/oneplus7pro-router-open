@@ -4915,7 +4915,12 @@ function Services({
     );
   };
 
-  const upgradableCount = data.services.filter((s) => s.upgradable).length;
+  const directUpgradeCount = data.services.filter(
+    (service) => service.upgradable && service.canUpgrade,
+  ).length;
+  const rebuildCount = data.services.filter(
+    (service) => service.upgradable && !service.canUpgrade,
+  ).length;
 
   return (
     <div className="view">
@@ -4924,8 +4929,12 @@ function Services({
           {data.services.filter((service) => service.State === "运行中").length} / {data.services.length} 项运行中
         </strong>
         <span>Runit 自动守护</span>
-        {upgradableCount > 0 ? (
-          <span style={{ color: "#36d6a8", fontWeight: 600 }}>{upgradableCount} 个服务可升级</span>
+        {directUpgradeCount > 0 ? (
+          <span style={{ color: "#36d6a8", fontWeight: 600 }}>
+            {directUpgradeCount} 个服务可直接升级
+          </span>
+        ) : rebuildCount > 0 ? (
+          <span>{rebuildCount} 个定制服务上游有更新</span>
         ) : (
           <span>全服务已是最新</span>
         )}
@@ -4990,6 +4999,11 @@ function Services({
                       {service.Port ? `TCP ${service.Port}` : "后台服务"} ·{" "}
                       {service.PID ? `PID ${service.PID}` : "无进程"}
                     </small>
+                    {!service.canUpgrade && service.upgradable && service.upgradeHint && (
+                      <small className="service-rebuild-note" title={service.upgradeHint}>
+                        上游有更新 · 定制版本需重新构建
+                      </small>
+                    )}
                   </div>
                   <span
                     className={
@@ -5014,11 +5028,6 @@ function Services({
                     >
                       ✨ 升级到 {service.latestVersion ? (service.latestVersion.startsWith("v") ? service.latestVersion : `v${service.latestVersion}`) : "新版"}
                     </button>
-                  )}
-                  {!service.canUpgrade && service.upgradable && service.upgradeHint && (
-                    <span className="service-version-tag upgradable" title={service.upgradeHint}>
-                      需重新构建部署
-                    </span>
                   )}
                   {[
                     "openlist",
