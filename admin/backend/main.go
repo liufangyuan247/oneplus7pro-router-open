@@ -307,6 +307,7 @@ type ClientInfo struct {
 	Expires                                     int64
 	StaticLease                                 bool
 	StaticIP                                    string
+	CustomName                                  bool
 	RxBytes, TxBytes                            uint64
 	RxBps, TxBps                                float64
 }
@@ -502,6 +503,7 @@ func main() {
 	mux.HandleFunc("/api/login", s.login)
 	mux.HandleFunc("/api/logout", s.auth(s.logout))
 	mux.HandleFunc("/api/snapshot", s.auth(s.snapshot))
+	mux.HandleFunc("/api/clients/name", s.auth(s.clientNameAPI))
 	mux.HandleFunc("/api/clients/static-lease", s.auth(s.staticLeaseAPI))
 	mux.HandleFunc("/api/services/action", s.auth(s.serviceAction))
 	mux.HandleFunc("/api/services/updates", s.auth(s.servicesUpdatesAPI))
@@ -2024,6 +2026,103 @@ func (s *Server) staticLeaseAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func validClientDisplayName(value string) bool {
+	if value == "" || len([]rune(value)) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) clientNamesPath() string {
+	return filepath.Join(s.data, "admin", "client-names.json")
+}
+
+func (s *Server) readClientNames() map[string]string {
+	names := make(map[string]string)
+	encoded, err := os.ReadFile(s.clientNamesPath())
+	if err != nil || json.Unmarshal(encoded, &names) != nil {
+		return make(map[string]string)
+	}
+	for mac, name := range names {
+		normalized, err := normalizeClientMAC(mac)
+		trimmed := strings.TrimSpace(name)
+		if err != nil || !validClientDisplayName(trimmed) {
+			delete(names, mac)
+			continue
+		}
+		if normalized != mac {
+			delete(names, mac)
+			names[normalized] = trimmed
+		}
+	}
+	return names
+}
+
+func (s *Server) saveClientNames(names map[string]string) error {
+	path := s.clientNamesPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	encoded, err := json.MarshalIndent(names, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, append(encoded, '\n'), 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func (s *Server) clientNameAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut && r.Method != http.MethodDelete {
+		w.Header().Set("Allow", "PUT, DELETE")
+		jsonOut(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var payload struct {
+		MAC  string `json:"mac"`
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	mac, err := normalizeClientMAC(payload.MAC)
+	if err != nil {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	name := strings.TrimSpace(payload.Name)
+	if r.Method == http.MethodPut && !validClientDisplayName(name) {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "设备名称不能为空、不能包含控制字符，且最长为 64 个字符"})
+		return
+	}
+
+	s.clientPolicyMu.Lock()
+	defer s.clientPolicyMu.Unlock()
+	names := s.readClientNames()
+	if r.Method == http.MethodDelete {
+		delete(names, mac)
+	} else {
+		names[mac] = name
+	}
+	if err := s.saveClientNames(names); err != nil {
+		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": "保存设备名称失败"})
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "mac": mac, "name": name})
+}
+
 func (s *Server) readClients() []ClientInfo {
 	draft := s.loadNetworkDraft()
 	staticLeases := s.readStaticLeases()
@@ -2075,12 +2174,7 @@ func (s *Server) readClients() []ClientInfo {
 				if hostname == "*" {
 					hostname = "未知设备"
 				}
-				client := ClientInfo{IP: f[2], MAC: mac, Hostname: hostname, Interface: lanInterface, State: "租约", Source: "DHCP", Expires: exp}
-				if lease, ok := staticLeases[mac]; ok {
-					client.StaticLease = true
-					client.StaticIP = lease.IP
-				}
-				byIP[f[2]] = client
+				byIP[f[2]] = ClientInfo{IP: f[2], MAC: mac, Hostname: hostname, Interface: lanInterface, State: "租约", Source: "DHCP", Expires: exp}
 			}
 		}
 	}
@@ -2111,37 +2205,10 @@ func (s *Server) readClients() []ClientInfo {
 			c.Source = "DHCP + AP 桥接"
 		}
 		c.State = "在线"
-		if lease, ok := staticLeases[c.MAC]; ok {
-			c.StaticLease = true
-			c.StaticIP = lease.IP
-		}
 		byIP[c.IP] = c
 	}
-	for mac, lease := range staticLeases {
-		found := false
-		for ip, client := range byIP {
-			clientMAC, _ := normalizeClientMAC(client.MAC)
-			if clientMAC != mac {
-				continue
-			}
-			client.StaticLease = true
-			client.StaticIP = lease.IP
-			if client.Hostname == "" && lease.Hostname != "" {
-				client.Hostname = lease.Hostname
-			}
-			byIP[ip] = client
-			found = true
-		}
-		if !found {
-			hostname := lease.Hostname
-			if hostname == "" {
-				hostname = "固定 IP 客户端"
-			}
-			if _, occupied := byIP[lease.IP]; !occupied {
-				byIP[lease.IP] = ClientInfo{IP: lease.IP, MAC: mac, Hostname: hostname, Interface: lanInterface, State: "静态租约", Source: "静态 DHCP", StaticLease: true, StaticIP: lease.IP}
-			}
-		}
-	}
+	applyStaticLeasesToClients(byIP, staticLeases, lanInterface)
+	applyClientNamesToClients(byIP, s.readClientNames())
 	clientStats := s.collectClientTrafficStats()
 	s.updateClientTraffic(time.Now(), clientStats)
 	trafficStats, trafficRates := s.getClientTrafficSnapshot()
@@ -2163,6 +2230,67 @@ func (s *Server) readClients() []ClientInfo {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].IP < out[j].IP })
 	return out
+}
+
+func applyClientNamesToClients(byIP map[string]ClientInfo, names map[string]string) {
+	for ip, client := range byIP {
+		mac, err := normalizeClientMAC(client.MAC)
+		if err != nil {
+			continue
+		}
+		if name, ok := names[mac]; ok && validClientDisplayName(name) {
+			client.Hostname = name
+			client.CustomName = true
+			byIP[ip] = client
+		}
+	}
+}
+
+// applyStaticLeasesToClients treats the configured static lease as the stable
+// client identity. This matters behind bridge/repeater APs which may proxy ARP
+// and expose their own MAC address for a downstream client. Match the reserved
+// IP first, then fall back to MAC when the client has moved to another address.
+func applyStaticLeasesToClients(byIP map[string]ClientInfo, staticLeases map[string]StaticLease, lanInterface string) {
+	for mac, lease := range staticLeases {
+		if client, ok := byIP[lease.IP]; ok {
+			observedMAC, _ := normalizeClientMAC(client.MAC)
+			client.StaticLease = true
+			client.StaticIP = lease.IP
+			if lease.Hostname != "" {
+				client.Hostname = lease.Hostname
+			}
+			if client.Source == "邻居缓存" && observedMAC != "" && observedMAC != mac {
+				client.MAC = mac
+				client.Source = "静态 DHCP + AP 桥接"
+			}
+			byIP[lease.IP] = client
+			continue
+		}
+
+		found := false
+		for ip, client := range byIP {
+			clientMAC, _ := normalizeClientMAC(client.MAC)
+			if clientMAC != mac {
+				continue
+			}
+			client.StaticLease = true
+			client.StaticIP = lease.IP
+			if lease.Hostname != "" {
+				client.Hostname = lease.Hostname
+			}
+			byIP[ip] = client
+			found = true
+		}
+		if !found {
+			hostname := lease.Hostname
+			if hostname == "" {
+				hostname = "固定 IP 客户端"
+			}
+			if _, occupied := byIP[lease.IP]; !occupied {
+				byIP[lease.IP] = ClientInfo{IP: lease.IP, MAC: mac, Hostname: hostname, Interface: lanInterface, State: "静态租约", Source: "静态 DHCP", StaticLease: true, StaticIP: lease.IP}
+			}
+		}
+	}
 }
 
 func parseConntrackClientTraffic(text string, stats map[string]netCounter) {

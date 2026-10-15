@@ -57,13 +57,13 @@ func TestStaticLeaseAPISetAndClear(t *testing.T) {
 		},
 	}
 
-	setRequest := httptest.NewRequest(http.MethodPut, "/api/clients/static-lease", strings.NewReader(`{"mac":"02:AA:BB:00:10:20","ip":"192.168.2.200"}`))
+	setRequest := httptest.NewRequest(http.MethodPut, "/api/clients/static-lease", strings.NewReader(`{"mac":"02:AA:BB:00:10:20","ip":"192.168.2.200","hostname":"demo-client"}`))
 	setResponse := httptest.NewRecorder()
 	server.staticLeaseAPI(setResponse, setRequest)
 	if setResponse.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d body=%s", setResponse.Code, setResponse.Body.String())
 	}
-	if len(commands) < 2 || !strings.Contains(commands[len(commands)-1], "'set-static' '02:aa:bb:00:10:20' '192.168.2.200' ''") {
+	if len(commands) < 2 || !strings.Contains(commands[len(commands)-1], "'set-static' '02:aa:bb:00:10:20' '192.168.2.200' 'demo-client'") {
 		t.Fatalf("unexpected set command: %#v", commands)
 	}
 
@@ -75,6 +75,61 @@ func TestStaticLeaseAPISetAndClear(t *testing.T) {
 	}
 	if !strings.Contains(commands[len(commands)-1], "'clear-static' '02:aa:bb:00:10:20'") {
 		t.Fatalf("unexpected clear command: %q", commands[len(commands)-1])
+	}
+}
+
+func TestApplyStaticLeasesToClientsPrefersReservedIPBehindBridge(t *testing.T) {
+	clients := map[string]ClientInfo{
+		"192.168.2.152": {
+			IP:        "192.168.2.152",
+			MAC:       "0c:85:09:6c:da:05",
+			Hostname:  "未知设备",
+			Interface: "eth1",
+			State:     "在线",
+			Source:    "邻居缓存",
+		},
+	}
+	leases := map[string]StaticLease{
+		"88:66:5a:3f:72:7f": {
+			MAC:      "88:66:5a:3f:72:7f",
+			IP:       "192.168.2.152",
+			Hostname: "LFY-LAPTOP-MAC",
+		},
+	}
+
+	applyStaticLeasesToClients(clients, leases, "eth1")
+	client := clients["192.168.2.152"]
+	if client.Hostname != "LFY-LAPTOP-MAC" || client.MAC != "88:66:5a:3f:72:7f" {
+		t.Fatalf("bridge client identity was not restored: %#v", client)
+	}
+	if !client.StaticLease || client.StaticIP != "192.168.2.152" || client.Source != "静态 DHCP + AP 桥接" {
+		t.Fatalf("bridge client static metadata is incorrect: %#v", client)
+	}
+}
+
+func TestApplyStaticLeasesToClientsOverridesDHCPName(t *testing.T) {
+	clients := map[string]ClientInfo{
+		"192.168.2.113": {
+			IP:        "192.168.2.113",
+			MAC:       "4e:50:9b:bb:62:13",
+			Hostname:  "未知设备",
+			Interface: "eth1",
+			State:     "租约",
+			Source:    "DHCP",
+		},
+	}
+	leases := map[string]StaticLease{
+		"4e:50:9b:bb:62:13": {
+			MAC:      "4e:50:9b:bb:62:13",
+			IP:       "192.168.2.113",
+			Hostname: "living-room-device",
+		},
+	}
+
+	applyStaticLeasesToClients(clients, leases, "eth1")
+	client := clients["192.168.2.113"]
+	if client.Hostname != "living-room-device" || !client.StaticLease {
+		t.Fatalf("saved client name did not override DHCP placeholder: %#v", client)
 	}
 }
 

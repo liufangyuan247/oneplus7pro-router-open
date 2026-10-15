@@ -118,6 +118,7 @@ type Snapshot = {
     Expires: number;
     StaticLease: boolean;
     StaticIP: string;
+    CustomName?: boolean;
     RxBytes?: number;
     TxBytes?: number;
     RxBps?: number;
@@ -1961,6 +1962,8 @@ function Clients({
   section: SectionId;
 }) {
   const [editingMac, setEditingMac] = useState("");
+  const [editMode, setEditMode] = useState<"name" | "lease">("name");
+  const [clientName, setClientName] = useState("");
   const [staticIP, setStaticIP] = useState("");
   const [pendingMac, setPendingMac] = useState("");
   const [error, setError] = useState("");
@@ -1990,8 +1993,20 @@ function Clients({
     }
   };
 
-  const beginEdit = (client: Snapshot["clients"][number]) => {
+  const beginNameEdit = (client: Snapshot["clients"][number]) => {
     setEditingMac(client.MAC);
+    setEditMode("name");
+    setClientName(
+      client.Hostname === "未知设备" || client.Hostname === "固定 IP 客户端"
+        ? ""
+        : client.Hostname,
+    );
+    setError("");
+  };
+
+  const beginLeaseEdit = (client: Snapshot["clients"][number]) => {
+    setEditingMac(client.MAC);
+    setEditMode("lease");
     setStaticIP(client.StaticIP || client.IP);
     setError("");
   };
@@ -2020,7 +2035,6 @@ function Clients({
       setError("请输入有效的 IPv4 地址，例如 192.168.2.200");
       return;
     }
-
     setPendingMac(mac);
     setError("");
     try {
@@ -2037,6 +2051,60 @@ function Clients({
       await refresh(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "设置静态租约失败");
+    } finally {
+      setPendingMac("");
+    }
+  };
+
+  const saveClientName = async (mac: string) => {
+    const name = clientName.trim();
+    if (!name) {
+      setError("请输入设备名称");
+      return;
+    }
+    if (Array.from(name).length > 64 || /[\u0000-\u001f\u007f]/.test(name)) {
+      setError("设备名称不能包含控制字符，且最长为 64 个字符");
+      return;
+    }
+
+    setPendingMac(mac);
+    setError("");
+    try {
+      const response = await fetch("/api/clients/name", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mac, name }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "保存设备名称失败"));
+      }
+      setEditingMac("");
+      setNotice(`已将设备命名为 ${name}`);
+      await refresh(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "保存设备名称失败");
+    } finally {
+      setPendingMac("");
+    }
+  };
+
+  const clearClientName = async (client: Snapshot["clients"][number]) => {
+    setPendingMac(client.MAC);
+    setError("");
+    try {
+      const response = await fetch("/api/clients/name", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mac: client.MAC }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "恢复自动名称失败"));
+      }
+      setEditingMac("");
+      setNotice("已恢复设备自动名称");
+      await refresh(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "恢复自动名称失败");
     } finally {
       setPendingMac("");
     }
@@ -2592,10 +2660,17 @@ function Clients({
                         <div className="client-actions">
                           <button
                             type="button"
-                            onClick={() => beginEdit(client)}
+                            onClick={() => beginNameEdit(client)}
                             disabled={busy}
                           >
-                            {client.StaticLease ? "修改" : "设置固定"}
+                            改名
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => beginLeaseEdit(client)}
+                            disabled={busy}
+                          >
+                            {client.StaticLease ? "修改固定" : "设置固定"}
                           </button>
                           {client.StaticLease && (
                             <button
@@ -2614,39 +2689,73 @@ function Clients({
                       <tr className="client-editor-row">
                         <td colSpan={12}>
                           <form
-                            className="static-lease-editor"
+                            className={`static-lease-editor ${editMode === "name" ? "name-editor" : ""}`}
                             onSubmit={(event) => {
                               event.preventDefault();
-                              void saveStaticLease(client.MAC);
+                              if (editMode === "name") {
+                                void saveClientName(client.MAC);
+                              } else {
+                                void saveStaticLease(client.MAC);
+                              }
                             }}
                           >
                             <div>
-                              <strong>固定设备地址</strong>
+                              <strong>{editMode === "name" ? "修改设备名称" : "固定设备地址"}</strong>
                               <small>
-                                为 {client.Hostname || client.MAC} 保留一个 LAN
-                                地址
+                                {editMode === "name"
+                                  ? "名称独立保存，IP 仍可保持 DHCP 动态分配"
+                                  : `为 ${client.Hostname || client.MAC} 保留一个 LAN 地址`}
                               </small>
                             </div>
-                            <label>
-                              <span>固定 IP</span>
-                              <input
-                                value={staticIP}
-                                onChange={(event) => {
-                                  setStaticIP(event.target.value);
-                                  setError("");
-                                }}
-                                inputMode="decimal"
-                                autoComplete="off"
-                                spellCheck={false}
-                                aria-invalid={Boolean(error)}
-                                disabled={busy}
-                                autoFocus
-                              />
-                            </label>
+                            {editMode === "name" ? (
+                              <label>
+                                <span>设备名称</span>
+                                <input
+                                  value={clientName}
+                                  onChange={(event) => {
+                                    setClientName(event.target.value);
+                                    setError("");
+                                  }}
+                                  placeholder="例如 客厅平板"
+                                  maxLength={64}
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  aria-invalid={Boolean(error)}
+                                  disabled={busy}
+                                  autoFocus
+                                />
+                              </label>
+                            ) : (
+                              <label>
+                                <span>固定 IP</span>
+                                <input
+                                  value={staticIP}
+                                  onChange={(event) => {
+                                    setStaticIP(event.target.value);
+                                    setError("");
+                                  }}
+                                  inputMode="decimal"
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  aria-invalid={Boolean(error)}
+                                  disabled={busy}
+                                  autoFocus
+                                />
+                              </label>
+                            )}
                             <div className="static-lease-actions">
                               <button type="submit" disabled={busy}>
-                                {busy ? "正在应用…" : "应用"}
+                                {busy ? "正在应用…" : editMode === "name" ? "保存名称" : "应用"}
                               </button>
+                              {editMode === "name" && client.CustomName && (
+                                <button
+                                  type="button"
+                                  onClick={() => void clearClientName(client)}
+                                  disabled={busy}
+                                >
+                                  恢复自动名称
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => {
