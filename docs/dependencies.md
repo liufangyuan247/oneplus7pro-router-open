@@ -11,7 +11,7 @@
 | AriaNg | `1.3.14` AllInOne | [mayswind/AriaNg Releases](https://github.com/mayswind/AriaNg/releases) |
 | Mihomo | `v1.19.30` android-arm64-v8 | [MetaCubeX/mihomo Releases](https://github.com/MetaCubeX/mihomo/releases)；需要新协议时可升级，但先离线验证订阅 |
 | Tailscale | `1.102.3` arm64 | [Tailscale stable packages](https://pkgs.tailscale.com/stable/) |
-| CLIProxyAPI | `v7.2.140` linux-aarch64 no-plugin | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)；Android 兼容构建见 `services/cpa` |
+| CLIProxyAPI | `v8.0.28-op7.1` Android/ARM64 自构建 | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)；基于上游 `v8.0.28`，Android 兼容构建见 `services/cpa` |
 | CPA Usage Keeper | `v1.14.8`, commit `c0129050def1f3e980ed68492014326d35710917` | [Willxup/cpa-usage-keeper](https://github.com/Willxup/cpa-usage-keeper)；Android 上按集成脚本源码构建 |
 | scrcpy | Windows `v4.1`；web server 组件按管理端代码要求 | [Genymobile/scrcpy Releases](https://github.com/Genymobile/scrcpy/releases)；仓库不包含 EXE/DLL/server |
 | MetaCubeXD | 安装时固定 release/commit | [MetaCubeX/metacubexd](https://github.com/MetaCubeX/metacubexd) |

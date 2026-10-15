@@ -52,9 +52,8 @@ protection loop.
 - `configure-antigravity-model-aliases.sh`: idempotently maps the Antigravity
   client model `gemini-3.8-flash` to CPA's provider model
   `gemini-3.8-flash-high`, then verifies the original client model name with a
-  real streaming request and rolls back on failure. CPA builds must include
-  alias-provider fallback routing when the upstream model is discovered at
-  runtime rather than present in the bundled catalog.
+  real streaming request and rolls back on failure. Re-run this verification
+  whenever the pinned upstream CPA version changes.
 
 Re-running `install-cpa.sh` preserves an existing `config.yaml`, account files
 and keys. It only replaces the executable and regenerates credentials when
