@@ -4935,9 +4935,7 @@ function Services({
           </span>
         ) : rebuildCount > 0 ? (
           <span>{rebuildCount} 个定制服务上游有更新</span>
-        ) : (
-          <span>全服务已是最新</span>
-        )}
+        ) : null}
         <span>{data.aria2.online ? `Aria2 ${data.aria2.numActive} 项活动` : "Aria2 离线"}</span>
       </ModuleContextBar>
       {section === "tailscale" && <TailscaleService setNotice={setNotice} />}
@@ -4987,11 +4985,6 @@ function Services({
                       {service.upgradable && service.latestVersion && (
                         <span className="service-version-tag upgradable" title={`可升级至: ${service.latestVersion}`}>
                           发现新版: {service.latestVersion.startsWith("v") ? service.latestVersion : `v${service.latestVersion}`}
-                        </span>
-                      )}
-                      {!service.upgradable && service.currentVersion && service.latestVersion && (
-                        <span className="service-version-tag latest" title="已是最新版本">
-                          已是最新
                         </span>
                       )}
                     </div>
