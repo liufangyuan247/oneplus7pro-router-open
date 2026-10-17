@@ -186,6 +186,8 @@ Usage Keeper 的 Models.dev 同步超时同样是“手机本机服务是否进�
 
 ## 19. OpenList、Aria2 与视频问题
 
+OpenList 升级到 v4.2.7 后，旧配置里的 `/assets/logo.svg` 和自定义 head 中的 `/assets/polyfill.min.js` 已不存在，但 SPA 回退仍返回 HTTP 200 的 HTML。表现是页面可用、Logo 一直转圈，控制台报 `Unexpected token '<'`。修复需清理数据库中的旧引用，不能靠强制刷新；Logo 改为内嵌官方 SVG，移除失效的 polyfill 标签。可复用的备份、修复和失败回滚脚本见 [OpenList 说明](../services/openlist/README.md)。检查静态资源时必须同时看响应类型与正文。
+
 OpenList“发送到 aria2”失败可能发生在前端 RPC 地址、同源/跨域、RPC secret、aria2 未就绪、任务队列和网盘 URL 失效任一层。仅看 aria2 进程在线无法证明 OpenList 前端发出的 RPC 正确。
 
 Aria2 并发配置最终不再被脚本写死：AriaNg 通过 RPC 修改全局参数，后台同步器只把用户改动持久化到 `aria2.conf`。429 常来自网盘限流或旧签名 URL，不应自动归因于路由器 OOM。
