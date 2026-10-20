@@ -67,7 +67,7 @@ fi
 # Magisk su reparents its root command to the daemon, so runit cannot signal
 # the core directly. The root shell records the PID it will retain across
 # exec; this wrapper traps runit shutdown and explicitly terminates that PID.
-"$SU" -c "umask 077; echo \$\$ > '$PIDFILE'; chown 10207:10207 '$PIDFILE'; chmod 600 '$PIDFILE'; exec /system/bin/taskset f0 '$CORE' -d '$DATA' -f '$CONFIG'" &
+"$SU" -c "umask 077; echo \$\$ > '$PIDFILE'; chown 10207:10207 '$PIDFILE'; chmod 600 '$PIDFILE'; exec /system/bin/taskset 70 '$CORE' -d '$DATA' -f '$CONFIG'" &
 SU_PID=$!
 wait "$SU_PID"
 status=$?

@@ -115,9 +115,13 @@ done
 for name in ifb sch_tbf sch_fq sch_fq_codel tcp_bbr; do
   [ -d "/sys/module/$name" ] || { echo "module not loaded: $name" >&2; exit 1; }
 done
-[ "$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus)" = 000000f0 ] || \
+[ "$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus)" = 00000070 ] || \
+  [ "$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus)" = 70 ] || \
+  [ "$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus)" = 000000f0 ] || \
   [ "$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus)" = f0 ]
-[ "$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus)" = 000000f0 ] || \
+[ "$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus)" = 00000070 ] || \
+  [ "$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus)" = 70 ] || \
+  [ "$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus)" = 000000f0 ] || \
   [ "$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus)" = f0 ]
 
 status="$base/runtime/performance-install-status.$$"
@@ -136,4 +140,4 @@ case "$openai_code" in 2??|3??|4??) ;; *) exit 1 ;; esac
 rm -f "$status"
 status=''
 trap - EXIT HUP INT TERM
-echo "NETWORK_PERFORMANCE_INSTALLED cc=bbr qdisc=fq ppp_qdisc=fq_codel rps=f0 openai_http=$openai_code"
+echo "NETWORK_PERFORMANCE_INSTALLED cc=bbr qdisc=fq ppp_qdisc=fq_codel rps=$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus) openai_http=$openai_code"

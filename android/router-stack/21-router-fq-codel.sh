@@ -10,7 +10,7 @@ LOG="$BASE/fq-codel.log"
 PIDFILE="$BASE/performance.pid"
 EXPECTED_RELEASE='4.14.190-perf+'
 EXPECTED_VERSION='#2 SMP PREEMPT Tue Aug 25 18:11:57 UTC 2026'
-RPS_CPUS='f0'
+RPS_CPUS='70'
 RPS_FLOW_COUNT='4096'
 RPS_SOCKET_FLOWS='32768'
 
@@ -62,6 +62,13 @@ apply_global_settings() {
     write_if_changed /proc/sys/net/core/default_qdisc fq || log 'failed: default_qdisc=fq'
   fi
   write_if_changed /proc/sys/net/core/rps_sock_flow_entries "$RPS_SOCKET_FLOWS" || log 'failed: rps_sock_flow_entries'
+  write_if_changed /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq 2419200 || true
+  for pol in /sys/devices/system/cpu/cpufreq/policy*/schedutil/pl; do
+    [ -f "$pol" ] && write_if_changed "$pol" 0 || true
+  done
+  if [ -x /debug_ramdisk/magisk ] || which magisk >/dev/null 2>&1; then
+    magisk --sqlite "UPDATE policies SET logging=0 WHERE uid=10207 AND logging!=0;" >/dev/null 2>&1 || true
+  fi
 }
 
 apply_interface_settings() {

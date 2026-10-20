@@ -967,9 +967,13 @@ apply_ethernet_dhcp_guard() {
   # before interface discovery so Android's IpClient cannot acquire a stale
   # DHCP lease during boot, PPPoE negotiation, or a USB link bounce. The eth+
   # match leaves Wi-Fi DHCP available for rescue access.
+  if "$IPTABLES" -w 2 -t filter -C OUTPUT -j OP7_OUTPUT 2>/dev/null && \
+     "$IPTABLES" -w 2 -t filter -C OP7_OUTPUT -o 'eth+' -p udp --sport 68 --dport 67 -j DROP 2>/dev/null; then
+    return 0
+  fi
   ensure_jump filter OUTPUT OP7_OUTPUT
-  "$IPTABLES" -A OP7_OUTPUT -o 'eth+' -p udp --sport 68 --dport 67 -j DROP
-  "$IPTABLES" -A OP7_OUTPUT -j RETURN
+  "$IPTABLES" -w 2 -A OP7_OUTPUT -o 'eth+' -p udp --sport 68 --dport 67 -j DROP
+  "$IPTABLES" -w 2 -A OP7_OUTPUT -j RETURN
 }
 
 apply_android_dns_guard() {
@@ -978,14 +982,18 @@ apply_android_dns_guard() {
   # optical modem (which refuses recursive queries) or at an old LAN gateway.
   # Redirect only those two known-bad local resolvers to the router-owned
   # dnsmasq. Public upstream queries from dnsmasq are left untouched.
+  if "$IPTABLES" -w 2 -t nat -C OUTPUT -j OP7_DNS_OUTPUT 2>/dev/null && \
+     "$IPTABLES" -w 2 -t nat -C OP7_DNS_OUTPUT -p udp -d 192.168.1.1 --dport 53 -j DNAT --to-destination 127.0.0.1:53 2>/dev/null; then
+    return 0
+  fi
   ensure_jump nat OUTPUT OP7_DNS_OUTPUT
   for resolver in 192.168.1.1 192.168.3.1; do
-    "$IPTABLES" -t nat -A OP7_DNS_OUTPUT -p udp -d "$resolver" --dport 53 \
+    "$IPTABLES" -w 2 -t nat -A OP7_DNS_OUTPUT -p udp -d "$resolver" --dport 53 \
       -j DNAT --to-destination 127.0.0.1:53
-    "$IPTABLES" -t nat -A OP7_DNS_OUTPUT -p tcp -d "$resolver" --dport 53 \
+    "$IPTABLES" -w 2 -t nat -A OP7_DNS_OUTPUT -p tcp -d "$resolver" --dport 53 \
       -j DNAT --to-destination 127.0.0.1:53
   done
-  "$IPTABLES" -t nat -A OP7_DNS_OUTPUT -j RETURN
+  "$IPTABLES" -w 2 -t nat -A OP7_DNS_OUTPUT -j RETURN
 }
 
 sanitize_lan_ipv4() {
@@ -1515,11 +1523,15 @@ apply_routes() {
   "$IP" route replace "$LAN_SUBNET" dev "$lan" src 192.168.2.1 table "$TABLE_WAN"
   "$IP" route replace "$MODEM_SUBNET" dev "$wan" src 192.168.1.2 table "$TABLE_WAN"
   "$IP" route replace default dev "$ppp" table "$TABLE_WAN"
-  "$IP" route replace default dev "$ppp" table main metric 50
+  if ! "$IP" route show table main 2>/dev/null | grep -q "^default .*dev $ppp.*metric 50"; then
+    "$IP" route replace default dev "$ppp" table main metric 50
+  fi
   # IPv6CP gives ppp0 a global address but Android does not install an IPv6
   # default in main. Tailscale's marked transport sockets consult main first,
   # so publish the point-to-point default explicitly for direct IPv6 paths.
-  "$IP" -6 route replace default dev "$ppp" table main metric 50
+  if ! "$IP" -6 route show table main 2>/dev/null | grep -q "^default .*dev $ppp.*metric 50"; then
+    "$IP" -6 route replace default dev "$ppp" table main metric 50
+  fi
   # Avoid deleting and re-adding an already-correct policy rule every five
   # seconds. Besides needless netlink work, that churn makes tailscaled treat
   # the routing table as continuously changing and bloats its log.
@@ -1700,6 +1712,7 @@ daemon() {
     log "restarting dnsmasq for current DNS/static-hosts schema"
   fi
   maintenance_loops=0
+  reconcile_counter=0
   while :; do
     if [ "$(cat "$MANAGER_LOCK/pid" 2>/dev/null || true)" != "$$" ]; then
       log "manager lock ownership lost; exiting"
@@ -1734,13 +1747,15 @@ daemon() {
     fi
     "$IP" link set "$wan" up 2>/dev/null || true
     "$IP" link set "$lan" up 2>/dev/null || true
-    sanitize_lan_ipv4 "$lan"
 
     # Keep the LAN management plane available even while PPPoE is negotiating
     # or the optical modem is down. This makes 192.168.2.1 and DHCP reachable
     # from the downstream AP during recovery.
     if has_carrier "$lan"; then
-      "$IP" addr replace "$LAN_ADDRESS" dev "$lan"
+      if ! "$IP" -4 addr show dev "$lan" 2>/dev/null | grep -q "$LAN_ADDRESS"; then
+        sanitize_lan_ipv4 "$lan"
+        "$IP" addr replace "$LAN_ADDRESS" dev "$lan"
+      fi
     else
       stop_dnsmasq
     fi
@@ -1761,15 +1776,22 @@ daemon() {
       desired="$wan $lan $ppp"
       if [ ! -f "$ACTIVE" ] || [ "$current" != "$desired" ] || ! firewall_ready; then
         activate_router "$wan" "$lan" "$ppp"
+        reconcile_counter=0
       else
-        "$IP" addr replace "$LAN_ADDRESS" dev "$lan"
-        "$IP" addr replace "$MODEM_ADDRESS" dev "$wan"
-        apply_ppp_queue "$ppp"
-        apply_routes "$wan" "$lan" "$ppp"
-        reconcile_lan_data_plane "$lan"
-        publish_interfaces "$wan" "$lan" "$ppp"
-        if [ "${DISABLE_WIFI_ON_ACTIVE:-0}" = "1" ]; then
-          svc wifi disable >/dev/null 2>&1 || true
+        reconcile_counter=$((reconcile_counter + 1))
+        # Reconcile steady-state route/queue settings every 30s instead of 5s
+        # to eliminate CPU spikes and avoid constant route netlink churn
+        if [ "$reconcile_counter" -ge 6 ]; then
+          reconcile_counter=0
+          "$IP" addr replace "$LAN_ADDRESS" dev "$lan"
+          "$IP" addr replace "$MODEM_ADDRESS" dev "$wan"
+          apply_ppp_queue "$ppp"
+          apply_routes "$wan" "$lan" "$ppp"
+          reconcile_lan_data_plane "$lan"
+          publish_interfaces "$wan" "$lan" "$ppp"
+          if [ "${DISABLE_WIFI_ON_ACTIVE:-0}" = "1" ]; then
+            svc wifi disable >/dev/null 2>&1 || true
+          fi
         fi
       fi
       if ! record_pppoe_backend_success "$ppp"; then
@@ -1782,6 +1804,7 @@ daemon() {
         fi
       fi
     elif [ -f "$ACTIVE" ]; then
+      reconcile_counter=0
       # Keep LAN management alive during a WAN redial; only withdraw the WAN
       # policy route so traffic cannot leak into an unintended Android path.
       remove_routes
@@ -1792,6 +1815,7 @@ daemon() {
       rm -f "$ACTIVE"
       log "router inactive: PPPoE is down; LAN management retained"
     elif has_carrier "$lan"; then
+      reconcile_counter=0
       # The LAN management plane remains available before the first successful
       # PPPoE session, but without an active WAN it must use the direct state.
       remove_mihomo_lan_policy
