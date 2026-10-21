@@ -122,6 +122,7 @@ type Server struct {
 	lastCoulombCurrent                 float64
 	storageCache                       []StorageInfo
 	storageAt                          time.Time
+	lastConfigCheck                    time.Time
 	terminalSessions                   atomic.Int32
 	screenSessions                     atomic.Int32
 	runSu                              func(command string) ([]byte, error)
@@ -368,8 +369,18 @@ type SystemLogResponse struct {
 }
 type USBInfo struct{ VendorID, ProductID, Manufacturer, Product, Speed string }
 type NetworkDraft struct {
-	WANInterface, LANInterface, WANMode, LANAddress, DHCPStart, DHCPEnd, DNS string
-	MTU                                                                      int
+	WANInterface string `json:"WANInterface"`
+	LANInterface string `json:"LANInterface"`
+	WANMode      string `json:"WANMode"`
+	LANAddress   string `json:"LANAddress"`
+	DHCPStart    string `json:"DHCPStart"`
+	DHCPEnd      string `json:"DHCPEnd"`
+	DNS          string `json:"DNS"`
+	MTU          int    `json:"MTU"`
+	PPPoEUser    string `json:"PPPoEUser"`
+	PPPoEPass    string `json:"PPPoEPass"`
+	PPPoEBackend string `json:"PPPoEBackend"`
+	WANMAC       string `json:"WANMAC"`
 }
 
 type SubscriptionInfo struct {
@@ -533,6 +544,7 @@ func main() {
 	mux.HandleFunc("/_nuxt/", s.auth(s.mihomoDashboardAssets))
 	mux.HandleFunc("/_fonts/", s.auth(s.mihomoDashboardFonts))
 	mux.HandleFunc("/api/network-draft", s.auth(s.networkDraft))
+	mux.HandleFunc("/api/network/reconnect", s.auth(s.networkReconnect))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, http.StatusNotFound, map[string]string{"error": "API not found"})
 	})
@@ -4142,16 +4154,141 @@ func (s *Server) mihomoSubscriptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func defaultNetworkDraft() NetworkDraft {
-	return NetworkDraft{WANMode: "pppoe", LANAddress: "192.168.2.1/24", DHCPStart: "192.168.2.100", DHCPEnd: "192.168.2.249", DNS: "192.168.2.1", MTU: 1492}
+	return NetworkDraft{
+		WANInterface: "eth0",
+		LANInterface: "eth1",
+		WANMode:      "pppoe",
+		LANAddress:   "192.168.2.1/24",
+		DHCPStart:    "192.168.2.100",
+		DHCPEnd:      "192.168.2.249",
+		DNS:          "192.168.2.1",
+		MTU:          1492,
+		PPPoEUser:    "",
+		PPPoEPass:    "",
+		PPPoEBackend: "auto",
+		WANMAC:       "",
+	}
 }
+
+func (s *Server) readRouterNetworkConfig() (map[string]string, error) {
+	out, err := s.execSu("cat /data/adb/router-network/config")
+	if err != nil {
+		return nil, err
+	}
+	res := make(map[string]string)
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		k := strings.TrimSpace(parts[0])
+		v := strings.TrimSpace(parts[1])
+		v = strings.Trim(v, `"'`)
+		res[k] = v
+	}
+	return res, nil
+}
+
+func (s *Server) updateRouterNetworkConfig(d NetworkDraft) error {
+	raw, err := s.execSu("cat /data/adb/router-network/config")
+	if err != nil {
+		if s.runSu == nil && runtime.GOOS != "linux" {
+			return nil
+		}
+		return fmt.Errorf("读取当前配置失败: %w", err)
+	}
+	lines := strings.Split(string(raw), "\n")
+	keysToUpdate := map[string]string{
+		"PPPOE_USER":    d.PPPoEUser,
+		"PPPOE_PASS":    d.PPPoEPass,
+		"PPPOE_BACKEND": d.PPPoEBackend,
+	}
+	if d.WANMAC != "" {
+		keysToUpdate["WAN_MAC"] = strings.ToLower(d.WANMAC)
+	}
+	updatedKeys := make(map[string]bool)
+	var newLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || !strings.Contains(trimmed, "=") {
+			newLines = append(newLines, line)
+			continue
+		}
+		parts := strings.SplitN(trimmed, "=", 2)
+		k := strings.TrimSpace(parts[0])
+		if v, ok := keysToUpdate[k]; ok {
+			newLines = append(newLines, fmt.Sprintf("%s=%s", k, shellQuote(v)))
+			updatedKeys[k] = true
+		} else {
+			newLines = append(newLines, line)
+		}
+	}
+	for k, v := range keysToUpdate {
+		if !updatedKeys[k] && v != "" {
+			newLines = append(newLines, fmt.Sprintf("%s=%s", k, shellQuote(v)))
+		}
+	}
+	newContent := strings.Join(newLines, "\n")
+	if !strings.HasSuffix(newContent, "\n") {
+		newContent += "\n"
+	}
+
+	targetPath := "/data/adb/router-network/config"
+	bakPath := "/data/adb/router-network/config.bak"
+	tmpPath := fmt.Sprintf("/data/adb/router-network/config.tmp.%d", time.Now().UnixNano())
+	cmd := fmt.Sprintf(
+		"tmp=%s; trap 'rm -f \"$tmp\"' EXIT; printf '%%s' %s > \"$tmp\" && chmod 600 \"$tmp\" && cp -p %s %s && mv -f \"$tmp\" %s",
+		shellQuote(tmpPath),
+		shellQuote(newContent),
+		shellQuote(targetPath),
+		shellQuote(bakPath),
+		shellQuote(targetPath),
+	)
+	if out, err := s.execSu(cmd); err != nil {
+		return fmt.Errorf("写入网络配置失败: %s (%w)", tailLines(string(out), 5), err)
+	}
+	return nil
+}
+
 func (s *Server) loadNetworkDraft() NetworkDraft {
 	d := defaultNetworkDraft()
-	b, e := os.ReadFile(filepath.Join(s.data, "admin", "network-draft.json"))
+	draftFile := filepath.Join(s.data, "admin", "network-draft.json")
+	b, e := os.ReadFile(draftFile)
 	if e == nil {
 		_ = json.Unmarshal(b, &d)
 	}
+	if (d.PPPoEUser == "" || d.WANMAC == "") && time.Since(s.lastConfigCheck) > 10*time.Second {
+		s.lastConfigCheck = time.Now()
+		if cfg, err := s.readRouterNetworkConfig(); err == nil && len(cfg) > 0 {
+			changed := false
+			if d.PPPoEUser == "" && cfg["PPPOE_USER"] != "" {
+				d.PPPoEUser = cfg["PPPOE_USER"]
+				changed = true
+			}
+			if d.PPPoEPass == "" && cfg["PPPOE_PASS"] != "" {
+				d.PPPoEPass = cfg["PPPOE_PASS"]
+				changed = true
+			}
+			if (d.PPPoEBackend == "" || d.PPPoEBackend == "auto") && cfg["PPPOE_BACKEND"] != "" {
+				d.PPPoEBackend = cfg["PPPOE_BACKEND"]
+				changed = true
+			}
+			if d.WANMAC == "" && cfg["WAN_MAC"] != "" {
+				d.WANMAC = cfg["WAN_MAC"]
+				changed = true
+			}
+			if changed {
+				if bOut, err := json.MarshalIndent(d, "", "  "); err == nil {
+					_ = os.WriteFile(draftFile, bOut, 0600)
+				}
+			}
+		}
+	}
 	return d
 }
+
 func (s *Server) networkDraft(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		jsonOut(w, 200, s.loadNetworkDraft())
@@ -4165,6 +4302,9 @@ func (s *Server) networkDraft(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 400, map[string]string{"error": "请求错误"})
 		return
 	}
+	if d.PPPoEBackend == "" {
+		d.PPPoEBackend = "auto"
+	}
 	if err := validateDraft(d); err != nil {
 		jsonOut(w, 400, map[string]string{"error": err.Error()})
 		return
@@ -4177,8 +4317,54 @@ func (s *Server) networkDraft(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 500, map[string]string{"error": "保存失败"})
 		return
 	}
-	jsonOut(w, 200, map[string]bool{"ok": true})
+	if d.WANMode == "pppoe" && d.PPPoEUser != "" {
+		if err := s.updateRouterNetworkConfig(d); err != nil {
+			log.Printf("更新底层网络配置失败: %v", err)
+			jsonOut(w, 500, map[string]string{"error": fmt.Sprintf("草稿已保存，但更新系统配置失败: %v", err)})
+			return
+		}
+	}
+	jsonOut(w, 200, map[string]any{"ok": true, "draft": d})
 }
+
+func (s *Server) networkReconnect(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, http.MethodPost) {
+		return
+	}
+	var req struct {
+		Backend string `json:"backend"`
+	}
+	_ = decodeJSON(r, &req)
+
+	draft := s.loadNetworkDraft()
+	backend := draft.PPPoEBackend
+	if req.Backend != "" {
+		backend = req.Backend
+	}
+	if backend == "" {
+		backend = "auto"
+	}
+
+	subcmd := "pppoe-retry-kernel"
+	if backend == "userspace" {
+		subcmd = "pppoe-retry-userspace"
+	}
+	cmd := fmt.Sprintf("/data/adb/router-network/router-network %s", subcmd)
+	out, err := s.execSu(cmd)
+	if err != nil {
+		log.Printf("network reconnect (%s) failed: %s (%v)", subcmd, tailLines(string(out), 10), err)
+		jsonOut(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("重新拨号执行失败: %s", strings.TrimSpace(string(out))),
+		})
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"backend": backend,
+		"message": "宽带重拨请求已成功下发，ISP 会话已释放，守护进程正在重新协商连接",
+	})
+}
+
 func validateDraft(d NetworkDraft) error {
 	iface := regexp.MustCompile(`^[a-zA-Z0-9_.-]{0,15}$`)
 	if !iface.MatchString(d.WANInterface) || !iface.MatchString(d.LANInterface) {
@@ -4195,6 +4381,23 @@ func validateDraft(d NetworkDraft) error {
 	}
 	if d.MTU < 576 || d.MTU > 9000 {
 		return errors.New("MTU 超出范围")
+	}
+	if d.WANMode == "pppoe" {
+		if strings.TrimSpace(d.PPPoEUser) == "" {
+			return errors.New("PPPoE 宽带账号不能为空")
+		}
+		if strings.TrimSpace(d.PPPoEPass) == "" {
+			return errors.New("PPPoE 宽带密码不能为空")
+		}
+		if d.PPPoEBackend != "" && d.PPPoEBackend != "auto" && d.PPPoEBackend != "kernel" && d.PPPoEBackend != "userspace" {
+			return errors.New("PPPoE 后端模式无效 (应为 auto, kernel 或 userspace)")
+		}
+	}
+	if d.WANMAC != "" {
+		macRe := regexp.MustCompile(`^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$`)
+		if !macRe.MatchString(d.WANMAC) {
+			return errors.New("WAN MAC 地址格式无效 (例如 12:34:56:78:9a:bc)")
+		}
 	}
 	return nil
 }

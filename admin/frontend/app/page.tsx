@@ -191,6 +191,10 @@ type NetworkDraft = {
   DHCPEnd: string;
   DNS: string;
   MTU: number;
+  PPPoEUser?: string;
+  PPPoEPass?: string;
+  PPPoEBackend?: string;
+  WANMAC?: string;
 };
 type MihomoStatus = {
   online: boolean;
@@ -627,6 +631,10 @@ const demo: Snapshot = {
     DHCPEnd: "192.168.2.249",
     DNS: "192.168.2.1",
     MTU: 1492,
+    PPPoEUser: "",
+    PPPoEPass: "",
+    PPPoEBackend: "auto",
+    WANMAC: "",
   },
 };
 
@@ -1760,19 +1768,84 @@ function Network({
   section: SectionId;
 }) {
   const [draft, setDraft] = useState(data.networkDraft);
+  const [saving, setSaving] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [showPass, setShowPass] = useState(false);
+  const [confirmReconnect, setConfirmReconnect] = useState(false);
+
+  useEffect(() => {
+    if (data.networkDraft) {
+      setDraft((prev) => {
+        if (!prev.WANInterface && !prev.PPPoEUser) {
+          return data.networkDraft;
+        }
+        return prev;
+      });
+    }
+  }, [data.networkDraft]);
+
   const wan = data.interfaces.find((item) => item.Role.includes("WAN"));
   const lan = data.interfaces.find((item) => item.Role.includes("LAN"));
+  const pppInterface = data.interfaces.find((item) => item.Name.startsWith("ppp"));
+
   const update = (key: keyof NetworkDraft, value: string | number) =>
     setDraft((old) => ({ ...old, [key]: value }));
-  const save = async () => {
-    const r = await fetch("/api/network-draft", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(draft),
-    });
-    const b = (await r.json()) as { error?: string };
-    onNotice(r.ok ? "网络配置记录已保存" : b.error || "保存失败");
+
+  const syncFromDevice = () => {
+    setDraft(data.networkDraft);
+    onNotice("已从路由器底层重新同步配置记录");
   };
+
+  const save = async (quiet = false): Promise<boolean> => {
+    setSaving(true);
+    try {
+      const r = await fetch("/api/network-draft", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draft),
+      });
+      const b = (await r.json()) as { error?: string; ok?: boolean };
+      if (!r.ok || !b.ok) {
+        onNotice(b.error || "保存失败");
+        return false;
+      }
+      if (!quiet) {
+        onNotice("网络与宽带参数已成功保存并同步至系统底层配置");
+      }
+      return true;
+    } catch (e: any) {
+      onNotice(`保存请求异常: ${e?.message || e}`);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveAndReconnect = async () => {
+    const saved = await save(true);
+    if (!saved) return;
+    setReconnecting(true);
+    onNotice("已下发重新拨号指令，正在平滑释放 ISP 会话（约需 10-15 秒，局域网与后台保持连通）...");
+    try {
+      const r = await fetch("/api/network/reconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backend: draft.PPPoEBackend || "auto" }),
+      });
+      const b = (await r.json()) as { error?: string; message?: string; ok?: boolean };
+      if (r.ok && b.ok) {
+        onNotice(b.message || "宽带重新拨号请求已成功生效，正在重新连接...");
+      } else {
+        onNotice(b.error || "重新拨号执行失败");
+      }
+    } catch (e: any) {
+      onNotice(`重拨请求异常: ${e?.message || e}`);
+    } finally {
+      setReconnecting(false);
+      setConfirmReconnect(false);
+    }
+  };
+
   return (
     <div className="view">
       <ModuleContextBar>
@@ -1790,158 +1863,349 @@ function Network({
             <span className="state-good">实时状态</span>
           </div>
           <article className="panel history-panel">
-        <div className="panel-title">
-          <div>
-            <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均</p>
-            <h2>WAN / LAN 吞吐</h2>
-          </div>
-        </div>
-        <TimeSeriesChart
-          history={history}
-          series={[
-            { label: "WAN 下载", color: "#30c7d8", value: (p) => p.wanDown },
-            { label: "WAN 上传", color: "#52d395", value: (p) => p.wanUp },
-            { label: "LAN 发送", color: "#a897ff", value: (p) => p.lanUp },
-          ]}
-          format={rate}
-        />
+            <div className="panel-title">
+              <div>
+                <p className="eyebrow">最近 10 分钟 · 5 秒滑动平均</p>
+                <h2>WAN / LAN 吞吐</h2>
+              </div>
+            </div>
+            <TimeSeriesChart
+              history={history}
+              series={[
+                { label: "WAN 下载", color: "#30c7d8", value: (p) => p.wanDown },
+                { label: "WAN 上传", color: "#52d395", value: (p) => p.wanUp },
+                { label: "LAN 发送", color: "#a897ff", value: (p) => p.lanUp },
+              ]}
+              format={rate}
+            />
           </article>
           <div className="interface-grid">
-        {data.interfaces.map((iface) => (
-          <article className="panel interface-card" key={iface.Name}>
-            <header>
-              <div>
-                <span
-                  className={`interface-light ${iface.State === "up" ? "up" : ""}`}
-                />
-                <strong>{iface.Name}</strong>
-              </div>
-              <span>{iface.Role}</span>
-            </header>
-            <div className="interface-address">
-              {iface.Addresses?.[0] || "未分配 IP"}
-            </div>
-            <dl>
-              <div>
-                <dt>链路</dt>
-                <dd>
-                  {iface.Carrier === "1"
-                    ? `${iface.SpeedMbps > 0 ? iface.SpeedMbps : ""} Mbps`
-                    : iface.State === "up"
-                      ? "已启用"
-                      : "未连接"}
-                </dd>
-              </div>
-              <div>
-                <dt>MTU</dt>
-                <dd>{iface.MTU}</dd>
-              </div>
-              <div>
-                <dt>接收</dt>
-                <dd>{rate(iface.RxBps)}</dd>
-              </div>
-              <div>
-                <dt>发送</dt>
-                <dd>{rate(iface.TxBps)}</dd>
-              </div>
-            </dl>
-            <small>{iface.MAC}</small>
-          </article>
-        ))}
+            {data.interfaces.map((iface) => (
+              <article className="panel interface-card" key={iface.Name}>
+                <header>
+                  <div>
+                    <span
+                      className={`interface-light ${iface.State === "up" ? "up" : ""}`}
+                    />
+                    <strong>{iface.Name}</strong>
+                  </div>
+                  <span>{iface.Role}</span>
+                </header>
+                <div className="interface-address">
+                  {iface.Addresses?.[0] || "未分配 IP"}
+                </div>
+                <dl>
+                  <div>
+                    <dt>链路</dt>
+                    <dd>
+                      {iface.Carrier === "1"
+                        ? `${iface.SpeedMbps > 0 ? iface.SpeedMbps : ""} Mbps`
+                        : iface.State === "up"
+                          ? "已启用"
+                          : "未连接"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>MTU</dt>
+                    <dd>{iface.MTU}</dd>
+                  </div>
+                  <div>
+                    <dt>接收</dt>
+                    <dd>{rate(iface.RxBps)}</dd>
+                  </div>
+                  <div>
+                    <dt>发送</dt>
+                    <dd>{rate(iface.TxBps)}</dd>
+                  </div>
+                </dl>
+                <small>{iface.MAC}</small>
+              </article>
+            ))}
           </div>
         </>
       )}
       {section === "config" && (
         <article className="panel config-panel section-page-first">
-        <div className="panel-title">
-          <div>
-            <p className="eyebrow">当前生效拓扑</p>
-            <h2>WAN / LAN 配置记录</h2>
+          <div className="panel-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px" }}>
+            <div>
+              <p className="eyebrow">网口拓扑 · PPPoE 宽带 · 局域网 DHCP</p>
+              <h2>网络配置中心</h2>
+            </div>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={syncFromDevice}
+                disabled={saving || reconnecting}
+                style={{ background: "#102a36", color: "#8da5b3", border: "1px solid #244453", borderRadius: "8px", padding: "8px 13px", cursor: "pointer", fontSize: "11px" }}
+              >
+                从设备同步
+              </button>
+              <button
+                type="button"
+                onClick={() => save(false)}
+                disabled={saving || reconnecting}
+                style={{ background: "#163f4f", color: "#54d7e6", border: "1px solid #28647a", borderRadius: "8px", padding: "8px 14px", cursor: "pointer", fontSize: "11px", fontWeight: "bold" }}
+              >
+                {saving ? "正在保存..." : "仅保存配置"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmReconnect(true)}
+                disabled={saving || reconnecting}
+                style={{ background: "linear-gradient(90deg, #d97706, #ea580c)", color: "#ffffff", border: 0, borderRadius: "8px", padding: "8px 16px", cursor: "pointer", fontSize: "11px", fontWeight: "bold", boxShadow: "0 4px 12px rgba(217, 119, 6, 0.3)" }}
+              >
+                {reconnecting ? "正在重拨 (约10秒)..." : "保存并重新拨号"}
+              </button>
+            </div>
           </div>
-          <button type="button" onClick={save}>
-            保存记录
-          </button>
-        </div>
-        <div className="form-grid">
-          <label>
-            WAN 网口
-            <select
-              value={draft.WANInterface}
-              onChange={(e) => update("WANInterface", e.target.value)}
-            >
-              {data.interfaces
-                .filter((i) => i.Name.startsWith("eth"))
-                .map((i) => (
-                  <option key={i.Name}>{i.Name}</option>
-                ))}
-            </select>
-          </label>
-          <label>
-            LAN 网口
-            <select
-              value={draft.LANInterface}
-              onChange={(e) => update("LANInterface", e.target.value)}
-            >
-              {data.interfaces
-                .filter((i) => i.Name.startsWith("eth"))
-                .map((i) => (
-                  <option key={i.Name}>{i.Name}</option>
-                ))}
-            </select>
-          </label>
-          <label>
-            WAN 模式
-            <select
-              value={draft.WANMode}
-              onChange={(e) => update("WANMode", e.target.value)}
-            >
-              <option value="pppoe">PPPoE 拨号</option>
-              <option value="dhcp">DHCP</option>
-              <option value="static">静态地址</option>
-            </select>
-          </label>
-          <label>
-            MTU
-            <input
-              type="number"
-              value={draft.MTU}
-              onChange={(e) => update("MTU", Number(e.target.value))}
-            />
-          </label>
-          <label>
-            LAN 地址
-            <input
-              value={draft.LANAddress}
-              onChange={(e) => update("LANAddress", e.target.value)}
-            />
-          </label>
-          <label>
-            DNS
-            <input
-              value={draft.DNS}
-              onChange={(e) => update("DNS", e.target.value)}
-            />
-          </label>
-          <label>
-            DHCP 起始
-            <input
-              value={draft.DHCPStart}
-              onChange={(e) => update("DHCPStart", e.target.value)}
-            />
-          </label>
-          <label>
-            DHCP 结束
-            <input
-              value={draft.DHCPEnd}
-              onChange={(e) => update("DHCPEnd", e.target.value)}
-            />
-          </label>
-        </div>
-        <p className="safe-note">
-          当前正式映射为 eth0（CM418 / RTL8153）连接光猫并承载 PPPoE，eth1（TIH
-          USB NetCard）连接 AP，LAN 网关为
-          192.168.2.1。这里保存的是运维记录，不会直接重启网络或中断现有连接。
-        </p>
+
+          {confirmReconnect && (
+            <div style={{
+              margin: "16px 0",
+              padding: "14px 18px",
+              borderRadius: "10px",
+              border: "1px solid #ea580c",
+              background: "#231508",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "14px",
+              flexWrap: "wrap",
+            }}>
+              <div style={{ color: "#fdba74", fontSize: "11px", lineHeight: "1.7", flex: 1, minWidth: "260px" }}>
+                <strong>⚠️ 确认执行重新拨号？</strong><br />
+                系统将保存当前设置并调用 PPPoE 守护进程平滑释放旧连接后重新发起协商（耗时约 10-15 秒）。<br />
+                <strong>局域网管理与本网页（192.168.2.1）将始终保持连接，不会中断。</strong>
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  type="button"
+                  disabled={reconnecting}
+                  onClick={handleSaveAndReconnect}
+                  style={{ background: "#ea580c", color: "#ffffff", fontWeight: "bold", border: 0, borderRadius: "6px", padding: "8px 16px", cursor: "pointer", fontSize: "11px" }}
+                >
+                  {reconnecting ? "处理中..." : "确认重新拨号"}
+                </button>
+                <button
+                  type="button"
+                  disabled={reconnecting}
+                  onClick={() => setConfirmReconnect(false)}
+                  style={{ background: "#1c2328", border: "1px solid #4b5563", color: "#9ca3af", borderRadius: "6px", padding: "8px 12px", cursor: "pointer", fontSize: "11px" }}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* WAN 上联与 PPPoE 配置区域 */}
+          <div style={{ marginTop: "24px" }}>
+            <h3 style={{ fontSize: "13px", color: "#4ecdc4", margin: "0 0 12px", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#4ecdc4" }} />
+              WAN 物理上联与宽带接入
+            </h3>
+            <div className="form-grid">
+              <label>
+                WAN 物理网口
+                <select
+                  value={draft.WANInterface}
+                  onChange={(e) => update("WANInterface", e.target.value)}
+                >
+                  {data.interfaces
+                    .filter((i) => i.Name.startsWith("eth"))
+                    .map((i) => (
+                      <option key={i.Name} value={i.Name}>{i.Name} {i.MAC ? `(${i.MAC})` : ""}</option>
+                    ))}
+                </select>
+              </label>
+
+              <label>
+                WAN 接入模式
+                <select
+                  value={draft.WANMode}
+                  onChange={(e) => update("WANMode", e.target.value)}
+                >
+                  <option value="pppoe">PPPoE 宽带拨号 (推荐)</option>
+                  <option value="dhcp">DHCP 自动获取 IP</option>
+                  <option value="static">静态 IP 地址</option>
+                </select>
+              </label>
+
+              {draft.WANMode === "pppoe" && (
+                <>
+                  <label>
+                    宽带账号 (Username)
+                    <input
+                      value={draft.PPPoEUser || ""}
+                      placeholder="例如 057101234567"
+                      onChange={(e) => update("PPPoEUser", e.target.value)}
+                    />
+                  </label>
+
+                  <label>
+                    宽带密码 (Password)
+                    <div style={{ position: "relative" }}>
+                      <input
+                        type={showPass ? "text" : "password"}
+                        value={draft.PPPoEPass || ""}
+                        placeholder="宽带密码"
+                        onChange={(e) => update("PPPoEPass", e.target.value)}
+                        style={{ paddingRight: "36px" }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPass(!showPass)}
+                        style={{
+                          position: "absolute",
+                          right: "8px",
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                          background: "transparent",
+                          border: 0,
+                          color: "#6b8292",
+                          cursor: "pointer",
+                          fontSize: "12px",
+                          padding: "4px",
+                        }}
+                        title={showPass ? "隐藏密码" : "显示密码"}
+                      >
+                        {showPass ? "🙈" : "👁️"}
+                      </button>
+                    </div>
+                  </label>
+
+                  <label>
+                    PPPoE 驱动后端
+                    <select
+                      value={draft.PPPoEBackend || "auto"}
+                      onChange={(e) => update("PPPoEBackend", e.target.value)}
+                    >
+                      <option value="auto">auto · 自动 (首选内核驱动，失败降级用户态)</option>
+                      <option value="kernel">kernel · 强制内核驱动 (rp-pppoe 零拷贝极低延迟)</option>
+                      <option value="userspace">userspace · 强制用户态驱动 (高兼容性)</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      克隆 MAC (WAN MAC)
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const targetIface = data.interfaces.find((i) => i.Name === draft.WANInterface);
+                          if (targetIface?.MAC) {
+                            update("WANMAC", targetIface.MAC);
+                            onNotice(`已填入 ${draft.WANInterface} 网卡硬件 MAC: ${targetIface.MAC}`);
+                          }
+                        }}
+                        style={{
+                          background: "none",
+                          border: 0,
+                          color: "#30c7d8",
+                          fontSize: "9px",
+                          cursor: "pointer",
+                          textDecoration: "underline",
+                          padding: 0,
+                        }}
+                      >
+                        读取网卡 MAC
+                      </button>
+                    </span>
+                    <input
+                      value={draft.WANMAC || ""}
+                      placeholder="例如 12:34:56:78:9a:bc"
+                      onChange={(e) => update("WANMAC", e.target.value)}
+                    />
+                  </label>
+
+                  <label>
+                    MTU 最大传输单元
+                    <input
+                      type="number"
+                      min={576}
+                      max={9000}
+                      value={draft.MTU || 1492}
+                      onChange={(e) => update("MTU", Number(e.target.value))}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* LAN 局域网配置区域 */}
+          <div style={{ marginTop: "24px" }}>
+            <h3 style={{ fontSize: "13px", color: "#a897ff", margin: "0 0 12px", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#a897ff" }} />
+              LAN 局域网与 DHCP 服务
+            </h3>
+            <div className="form-grid">
+              <label>
+                LAN 物理网口
+                <select
+                  value={draft.LANInterface}
+                  onChange={(e) => update("LANInterface", e.target.value)}
+                >
+                  {data.interfaces
+                    .filter((i) => i.Name.startsWith("eth"))
+                    .map((i) => (
+                      <option key={i.Name} value={i.Name}>{i.Name} {i.MAC ? `(${i.MAC})` : ""}</option>
+                    ))}
+                </select>
+              </label>
+
+              <label>
+                LAN 网关地址 / 掩码
+                <input
+                  value={draft.LANAddress}
+                  placeholder="192.168.2.1/24"
+                  onChange={(e) => update("LANAddress", e.target.value)}
+                />
+              </label>
+
+              <label>
+                本地 DNS 服务器
+                <input
+                  value={draft.DNS}
+                  placeholder="192.168.2.1"
+                  onChange={(e) => update("DNS", e.target.value)}
+                />
+              </label>
+
+              <label>
+                DHCP 地址池起始
+                <input
+                  value={draft.DHCPStart}
+                  placeholder="192.168.2.100"
+                  onChange={(e) => update("DHCPStart", e.target.value)}
+                />
+              </label>
+
+              <label>
+                DHCP 地址池结束
+                <input
+                  value={draft.DHCPEnd}
+                  placeholder="192.168.2.249"
+                  onChange={(e) => update("DHCPEnd", e.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* 当前状态汇总与防护说明 */}
+          <div style={{ marginTop: "20px", padding: "14px", borderRadius: "10px", background: "#0a1f2b", border: "1px solid #1c3c4f" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
+              <span style={{ fontSize: "11px", color: "#8daab9" }}>当前实时会话状态：</span>
+              <span style={{ fontSize: "11px", color: pppInterface ? "#52d395" : "#e2b469", fontWeight: "bold" }}>
+                {pppInterface ? `● PPPoE 已连接 (${pppInterface.Name} · ${pppInterface.Addresses?.[0] || "已获 IP"})` : "○ 正在等待链路或重新拨号"}
+              </span>
+            </div>
+            <p className="safe-note" style={{ margin: 0 }}>
+              当前硬件映射：<strong>{draft.WANInterface || "eth0"}</strong>（RTL8153 千兆网卡）上联光猫并承载 PPPoE，<strong>{draft.LANInterface || "eth1"}</strong> 下联无线 AP，局域网管理地址为 <strong>{draft.LANAddress || "192.168.2.1"}</strong>。<br />
+              • 点击<strong>【仅保存配置】</strong>将配置原子写入系统 <code>/data/adb/router-network/config</code> 并自动生成 <code>.bak</code> 备份，不重启或中断当前正在运行的网络连接。<br />
+              • 点击<strong>【保存并重新拨号】</strong>会平滑释放运营商 BRAS 会话并在 10 秒安全防抖周期后重新协商，局域网管理、DHCP 与本 Web 控制台全程保持在线。
+            </p>
+          </div>
         </article>
       )}
     </div>
