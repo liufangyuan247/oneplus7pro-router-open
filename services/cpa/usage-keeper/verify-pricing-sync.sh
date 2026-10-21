@@ -24,13 +24,12 @@ LOGIN_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -c "$COOKIE_FILE" \
 test "$LOGIN_CODE" = 204
 
 PREVIEW_CODE=$(curl -sS -o "$PREVIEW_BODY" -w '%{http_code}' -b "$COOKIE_FILE" \
-  http://127.0.0.1:8320/api/v1/pricing/sync/preview)
+  'http://127.0.0.1:8320/api/v1/pricing/sync/fetch?source=models-dev')
 test "$PREVIEW_CODE" = 200
-grep -q '"source":"Models.dev"' "$PREVIEW_BODY"
+jq -e '.source == "models-dev" and (.matches | type == "array")' "$PREVIEW_BODY" >/dev/null
 
-MATCHES=$(grep -o '"match_type"' "$PREVIEW_BODY" | wc -l | tr -d ' ')
-UNMATCHED=$(sed -n 's/.*"unmatched_models":\[\([^]]*\)\].*/\1/p' "$PREVIEW_BODY" | \
-  awk -F',' '{if ($0 == "") print 0; else print NF}')
+MATCHES=$(jq '.matches | length' "$PREVIEW_BODY")
+UNMATCHED=$(jq '.unmatched_models | length' "$PREVIEW_BODY")
 printf 'PRICING_PREVIEW_OK matches=%s unmatched=%s\n' "$MATCHES" "${UNMATCHED:-0}"
 
 curl -sS -o /dev/null -b "$COOKIE_FILE" \

@@ -1,11 +1,11 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$SourceDirectory,
-    [string]$OutputArchive = "$PSScriptRoot/cpa-usage-keeper-v1.15.11-android-source.tar.gz"
+    [string]$OutputArchive = "$PSScriptRoot/build/cpa-usage-keeper-v2.0.0-android-source.tar.gz"
 )
 
 $ErrorActionPreference = 'Stop'
-$expectedCommit = '71a41cc2d1cce8d75b42473adf31f2616ad8085e'
+$expectedCommit = 'fc8cbde97fe6baa35189e51115716865ce377ec2'
 $source = [System.IO.Path]::GetFullPath($SourceDirectory)
 $archive = [System.IO.Path]::GetFullPath($OutputArchive)
 
@@ -16,6 +16,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $source '.git'))) {
 $actualCommit = (git -C $source rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $expectedCommit) {
     throw "Expected upstream commit $expectedCommit, got $actualCommit"
+}
+if (git -C $source status --porcelain --untracked-files=no) {
+    throw 'SourceDirectory has modified tracked files'
 }
 
 Push-Location (Join-Path $source 'web')

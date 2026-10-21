@@ -47,6 +47,7 @@ kernel/**/06-artifacts/**
 kernel/**/.config
 
 # Go / Node output
+services/cpa/usage-keeper/build/
 admin/backend/router-admin*
 !admin/backend/router-admin*.go
 admin/backend/build/
