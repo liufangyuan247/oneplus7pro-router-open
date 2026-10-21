@@ -53,7 +53,7 @@ refresh_openlist() {
 find_volume_device() {
   for device in /dev/block/sd*[0-9]; do
     [ -b "$device" ] || continue
-    if blkid "$device" 2>/dev/null | grep -q "UUID=\"$VOLUME_UUID\""; then
+    if blkid "$device" 2>/dev/null | grep -qi "UUID=\"$VOLUME_UUID\""; then
       printf '%s\n' "$device"
       return 0
     fi
@@ -64,13 +64,29 @@ find_volume_device() {
 mount_volume() {
   device="$1"
   mkdir -p "$SOURCE"
-  "$MOUNT_NTFS" \
-    -o force,rw,uid=1023,gid=1023,fmask=0007,dmask=0007,shortname=mixed,utf8 \
-    "$device" "$SOURCE" >> "$LOGFILE" 2>&1
+  fstype=$(blkid "$device" 2>/dev/null | grep -o 'TYPE="[^"]*"' | cut -d'"' -f2)
+  if [ "$fstype" = "exfat" ]; then
+    /system/bin/mount -t exfat \
+      -o rw,uid=1023,gid=1023,fmask=0007,dmask=0007,noatime,nodiratime,utf8 \
+      "$device" "$SOURCE" >> "$LOGFILE" 2>&1
+  elif [ "$fstype" = "ntfs" ]; then
+    "$MOUNT_NTFS" \
+      -o force,rw,uid=1023,gid=1023,fmask=0007,dmask=0007,shortname=mixed,utf8,noatime,nodiratime,big_writes,async \
+      "$device" "$SOURCE" >> "$LOGFILE" 2>&1
+  else
+    /system/bin/mount "$device" "$SOURCE" >> "$LOGFILE" 2>&1
+  fi
 }
 
 repair_volume() {
   device="$1"
+  fstype=$(blkid "$device" 2>/dev/null | grep -o 'TYPE="[^"]*"' | cut -d'"' -f2)
+  if [ "$fstype" = "exfat" ]; then
+    [ -x "$PREFIX/bin/fsck.exfat" ] || return 1
+    log "mount failed; running fsck.exfat once for $device"
+    "$PREFIX/bin/fsck.exfat" -p "$device" >> "$LOGFILE" 2>&1
+    return $?
+  fi
   [ -x "$NTFSFIX" ] || return 1
   log "mount failed; running ntfsfix once for $device"
   LD_LIBRARY_PATH="$NTFSLIB" "$NTFSFIX" "$device" >> "$LOGFILE" 2>&1
