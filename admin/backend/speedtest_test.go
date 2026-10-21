@@ -2432,15 +2432,12 @@ func TestSpeedTestContextCancelOnCompletionFailureAndCancel(t *testing.T) {
 			speedTestHTTP: func(ctx context.Context, proxyURL, targetURL string, sampleBytes int64) (int64, time.Duration, time.Duration, int, error) {
 				return sampleBytes, 20 * time.Millisecond, 5 * time.Millisecond, 206, nil
 			},
-			speedTestSampleWAN: func(ctx context.Context) (float64, error) {
-				return 10 * 1e6, nil // 10 Mbit/s busy WAN
-			},
-			speedTestCheckListener: func() bool { return true },
+			speedTestCheckListener: func() bool { return false },
 		}
 		server.initSpeedTest()
 
-		// Launch deep speed test with allowBusyNetwork=false -> should fail on busy WAN
-		reqPost := httptest.NewRequest(http.MethodPost, "/api/mihomo/speedtest", strings.NewReader(`{"mode":"deep","allowBusyNetwork":false}`))
+		// Launch speed test -> should fail on unavailable listener
+		reqPost := httptest.NewRequest(http.MethodPost, "/api/mihomo/speedtest", strings.NewReader(`{"mode":"deep"}`))
 		recPost := httptest.NewRecorder()
 		server.mihomoSpeedTest(recPost, reqPost)
 		if recPost.Code != http.StatusAccepted {
@@ -2472,8 +2469,8 @@ func TestSpeedTestContextCancelOnCompletionFailureAndCancel(t *testing.T) {
 		if finalJob == nil || finalJob.State != "failed" {
 			t.Fatalf("job state = %v, want 'failed'", finalJob)
 		}
-		if finalJob.ErrorCode != "busy_network" {
-			t.Fatalf("job ErrorCode = %q, want 'busy_network'", finalJob.ErrorCode)
+		if finalJob.ErrorCode != "benchmark_listener_unavailable" {
+			t.Fatalf("job ErrorCode = %q, want 'benchmark_listener_unavailable'", finalJob.ErrorCode)
 		}
 
 		// Verify cancel was invoked

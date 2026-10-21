@@ -3730,7 +3730,7 @@ function MihomoManager({
     [],
   );
 
-  const startSpeedTest = async (mode: "quick" | "deep", allowBusyNetwork = false) => {
+  const startSpeedTest = async (mode: "quick" | "deep", allowBusyNetwork = true) => {
     setSpeedTestBusy(mode);
     setSpeedTestError(null);
     setSpeedTestSuccessMsg(null);
@@ -3738,7 +3738,7 @@ function MihomoManager({
       const response = await fetch("/api/mihomo/speedtest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, allowBusyNetwork }),
+        body: JSON.stringify({ mode, allowBusyNetwork: true }),
       });
       const data = (await response.json()) as MihomoSpeedTestJob & { error?: string };
       if (!response.ok) {
@@ -4224,24 +4224,11 @@ function MihomoManager({
           const displayError =
             speedTestError ||
             (speedTestJob?.state === "failed" ? speedTestJob.errorMessage || "测速任务执行失败" : null);
-          const isBusyNetwork =
-            speedTestJob?.errorCode === "busy_network" ||
-            (speedTestJob?.errorMessage && speedTestJob.errorMessage.includes("WAN 流量超过"));
 
           if (!displayError) return null;
           return (
             <div className="speedtest-notice error">
               <span>{displayError}</span>
-              {isBusyNetwork && (
-                <button
-                  type="button"
-                  className="section-action"
-                  style={{ marginLeft: "auto" }}
-                  onClick={() => startSpeedTest("deep", true)}
-                >
-                  忽略背景流量继续测速
-                </button>
-              )}
             </div>
           );
         })()}
@@ -4255,14 +4242,6 @@ function MihomoManager({
         {speedTestSuccessMsg && (
           <div className="speedtest-notice success">
             <span>{speedTestSuccessMsg}</span>
-          </div>
-        )}
-
-        {speedTestJob?.contaminated && (
-          <div className="speedtest-notice warning">
-            <span>
-              ⚠️ 提示：测速前检测到家庭 WAN 有较大背景流量（&gt;5 Mbit/s），测速结果可能偏低。
-            </span>
           </div>
         )}
 

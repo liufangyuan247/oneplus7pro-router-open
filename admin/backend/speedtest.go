@@ -932,22 +932,8 @@ func (s *Server) runSpeedTestWorker(ctx context.Context, job *MihomoSpeedTestJob
 		return
 	}
 
-	// 5. WAN background load check (sample for 3 seconds)
-	job.Phase = "sampling_wan"
-	s.publishSpeedTestSnapshot(job)
-	s.persistJob(job)
-
-	wanBps, err := s.speedTestSampleWAN(ctx)
-	if !checkContext() {
-		return
-	}
-	if err == nil && wanBps > wanBusyThresholdBps {
-		if job.Mode == "deep" && !allowBusyNetwork {
-			failJob("busy_network", fmt.Sprintf("当前 WAN 流量超过 5 Mbit/s (%.1f Mbit/s)，深度测速已阻止", wanBps/1e6))
-			return
-		}
-		job.Contaminated = true
-	}
+	// 5. WAN background traffic check bypassed: always ignore background traffic and directly start testing
+	job.Contaminated = false
 
 	// 6. Build test plan
 	var testPool []speedTestCandidate
