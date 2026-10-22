@@ -76,6 +76,7 @@ case "$1" in
     run_copy "baidu:来自：PJA110" "$DEST_BASE/来自：PJA110"
     run_copy "baidu:来自：微信备份" "$DEST_BASE/来自：微信备份"
     run_copy "baidu:港澳行留念" "$DEST_BASE/港澳行留念"
+    run_copy "baidu:flashes" "$DEST_BASE/flashes"
     echo "[✓] 所有照片目录同步任务处理完毕！"
     ;;
   wedding)
