@@ -14,6 +14,7 @@ DEST_BASE="quark:百度网盘备份"
 # 默认并发优化参数：4 并发传输，8 检查线程，大文件自动分片，不重新覆盖同大小同时间文件
 RCLONE_OPTS=(
   --config "$CONF_FILE"
+  --disable copy
   --transfers 4
   --checkers 8
   --fast-list
