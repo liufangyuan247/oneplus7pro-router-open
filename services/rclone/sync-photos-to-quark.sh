@@ -53,9 +53,73 @@ run_copy() {
   local dst="$2"
   local log_file="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_copy.log"
 
-  echo "[+] 开始同步: $src -> $dst"
-  echo "[+] 日志写入: $log_file"
-  
+  echo "[+] 准备同步: $src -> $dst"
+
+  # 优先检测 Rclone WebUI / RC 守护进程是否正常在线
+  if "$RCLONE_BIN" rc rc/noop >/dev/null 2>&1; then
+    echo "[+] 检测到 Rclone RC 守护进程在线，直接提交至 WebUI 任务队列..."
+    local res
+    res=$("$RCLONE_BIN" rc sync/copy srcFs="$src" dstFs="$dst" _async=true 2>&1)
+    local jobid
+    jobid=$(echo "$res" | grep -o '"jobid": [0-9]*' | awk '{print $2}')
+    if [ -n "$jobid" ]; then
+      echo "[✓] 任务已成功提交到 Rclone WebUI! Job ID: $jobid"
+      echo "[i] 您可在 WebUI (http://192.168.2.1:5572/#/dashboard) 实时监控进度。"
+      echo "[*] 开始跟踪任务进度 (每 5 秒刷新一次)..."
+
+      while true; do
+        sleep 5
+        local status
+        status=$("$RCLONE_BIN" rc job/status jobid="$jobid" 2>/dev/null)
+        local finished
+        finished=$(echo "$status" | grep -o '"finished": [a-z]*' | awk '{print $2}')
+
+        # 获取当前任务的传输速率和进度
+        local stats
+        stats=$("$RCLONE_BIN" rc core/stats group="job/$jobid" 2>/dev/null)
+        local speed
+        speed=$(echo "$stats" | grep -o '"speed": [0-9.]*' | awk '{print $2}')
+        local bytes
+        bytes=$(echo "$stats" | grep -o '"bytes": [0-9]*' | awk '{print $2}')
+        local total
+        total=$(echo "$stats" | grep -o '"totalBytes": [0-9]*' | awk '{print $2}')
+
+        if [ "$finished" = "true" ]; then
+          local success
+          success=$(echo "$status" | grep -o '"success": [a-z]*' | awk '{print $2}')
+          if [ "$success" = "true" ]; then
+            echo ""
+            echo "[✓] 任务 $jobid ($src) 同步完成！"
+            return 0
+          else
+            local err
+            err=$(echo "$status" | grep -o '"error": "[^"]*"' | cut -d'"' -f4)
+            echo ""
+            echo "[✗] 任务 $jobid 同步失败: $err"
+            return 1
+          fi
+        fi
+
+        local speed_kb=0
+        if [ -n "$speed" ]; then
+          speed_kb=$(awk "BEGIN {printf \"%.1f\", $speed/1024}")
+        fi
+        local bytes_mb=0
+        if [ -n "$bytes" ]; then
+          bytes_mb=$(awk "BEGIN {printf \"%.1f\", $bytes/1048576}")
+        fi
+        local total_mb=0
+        if [ -n "$total" ]; then
+          total_mb=$(awk "BEGIN {printf \"%.1f\", $total/1048576}")
+        fi
+        printf "\r[同步中] 已传输: %s MB / %s MB | 实时网速: %s KB/s | 任务ID: %s   " "$bytes_mb" "$total_mb" "$speed_kb" "$jobid"
+      done
+    else
+      echo "[!] RC 提交失败，回退至命令行直接执行模式: $res"
+    fi
+  fi
+
+  echo "[+] 命令行回退模式: 日志写入 $log_file"
   "$RCLONE_BIN" copy "$src" "$dst" "${RCLONE_OPTS[@]}" --log-file="$log_file"
   local ret=$?
   if [ $ret -eq 0 ]; then
