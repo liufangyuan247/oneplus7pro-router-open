@@ -154,6 +154,7 @@ func TestServiceUpdatesAPI(t *testing.T) {
 
 	// Inject cache
 	serviceUpdatesMu.Lock()
+	serviceUpdatesAt = time.Now()
 	serviceUpdatesCache["openlist"] = &ServiceUpdateInfo{
 		Name:           "openlist",
 		Label:          "OpenList",

@@ -135,7 +135,7 @@ func TestApplyStaticLeasesToClientsOverridesDHCPName(t *testing.T) {
 
 func TestStaticLeaseAPIRejectsInvalidOrConflictingInput(t *testing.T) {
 	rootCalls := 0
-	server := &Server{data: t.TempDir(), runSu: func(command string) ([]byte, error) {
+	server := &Server{data: t.TempDir(), lastConfigCheck: time.Now(), runSu: func(command string) ([]byte, error) {
 		rootCalls++
 		return nil, nil
 	}}

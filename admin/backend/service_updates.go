@@ -167,6 +167,22 @@ var (
 				return false
 			},
 		},
+		"rclone": {
+			Name:         "rclone",
+			Binary:       "rclone",
+			IsAptPackage: true,
+			AptPackage:   "rclone",
+			Port:         5572,
+			HealthProbe: func(s *Server) bool {
+				client := http.Client{Timeout: 2 * time.Second}
+				resp, err := client.Get("http://127.0.0.1:5572/")
+				if err == nil {
+					_ = resp.Body.Close()
+					return true
+				}
+				return false
+			},
+		},
 	}
 )
 
@@ -288,6 +304,12 @@ func (s *Server) detectCurrentVersion(name string) string {
 	case "qbittorrent":
 		out := s.runCmd(filepath.Join(s.prefix, "bin", "qbittorrent-nox"), "-v")
 		re := regexp.MustCompile(`(?i)qBittorrent\s+(v?[0-9.]+)`)
+		if m := re.FindStringSubmatch(out); len(m) >= 2 {
+			return m[1]
+		}
+	case "rclone":
+		out := s.runCmd(filepath.Join(s.prefix, "bin", "rclone"), "version")
+		re := regexp.MustCompile(`(?i)rclone\s+(v[0-9.]+)`)
 		if m := re.FindStringSubmatch(out); len(m) >= 2 {
 			return m[1]
 		}

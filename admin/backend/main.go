@@ -53,6 +53,7 @@ const (
 
 var allowedServices = map[string]ServiceMeta{
 	"openlist":         {Label: "OpenList", Port: 5244},
+	"rclone":           {Label: "Rclone · 云同步", Port: 5572},
 	"aria2":            {Label: "aria2", Port: 6800},
 	"cpa":              {Label: "CPA · AI API", Port: 8317},
 	"cpa-usage-keeper": {Label: "CPA Usage Keeper", Port: 8320},
@@ -2775,6 +2776,7 @@ var systemLogLabels = map[string]string{
 	"network":  "网络服务",
 	"aria2":    "aria2",
 	"openlist": "OpenList",
+	"rclone":   "Rclone",
 	"admin":    "管理后台",
 }
 
@@ -2825,7 +2827,7 @@ func (s *Server) systemLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) readSystemLogs(source string, limit int) ([]SystemLogEntry, error) {
 	if source == "events" {
 		entries := []SystemLogEntry{}
-		for _, name := range []string{"kernel", "storage", "network", "aria2", "openlist", "admin"} {
+		for _, name := range []string{"kernel", "storage", "network", "aria2", "openlist", "rclone", "admin"} {
 			var part []SystemLogEntry
 			var err error
 			if name == "kernel" {
@@ -2905,7 +2907,7 @@ func (s *Server) readSystemLogText(source string) (string, error) {
 			}
 		}
 		return all.String(), nil
-	case "aria2", "openlist", "admin":
+	case "aria2", "openlist", "rclone", "admin":
 		service := source
 		if source == "admin" {
 			service = "router-admin"

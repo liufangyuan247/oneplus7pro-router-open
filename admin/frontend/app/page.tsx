@@ -365,6 +365,7 @@ type LogSource =
   | "network"
   | "aria2"
   | "openlist"
+  | "rclone"
   | "admin";
 type SystemLogResponse = {
   source: LogSource;
@@ -553,6 +554,7 @@ const demo: Snapshot = {
     "mihomo",
     "healthd",
     "openlist",
+    "rclone",
     "qbittorrent",
     "sshd",
   ].map((name, i) => ({
@@ -566,6 +568,8 @@ const demo: Snapshot = {
             ? "CPA Usage Keeper"
           : name === "mihomo"
             ? "Mihomo · 代理核心"
+          : name === "rclone"
+            ? "Rclone · 云同步"
           : name,
     State: "运行中",
     PID: 4400 + i,
@@ -573,6 +577,7 @@ const demo: Snapshot = {
     Port:
       {
         openlist: 5244,
+        rclone: 5572,
         aria2: 6800,
         caddy: 6880,
         cpa: 8317,
@@ -5150,7 +5155,12 @@ function Services({
       setNotice("该服务没有网页管理入口");
       return;
     }
-    const path = service.Name === "cpa" ? "/management.html" : "";
+    let path = "";
+    if (service.Name === "cpa") {
+      path = "/management.html";
+    } else if (service.Name === "rclone") {
+      path = "/?login_token=YWRtaW46YWRtaW4%3D";
+    }
     window.open(
       `${location.protocol}//${location.hostname}${service.webUrl}${path}`,
       "_blank",
@@ -5267,6 +5277,7 @@ function Services({
                   )}
                   {[
                     "openlist",
+                    "rclone",
                     "caddy",
                     "qbittorrent",
                     "cpa",
@@ -5499,6 +5510,7 @@ const logSources: { id: LogSource; label: string; description: string }[] = [
   { id: "network", label: "网络", description: "PPPoE、DNS 与路由" },
   { id: "aria2", label: "aria2", description: "下载进程日志" },
   { id: "openlist", label: "OpenList", description: "网盘与离线下载" },
+  { id: "rclone", label: "Rclone", description: "云存储与同步服务" },
   { id: "admin", label: "管理后台", description: "Router Admin 自身" },
 ];
 
