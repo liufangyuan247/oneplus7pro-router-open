@@ -11,5 +11,4 @@ exec '/data/data/com.termux/files/usr/bin/rclone' rcd \
     --rc-allow-origin='*' \
     --rc-web-gui \
     --rc-web-gui-no-open-browser \
-    --rc-user='admin' \
-    --rc-pass='admin'
+    --rc-no-auth

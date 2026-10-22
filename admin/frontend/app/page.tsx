@@ -5159,7 +5159,7 @@ function Services({
     if (service.Name === "cpa") {
       path = "/management.html";
     } else if (service.Name === "rclone") {
-      path = "/?login_token=YWRtaW46YWRtaW4%3D";
+      path = "/#/dashboard";
     }
     window.open(
       `${location.protocol}//${location.hostname}${service.webUrl}${path}`,
