@@ -7,6 +7,8 @@ export TMPDIR='/data/data/com.termux/files/usr/tmp'
 
 exec '/data/data/com.termux/files/usr/bin/rclone' rcd \
     --config='/data/data/com.termux/files/home/router-data/rclone/rclone.conf' \
+    --disable copy \
+    --buffer-size 16M \
     --rc-addr=':5572' \
     --rc-allow-origin='*' \
     --rc-web-gui \
