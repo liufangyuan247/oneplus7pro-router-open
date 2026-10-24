@@ -1,4 +1,4 @@
-# Google Antigravity uses the dedicated US-only Antigravity group.
+# Google Antigravity uses the dedicated Japan-only Antigravity group.
 # One parent domain per line; DOMAIN-SUFFIX also covers subdomains.
 
 cloudcode-pa.googleapis.com

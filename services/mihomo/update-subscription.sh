@@ -280,8 +280,9 @@ function emit_proxy_groups(indent, child) {
     print child "exclude-filter: \"" metadata_filter "\""
     print indent "- name: \"Antigravity\""
     print child "type: select"
+    print child "proxies: [\"AI-日本自动\"]"
     print child "include-all-proxies: true"
-    print child "filter: \"(?i)🇺🇸|美国|USA|United States\""
+    print child "filter: \"(?i)🇯🇵|日本|Japan|(^|[^A-Za-z])JP([^A-Za-z]|$)\""
     print child "exclude-filter: \"" metadata_filter "\""
 }
 function emit_ai_listener() {
@@ -537,8 +538,8 @@ function emit_managed_rules(indent) {
     print indent "- IP-CIDR,95.161.64.0/20,家庭RULE,no-resolve"
     print indent "- IP-CIDR,149.154.160.0/20,家庭RULE,no-resolve"
 
-    # Antigravity keeps a stable US exit, other AI services keep a stable
-    # Japanese exit, and the general household group can select any
+    # Antigravity shares the Japanese automatic exit with other AI services,
+    # while the general household group can select any
     # subscription node. The routing policy decides the fallback.
     for (i=1; i<=antigravity_domain_count; i++) {
         print indent "- DOMAIN-SUFFIX," antigravity_domains[i] ",Antigravity"

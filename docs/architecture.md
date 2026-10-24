@@ -66,15 +66,15 @@ Mihomo 维持单个 root 核心：
 
 - `17890`：通用本机 mixed listener；
 - `17891`：CPA/Codex 专用 listener，绑定日本 `AI` 代理组；
-- `17892`：Antigravity 专用 listener，绑定美国 `Antigravity` 代理组；
+- `17892`：Antigravity 专用 listener，绑定日本 `Antigravity` 代理组，默认选择 `AI-日本自动`；
 - `9091`：controller，仅回环；
 - 默认规则为直连；
 - 全屋代理由路由管理器显式创建 TUN 和策略路由。
 
 Antigravity 的 Cloud Code、OAuth、Unleash 和自动更新域名单独维护，规则与
-DNS/DoH 均绑定美国 `Antigravity` 组；其 CPA 账号配置同时固定使用回环监听
-`127.0.0.1:17892`。因此账号级请求和透明代理兜底不会误落到日本 `AI` 或家庭
-代理组。
+DNS/DoH 均绑定日本 `Antigravity` 组；其 CPA 账号配置同时固定使用回环监听
+`127.0.0.1:17892`。该组默认复用 `AI-日本自动`，同时保留日本节点手选能力；
+切换订阅后仍沿用日本出口，账号级请求和透明代理兜底保持一致。
 
 订阅更新流程为：下载到临时目录 → 大小检查 → 适配端口/组/规则 → `mihomo -t` 离线校验 → 保存 last-good → controller 热加载 → 完整健康检查。热加载失败才短暂重启；重启后仍失败则回滚。
 

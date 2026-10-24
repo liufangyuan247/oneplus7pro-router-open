@@ -35,10 +35,11 @@ firewalling and the physical fail-open route; it no longer launches the
 `AI-日本自动` latency-tests all Japanese subscription nodes and selects the
 fastest healthy exit. The `AI` group exposes that automatic choice, `DIRECT`,
 and all individual Japanese subscription nodes.
-`Antigravity` is a separate selector containing only US subscription nodes. An
-update preserves the currently selected Antigravity node by default; set
-`ANTIGRAVITY_NODE` to override it. This prevents Google location policy from
-sharing the Japanese Codex egress or changing the existing `AI` selection.
+`Antigravity` defaults to `AI-日本自动` and also exposes individual Japanese
+subscription nodes. Both AI services therefore keep the same region across
+subscription changes without retaining a provider-specific US selection.
+Google's Antigravity API can reject a US-labelled exit even when public IP
+databases report the US; verify real API generation before trusting a node.
 `家庭RULE自动` tests every subscription node, while `家庭RULE` exposes that
 automatic choice, `DIRECT`, and every individual subscription node.
 
@@ -133,10 +134,10 @@ The subscription is a node transport only. Its `proxy-groups`,
 `custom-ai-proxy-domains.txt`; those domains select `AI`.
 Antigravity policy is managed independently in
 `antigravity-proxy-domains.txt`, with optional additions in
-`custom-antigravity-proxy-domains.txt`; those domains select the US-only
+`custom-antigravity-proxy-domains.txt`; those domains select the Japan-only
 `Antigravity` group for both transparent routing and policy-bound DNS/DoH.
 Together with the per-account `17892` proxy override, this keeps Antigravity
-on the US exit even when a request is not made through CPA's explicit proxy.
+on the Japanese exit even when a request is not made through CPA's explicit proxy.
 
 `~/router-data/mihomo/routing-policy` selects one of two locally managed
 policies:
