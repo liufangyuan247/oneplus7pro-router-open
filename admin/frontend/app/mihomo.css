@@ -17,13 +17,17 @@
 .mihomo-hero-state strong { font: 700 14px/1 ui-monospace, monospace; color: #b9e8ed; }
 .mihomo-hero-state small { color: #6d8999; font-size: 9px; }
 
-.mihomo-actions { grid-column: 1 / -1; display: flex; gap: 8px; padding-top: 16px; border-top: 1px solid #1f4350; }
+.mihomo-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; padding-top: 16px; border-top: 1px solid #1f4350; }
 .mihomo-actions button,
 .mode-options button,
-.subscription-card-actions button,
-.subscription-add > button { border: 1px solid #2b5867; background: #123542; color: #bfe1e8; border-radius: 9px; padding: 9px 12px; font-size: 9px; cursor: pointer; }
-.mihomo-actions button:first-child,
-.subscription-add > button { border: 0; background: linear-gradient(90deg, #22b9cb, #4dd59a); color: #04202a; font-weight: 800; }
+.subscription-card-actions button { border: 1px solid #2b5867; background: #123542; color: #bfe1e8; border-radius: 9px; padding: 9px 12px; font-size: 9.5px; cursor: pointer; transition: border-color .15s, background .15s, color .15s; }
+.mihomo-actions button:hover:not(:disabled),
+.subscription-card-actions button:hover:not(:disabled) { border-color: #3daec0; color: #eaf9fc; }
+.mihomo-actions button:first-child { border: 0; background: linear-gradient(90deg, #22b9cb, #4dd59a); color: #04202a; font-weight: 800; }
+.mihomo-actions button.mihomo-action-sub { border-color: #2f8998; background: linear-gradient(135deg, #123e4a, #113a36); color: #82f0d9; font-weight: 700; }
+.mihomo-actions button.mihomo-action-sub:hover:not(:disabled) { border-color: #4be0d4; color: #eefffb; background: linear-gradient(135deg, #164c5a, #154842); }
+.context-sub-jump { appearance: none; border: 1px solid #255261; background: #0d2732; color: #9de5ee; border-radius: 999px; padding: 3px 10px; font-size: 9.5px; font-weight: 600; cursor: pointer; transition: all .15s; }
+.context-sub-jump:hover { border-color: #3cc5d6; background: #123544; color: #eafffd; }
 .mihomo-console button:disabled { opacity: .45; cursor: not-allowed; }
 
 .mihomo-live-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
@@ -82,43 +86,100 @@
 .mihomo-connection small { color: #557382; font-size: 8px; }
 .mihomo-connection button { border: 1px solid #533740; background: #291c23; color: #dc8990; border-radius: 7px; padding: 6px 9px; font-size: 8px; cursor: pointer; }
 
-.subscription-list { display: grid; gap: 9px; }
-.subscription-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 15px; border: 1px solid #1d3b49; background: #091d27; border-radius: 12px; }
-.subscription-card.active { border-color: #2c665c; background: linear-gradient(90deg, #0d292e, #0a202a); }
+.subscription-section-heading { gap: 12px; flex-wrap: wrap; }
+.subscription-heading-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.btn-jump-add-sub { appearance: none; border: 1px solid #2ea3b5; background: linear-gradient(135deg, #134452, #123e39); color: #8af3dc; border-radius: 999px; padding: 7px 14px; font-size: 10.5px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: all .18s; box-shadow: 0 4px 14px #0000002b; }
+.btn-jump-add-sub:hover { border-color: #4ce3d8; background: linear-gradient(135deg, #185566, #164d47); color: #f0fffc; transform: translateY(-1px); }
+
+.subscription-relocated-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; border-color: #255464; }
+.subscription-relocated-card h3 { margin: 0; font-size: 15px; color: #e6f5fa; }
+.subscription-relocated-card > div > p:last-child { margin: 6px 0 0; font-size: 10.5px; color: #7c9cad; line-height: 1.6; max-width: 620px; }
+
+.subscription-list { display: grid; gap: 10px; }
+.subscription-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 16px 18px; border: 1px solid #1f404f; background: #091d27; border-radius: 13px; }
+.subscription-card.active { border-color: #2e7064; background: linear-gradient(90deg, #0d2b30, #0a202a); }
 .subscription-card-copy,
-.subscription-card-copy > div { min-width: 0; display: flex; align-items: center; gap: 8px; }
-.subscription-card-copy { flex-direction: column; align-items: flex-start; gap: 6px; }
-.subscription-card-copy strong { font-size: 11px; }
-.subscription-card-copy > span { max-width: 100%; color: #7391a1; font: 9px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
-.subscription-card-copy small { color: #587484; font-size: 8px; }
-.active-subscription { border: 1px solid #2d6757; background: #153b32; color: #79dcae; border-radius: 999px; padding: 3px 7px; font-size: 7px; }
+.subscription-card-copy > div { min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.subscription-card-copy { flex-direction: column; align-items: flex-start; gap: 7px; }
+.subscription-card-copy strong { font-size: 13px; color: #eaf6fa; }
+.subscription-card-copy > span { max-width: 100%; color: #7fa0b0; font: 10px/1.45 ui-monospace, monospace; overflow-wrap: anywhere; }
+.subscription-card-copy small { color: #6c8b9c; font-size: 9.5px; line-height: 1.5; }
+.active-subscription { border: 1px solid #2f7563; background: #143d34; color: #7fe6b7; border-radius: 999px; padding: 3px 8px; font-size: 9px; font-weight: 700; }
 .subscription-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.subscription-card-actions button { font-size: 10px; padding: 8px 13px; }
 .subscription-card-actions .danger-quiet { border-color: #543941; color: #df8c94; background: #2a1d24; }
+.subscription-card-actions .danger-quiet:hover:not(:disabled) { border-color: #824955; color: #ffb4bc; background: #38212b; }
+
+.subscription-autoupdate-badge { border-radius: 999px; padding: 3px 9px; font-size: 9px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.subscription-autoupdate-badge.enabled { border: 1px solid #265666; background: #0e2d3b; color: #7ce6be; }
+.subscription-autoupdate-badge.disabled { border: 1px solid #2d3f4c; background: #132029; color: #8aa5b4; }
+
+.subscription-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 28px 18px; border: 1px dashed #2c5363; background: #081a24; border-radius: 13px; color: #7e9cad; text-align: center; }
+.subscription-empty strong { color: #cce2ec; font-size: 13px; }
+.subscription-empty span { font-size: 10.5px; line-height: 1.6; max-width: 480px; }
+
+.subscription-add-card { position: relative; overflow: hidden; display: grid; gap: 16px; margin-top: 18px; padding: 20px 22px; border: 1px solid #2e7c90; border-radius: 15px; background: radial-gradient(circle at 0% 0%, #22b9cb24, transparent 44%), linear-gradient(155deg, #0e2c3a, #081b25); box-shadow: 0 14px 36px #00000038, inset 0 1px 0 #55e2f520; transition: border-color .25s, box-shadow .25s; }
+.subscription-add-card:before { content: ''; position: absolute; inset: 0 0 auto 0; height: 3px; background: linear-gradient(90deg, #22b9cb, #4dd59a); }
+.subscription-add-card.highlight { border-color: #56ebfa; box-shadow: 0 0 0 3px #22b9cb40, 0 18px 44px #00000055; }
+
+.subscription-add-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.subscription-add-title-group { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.subscription-add-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; background: linear-gradient(135deg, #22b9cb, #4dd59a); color: #04202a; font-size: 18px; font-weight: 900; line-height: 1; box-shadow: 0 6px 16px #22b9cb36; }
+.subscription-add-title-group h3 { margin: 0; font-size: 14.5px; font-weight: 800; color: #eefaff; letter-spacing: -.2px; }
+.subscription-add-title-group p { margin: 3px 0 0; font-size: 10.5px; color: #86a7b7; line-height: 1.5; }
+.subscription-privacy-pill { border: 1px solid #275666; background: #0a222d; color: #7ecfd9; border-radius: 999px; padding: 4px 10px; font-size: 9.5px; font-weight: 600; white-space: nowrap; }
+
+.subscription-add-fields { display: grid; grid-template-columns: minmax(190px, .36fr) minmax(280px, 1fr); gap: 14px; }
+.subscription-field { display: flex; flex-direction: column; min-width: 0; }
+.subscription-field-label { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: #c6e1ec; }
+.subscription-field-label em { font-style: normal; font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: #112c39; color: #7d9fb0; border: 1px solid #224454; }
+.subscription-field-label em.required { background: #113842; color: #67e2ef; border-color: #296b7b; }
+.subscription-field input { display: block; width: 100%; min-width: 0; margin-top: 8px; border: 1px solid #2f5f73; background: #06161f; color: #eef8fc; border-radius: 10px; padding: 11px 13px; font-size: 12px; outline: none; transition: border-color .15s, box-shadow .15s, background .15s; }
+.subscription-field input::placeholder { color: #547585; }
+.subscription-field input:focus { border-color: #3acbe0; box-shadow: 0 0 0 3px #22b9cb24; background: #071b26; }
+
+.subscription-add-footer { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid #1d4454; }
+.subscription-policy-control { display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; }
+.subscription-policy-label { font-size: 11px; font-weight: 700; color: #a3c4d3; }
+
+.subscription-mode-switch { display: inline-flex; padding: 3px; border: 1px solid #265162; background: #06161f; border-radius: 10px; gap: 3px; }
+.subscription-mode-switch button,
+.log-modal .subscription-mode-switch button { appearance: none; border: 1px solid transparent; background: transparent; color: #7e9eae; border-radius: 7px; padding: 6px 12px; font-size: 10.5px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: all .15s; }
+.subscription-mode-switch button:hover,
+.log-modal .subscription-mode-switch button:hover { color: #d6edf5; }
+.subscription-mode-switch button.active.auto,
+.log-modal .subscription-mode-switch button.active.auto { border-color: #2d8b7d; background: linear-gradient(135deg, #123f43, #113a31); color: #7cf0c5; box-shadow: 0 2px 10px #00000035; }
+.subscription-mode-switch button.active.manual,
+.log-modal .subscription-mode-switch button.active.manual { border-color: #3c5f72; background: #152e3c; color: #dceff7; box-shadow: 0 2px 10px #00000035; }
+
+.subscription-interval-picker { display: inline-flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 600; color: #96b7c6; }
+.subscription-interval-picker select { border: 1px solid #2f5f73; background: #06161f; color: #e8f6fb; border-radius: 9px; padding: 6px 10px; font-size: 11px; font-weight: 600; outline: none; cursor: pointer; }
+.subscription-interval-picker select:focus { border-color: #3acbe0; box-shadow: 0 0 0 2px #22b9cb24; }
+.subscription-manual-note { font-size: 10px; color: #84a5b5; background: #091f2a; border: 1px solid #1e3f4e; border-radius: 8px; padding: 6px 10px; line-height: 1.45; }
+
+.subscription-submit-btn { border: 0; border-radius: 10px; background: linear-gradient(90deg, #22b9cb, #4dd59a); color: #04202a; padding: 11px 20px; min-height: 42px; font-size: 12px; font-weight: 800; cursor: pointer; white-space: nowrap; box-shadow: 0 8px 22px #22b9cb2e; transition: transform .15s, box-shadow .15s, filter .15s; }
+.subscription-submit-btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.05); box-shadow: 0 10px 26px #22b9cb42; }
+
+.modal-header-desc { margin: 4px 0 0; font-size: 10px; color: #7a98a8; font-weight: 400; }
 .subscription-nodes-modal { width: min(920px, 94vw); }
 .subscription-node-table-wrap { max-height: 62vh; overflow: auto; }
-.subscription-node-table { width: 100%; border-collapse: collapse; font-size: 9px; }
+.subscription-node-table { width: 100%; border-collapse: collapse; font-size: 10px; }
 .subscription-node-table th,
-.subscription-node-table td { padding: 9px 10px; border-bottom: 1px solid #173542; text-align: left; }
+.subscription-node-table td { padding: 10px 12px; border-bottom: 1px solid #173542; text-align: left; }
 .subscription-node-table th { position: sticky; top: 0; background: #0a2029; color: #8daab8; }
 .subscription-node-table td:first-child { color: #c8dde5; }
 .subscription-node-empty,
 .subscription-node-error { padding: 28px 16px; color: #7895a3; text-align: center; }
 .subscription-node-error { color: #e2a0a4; }
-.subscription-edit-modal { width: min(560px, 92vw); }
-.subscription-edit-modal form { display: grid; gap: 13px; padding-top: 10px; }
-.subscription-edit-modal label { color: #7893a3; font-size: 9px; }
-.subscription-edit-modal input { display: block; width: 100%; margin-top: 7px; border: 1px solid #284e5d; background: #071923; color: #dbe9f1; border-radius: 9px; padding: 10px 12px; font-size: 10px; outline: none; }
-.subscription-edit-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 7px; }
-.subscription-empty { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 29px 16px; border: 1px dashed #274654; border-radius: 12px; color: #718d9d; text-align: center; }
-.subscription-empty strong { color: #a9bec9; font-size: 11px; }
-.subscription-empty span { font-size: 9px; }
 
-.subscription-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 18px; padding-top: 18px; border-top: 1px solid #1d3745; }
-.subscription-add > div { display: grid; grid-template-columns: minmax(150px, .35fr) minmax(260px, 1fr); gap: 10px; }
-.subscription-add label { color: #7893a3; font-size: 9px; }
-.subscription-add input { display: block; width: 100%; min-width: 0; margin-top: 7px; border: 1px solid #284e5d; background: #071923; color: #dbe9f1; border-radius: 9px; padding: 10px 12px; font-size: 10px; outline: none; }
-.subscription-add input:focus { border-color: #36bccc; box-shadow: 0 0 0 3px #30c7d815; }
-.subscription-add > button { min-height: 37px; white-space: nowrap; }
+.subscription-edit-modal { width: min(560px, 92vw); }
+.subscription-edit-modal form { display: grid; gap: 14px; padding: 18px 20px 20px; }
+.subscription-edit-section { padding: 14px; background: #071620; border: 1px solid #1e3d4e; border-radius: 11px; display: grid; gap: 11px; margin-top: 2px; }
+.subscription-edit-policy-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.subscription-edit-tip { margin: 0; font-size: 9.5px; color: #7898a8; line-height: 1.5; }
+.subscription-edit-actions { display: flex; justify-content: flex-end; gap: 9px; padding-top: 6px; }
+.log-modal .subscription-edit-actions .btn-modal-secondary { border: 1px solid #2b4d5c; background: #102a37; color: #bfd4df; border-radius: 9px; padding: 9px 16px; font-size: 11px; font-weight: 600; }
+.log-modal .subscription-edit-actions .btn-modal-primary { border: 0; background: linear-gradient(90deg, #22b9cb, #4dd59a); color: #04202a; border-radius: 9px; padding: 9px 18px; font-size: 11px; font-weight: 800; }
 
 .speedtest-panel {
   display: grid;
@@ -435,7 +496,9 @@
 @media (max-width: 760px) {
   .mihomo-hero { grid-template-columns: 1fr; }
   .mihomo-hero-state { align-items: flex-start; }
-  .subscription-add { grid-template-columns: 1fr; }
+  .subscription-add-fields { grid-template-columns: 1fr; }
+  .subscription-add-footer { flex-direction: column; align-items: stretch; }
+  .subscription-submit-btn { width: 100%; }
   .mihomo-live-grid { grid-template-columns: 1fr 1fr; }
   .proxy-group-grid { grid-template-columns: 1fr; }
   .mihomo-port-grid { grid-template-columns: 1fr 1fr; }
@@ -449,6 +512,11 @@
   .mode-options { grid-template-columns: 1fr; }
   .mode-options button { min-height: 58px; }
   .subscription-card { grid-template-columns: 1fr; }
-  .subscription-add > div { grid-template-columns: 1fr; }
+  .subscription-card-actions { justify-content: flex-start; }
+  .subscription-add-card { padding: 16px; }
+  .subscription-privacy-pill { display: none; }
+  .subscription-mode-switch { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
+  .subscription-mode-switch button,
+  .log-modal .subscription-mode-switch button { text-align: center; justify-content: center; }
   .mihomo-port-grid { grid-template-columns: 1fr; }
 }

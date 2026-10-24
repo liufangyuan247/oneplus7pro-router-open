@@ -24,6 +24,7 @@ export type SectionId =
   | "tailscale"
   | "aria2"
   | "overview"
+  | "subscriptions"
   | "policies"
   | "speedtest"
   | "settings"
@@ -62,6 +63,7 @@ export const secondaryNavItems: Partial<
   ],
   mihomo: [
     { id: "overview", label: "运行概览" },
+    { id: "subscriptions", label: "订阅管理" },
     { id: "policies", label: "策略与节点" },
     { id: "speedtest", label: "体验测速" },
     { id: "settings", label: "设置" },

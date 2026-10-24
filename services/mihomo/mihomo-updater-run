@@ -2,9 +2,12 @@
 exec 2>&1
 export HOME='/data/data/com.termux/files/home' PREFIX='/data/data/com.termux/files/usr' PATH='/data/data/com.termux/files/usr/bin'
 
-# The active config is refreshed during installation. Thereafter update every
-# six hours; any network or subscription error leaves the last valid config.
+trap 'exit 0' INT TERM
+
+echo "[mihomo-updater] service started"
+
 while :; do
-    sleep 21600
-    "$HOME/router-stack/bin/mihomo-update-subscription" || true
+    "$PREFIX/bin/curl" -fsS --max-time 120 -X POST http://127.0.0.1:9090/api/mihomo/subscriptions/auto-update >/dev/null 2>&1 || true
+    sleep 60 &
+    wait $! || exit 0
 done

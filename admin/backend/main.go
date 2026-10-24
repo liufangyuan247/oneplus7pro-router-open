@@ -105,6 +105,7 @@ type Server struct {
 	started                            time.Time
 	mu                                 sync.Mutex
 	subscriptionMu                     sync.Mutex
+	autoUpdateFailures                 map[string]time.Time
 	clientPolicyMu                     sync.Mutex
 	sessions                           map[string]authSession
 	lastCPU                            cpuCounters
@@ -385,38 +386,60 @@ type NetworkDraft struct {
 }
 
 type SubscriptionInfo struct {
-	Configured      bool   `json:"configured"`
-	Source          string `json:"source"`
-	LastUpdated     string `json:"lastUpdated"`
-	AutoUpdateHours int    `json:"autoUpdateHours"`
+	Configured        bool   `json:"configured"`
+	Source            string `json:"source"`
+	LastUpdated       string `json:"lastUpdated"`
+	AutoUpdateEnabled bool   `json:"autoUpdateEnabled"`
+	AutoUpdateHours   int    `json:"autoUpdateHours"`
 }
 
 type SubscriptionRecord struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	URL       string    `json:"url"`
-	CachedURL string    `json:"cachedUrl,omitempty"`
-	NodeCount int       `json:"nodeCount,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	URL               string    `json:"url"`
+	CachedURL         string    `json:"cachedUrl,omitempty"`
+	NodeCount         int       `json:"nodeCount,omitempty"`
+	AutoUpdateEnabled *bool     `json:"autoUpdateEnabled,omitempty"`
+	AutoUpdateHours   int       `json:"autoUpdateHours,omitempty"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
+func (r SubscriptionRecord) IsAutoUpdateEnabled() bool {
+	if r.AutoUpdateEnabled == nil {
+		return true
+	}
+	return *r.AutoUpdateEnabled
+}
+
+func (r SubscriptionRecord) GetAutoUpdateHours() int {
+	if r.AutoUpdateHours <= 0 {
+		return 6
+	}
+	return r.AutoUpdateHours
 }
 
 type SubscriptionStore struct {
-	Version  int                  `json:"version"`
-	ActiveID string               `json:"activeId"`
-	Items    []SubscriptionRecord `json:"items"`
+	Version           int                  `json:"version"`
+	ActiveID          string               `json:"activeId"`
+	AutoUpdateEnabled *bool                `json:"autoUpdateEnabled,omitempty"`
+	AutoUpdateHours   int                  `json:"autoUpdateHours,omitempty"`
+	Items             []SubscriptionRecord `json:"items"`
 }
 
 type PublicSubscription struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Source      string `json:"source"`
-	Cached      bool   `json:"cached"`
-	NodeCount   int    `json:"nodeCount"`
-	NeedsUpdate bool   `json:"needsUpdate"`
-	Active      bool   `json:"active"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Source            string `json:"source"`
+	Cached            bool   `json:"cached"`
+	NodeCount         int    `json:"nodeCount"`
+	NeedsUpdate       bool   `json:"needsUpdate"`
+	Active            bool   `json:"active"`
+	AutoUpdateEnabled bool   `json:"autoUpdateEnabled"`
+	AutoUpdateHours   int    `json:"autoUpdateHours"`
+	NextAutoUpdateAt  string `json:"nextAutoUpdateAt,omitempty"`
+	CreatedAt         string `json:"createdAt"`
+	UpdatedAt         string `json:"updatedAt"`
 }
 
 type MihomoSettings struct {
@@ -509,6 +532,7 @@ func main() {
 	s.startMetricSampler()
 	s.initSpeedTest()
 	s.initServiceUpdates()
+	s.startSubscriptionAutoUpdater()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.health)
@@ -539,6 +563,7 @@ func main() {
 	mux.HandleFunc("/api/mihomo/connections", s.auth(s.mihomoConnections))
 	mux.HandleFunc("/api/mihomo/subscription", s.auth(s.mihomoSubscription))
 	mux.HandleFunc("/api/mihomo/subscriptions", s.auth(s.mihomoSubscriptionsV2))
+	mux.HandleFunc("/api/mihomo/subscriptions/auto-update", s.auth(s.mihomoSubscriptionsAutoUpdate))
 	mux.HandleFunc("/api/mihomo/subscriptions/nodes", s.auth(s.mihomoSubscriptionNodes))
 	mux.HandleFunc(mihomoDashboardPrefix, s.auth(s.mihomoDashboard))
 	mux.HandleFunc(mihomoAPIPrefix, s.auth(s.mihomoAPIProxy))
@@ -3135,7 +3160,16 @@ func (s *Server) tailscaleAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) subscriptionInfo() SubscriptionInfo {
-	info := SubscriptionInfo{AutoUpdateHours: 6}
+	info := SubscriptionInfo{AutoUpdateHours: 6, AutoUpdateEnabled: true}
+	if store, err := s.loadSubscriptionStore(); err == nil {
+		for _, item := range store.Items {
+			if item.ID == store.ActiveID {
+				info.AutoUpdateEnabled = item.IsAutoUpdateEnabled()
+				info.AutoUpdateHours = item.GetAutoUpdateHours()
+				break
+			}
+		}
+	}
 	urlPath := filepath.Join(s.data, "mihomo", "subscription.url")
 	raw := strings.TrimSpace(readText(urlPath))
 	if raw != "" {
@@ -3969,23 +4003,123 @@ func sanitizeLogSecrets(s string) string {
 
 func (s *Server) publicSubscriptions(store SubscriptionStore) map[string]any {
 	items := make([]PublicSubscription, 0, len(store.Items))
-	activeUpdated := ""
+	var activeConfigModTime time.Time
 	if stat, err := os.Stat(filepath.Join(s.data, "mihomo", "config.yaml")); err == nil {
-		activeUpdated = stat.ModTime().Format(time.RFC3339)
+		activeConfigModTime = stat.ModTime()
 	}
 	for _, item := range store.Items {
-		updated := item.UpdatedAt.Format(time.RFC3339)
-		if item.ID == store.ActiveID && activeUpdated != "" {
-			updated = activeUpdated
+		lastUpdatedTime := item.UpdatedAt
+		if lastUpdatedTime.IsZero() && item.ID == store.ActiveID && !activeConfigModTime.IsZero() {
+			lastUpdatedTime = activeConfigModTime
+		}
+		updated := ""
+		if !lastUpdatedTime.IsZero() {
+			updated = lastUpdatedTime.Format(time.RFC3339)
+		}
+		nextAutoUpdateAt := ""
+		if item.IsAutoUpdateEnabled() && !lastUpdatedTime.IsZero() {
+			nextAutoUpdateAt = lastUpdatedTime.Add(time.Duration(item.GetAutoUpdateHours()) * time.Hour).Format(time.RFC3339)
 		}
 		cached := item.CachedURL == item.URL && item.URL != "" && fileExistsNonEmpty(s.subscriptionCachePath(item.ID))
-		publicItem := PublicSubscription{ID: item.ID, Name: item.Name, Source: maskedSubscriptionSource(item.URL), Active: item.ID == store.ActiveID, Cached: cached, NodeCount: item.NodeCount, NeedsUpdate: !cached, CreatedAt: item.CreatedAt.Format(time.RFC3339), UpdatedAt: updated}
+		publicItem := PublicSubscription{
+			ID:                item.ID,
+			Name:              item.Name,
+			Source:            maskedSubscriptionSource(item.URL),
+			Active:            item.ID == store.ActiveID,
+			Cached:            cached,
+			NodeCount:         item.NodeCount,
+			NeedsUpdate:       !cached,
+			AutoUpdateEnabled: item.IsAutoUpdateEnabled(),
+			AutoUpdateHours:   item.GetAutoUpdateHours(),
+			NextAutoUpdateAt:  nextAutoUpdateAt,
+			CreatedAt:         item.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:         updated,
+		}
 		if !cached {
 			publicItem.NodeCount = 0
 		}
 		items = append(items, publicItem)
 	}
-	return map[string]any{"activeId": store.ActiveID, "items": items, "autoUpdateHours": 6}
+	return map[string]any{
+		"activeId": store.ActiveID,
+		"items":    items,
+	}
+}
+
+func (s *Server) checkAndRunAutoUpdates() (int, error) {
+	s.subscriptionMu.Lock()
+	defer s.subscriptionMu.Unlock()
+
+	store, err := s.loadSubscriptionStore()
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	updatedCount := 0
+
+	if s.autoUpdateFailures == nil {
+		s.autoUpdateFailures = make(map[string]time.Time)
+	}
+
+	for i := range store.Items {
+		item := &store.Items[i]
+		if !item.IsAutoUpdateEnabled() {
+			continue
+		}
+		if lastFail, ok := s.autoUpdateFailures[item.ID]; ok && now.Sub(lastFail) < 5*time.Minute {
+			continue
+		}
+
+		interval := time.Duration(item.GetAutoUpdateHours()) * time.Hour
+		lastUpdated := item.UpdatedAt
+		if lastUpdated.IsZero() && item.ID == store.ActiveID {
+			if stat, err := os.Stat(filepath.Join(s.data, "mihomo", "config.yaml")); err == nil {
+				lastUpdated = stat.ModTime()
+			}
+		}
+
+		if now.Sub(lastUpdated) >= interval {
+			isActive := item.ID == store.ActiveID
+			log.Printf("[auto-update] Updating subscription %s (%s, active=%v, interval=%dh)...", item.ID, item.Name, isActive, item.GetAutoUpdateHours())
+			if err := s.refreshSubscription(item, isActive); err != nil {
+				log.Printf("[auto-update] Failed to update subscription %s: %v", item.ID, err)
+				s.autoUpdateFailures[item.ID] = now
+				continue
+			}
+			delete(s.autoUpdateFailures, item.ID)
+			updatedCount++
+		}
+	}
+
+	if updatedCount > 0 {
+		if err := s.saveSubscriptionStore(store); err != nil {
+			log.Printf("[auto-update] Failed to save subscription store: %v", err)
+			return updatedCount, err
+		}
+	}
+	return updatedCount, nil
+}
+
+func (s *Server) startSubscriptionAutoUpdater() {
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			_, _ = s.checkAndRunAutoUpdates()
+		}
+	}()
+}
+
+func (s *Server) mihomoSubscriptionsAutoUpdate(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, http.MethodPost) {
+		return
+	}
+	updated, err := s.checkAndRunAutoUpdates()
+	if err != nil {
+		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"updated": updated})
 }
 
 func (s *Server) writeActiveSubscriptionURL(raw string) error {

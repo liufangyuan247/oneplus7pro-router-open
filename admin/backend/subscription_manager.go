@@ -326,8 +326,10 @@ func (s *Server) mihomoSubscriptionsV2(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, http.StatusOK, s.publicSubscriptions(store))
 	case http.MethodPost:
 		var body struct {
-			Name string `json:"name"`
-			URL  string `json:"url"`
+			Name              string `json:"name"`
+			URL               string `json:"url"`
+			AutoUpdateEnabled *bool  `json:"autoUpdateEnabled,omitempty"`
+			AutoUpdateHours   *int   `json:"autoUpdateHours,omitempty"`
 		}
 		if decodeJSON(r, &body) != nil {
 			jsonOut(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
@@ -348,8 +350,24 @@ func (s *Server) mihomoSubscriptionsV2(w http.ResponseWriter, r *http.Request) {
 			jsonOut(w, http.StatusInternalServerError, map[string]string{"error": "无法生成订阅 ID"})
 			return
 		}
+		enabled := true
+		if body.AutoUpdateEnabled != nil {
+			enabled = *body.AutoUpdateEnabled
+		}
+		hours := 6
+		if body.AutoUpdateHours != nil && *body.AutoUpdateHours >= 1 && *body.AutoUpdateHours <= 720 {
+			hours = *body.AutoUpdateHours
+		}
 		now := time.Now()
-		item := SubscriptionRecord{ID: id, Name: name, URL: rawURL, CreatedAt: now, UpdatedAt: now}
+		item := SubscriptionRecord{
+			ID:                id,
+			Name:              name,
+			URL:               rawURL,
+			AutoUpdateEnabled: &enabled,
+			AutoUpdateHours:   hours,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		}
 		if err := s.refreshSubscription(&item, false); err != nil {
 			jsonOut(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 			return
@@ -370,10 +388,12 @@ func (s *Server) mihomoSubscriptionsV2(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, http.StatusOK, s.publicSubscriptions(store))
 	case http.MethodPatch:
 		var body struct {
-			ID     string `json:"id"`
-			Action string `json:"action"`
-			Name   string `json:"name,omitempty"`
-			URL    string `json:"url,omitempty"`
+			ID                string `json:"id"`
+			Action            string `json:"action"`
+			Name              string `json:"name,omitempty"`
+			URL               string `json:"url,omitempty"`
+			AutoUpdateEnabled *bool  `json:"autoUpdateEnabled,omitempty"`
+			AutoUpdateHours   *int   `json:"autoUpdateHours,omitempty"`
 		}
 		if decodeJSON(r, &body) != nil || (body.Action != "activate" && body.Action != "update" && body.Action != "edit") {
 			jsonOut(w, http.StatusBadRequest, map[string]string{"error": "无效订阅操作"})
@@ -406,6 +426,16 @@ func (s *Server) mihomoSubscriptionsV2(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				item.URL = nextURL
+			}
+			if body.AutoUpdateEnabled != nil {
+				item.AutoUpdateEnabled = body.AutoUpdateEnabled
+			}
+			if body.AutoUpdateHours != nil {
+				if *body.AutoUpdateHours < 1 || *body.AutoUpdateHours > 720 {
+					jsonOut(w, http.StatusBadRequest, map[string]string{"error": "更新间隔必须在 1 到 720 小时之间"})
+					return
+				}
+				item.AutoUpdateHours = *body.AutoUpdateHours
 			}
 		case "update":
 			if err := s.refreshSubscription(item, item.ID == store.ActiveID); err != nil {

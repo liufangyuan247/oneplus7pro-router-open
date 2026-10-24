@@ -314,6 +314,9 @@ type SubscriptionItem = {
   nodeCount: number;
   needsUpdate: boolean;
   active: boolean;
+  autoUpdateEnabled?: boolean;
+  autoUpdateHours?: number;
+  nextAutoUpdateAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -327,12 +330,14 @@ type SubscriptionList = {
   activeId: string;
   items: SubscriptionItem[];
   autoUpdateHours: number;
+  autoUpdateEnabled?: boolean;
 };
 type SubscriptionInfo = {
   configured: boolean;
   source: string;
   lastUpdated: string;
   autoUpdateHours: number;
+  autoUpdateEnabled?: boolean;
 };
 type HistoryPoint = {
   at: number;
@@ -1007,6 +1012,7 @@ export default function Home() {
           refresh={refresh}
           setNotice={setNotice}
           section={activeSection}
+          onNavigateSection={(nextSection) => navigate("mihomo", nextSection)}
         />
       )}
       {active === "storage" && <Storage data={data} />}
@@ -3265,11 +3271,13 @@ function MihomoManager({
   refresh,
   setNotice,
   section,
+  onNavigateSection,
 }: {
   data: Snapshot;
   refresh: (quiet?: boolean) => Promise<void>;
   setNotice: (value: string) => void;
   section: SectionId;
+  onNavigateSection: (section: SectionId) => void;
 }) {
   const [status, setStatus] = useState<MihomoStatus>({
     online: false,
@@ -3322,13 +3330,21 @@ function MihomoManager({
   });
   const [subscriptionName, setSubscriptionName] = useState("");
   const [subscriptionUrl, setSubscriptionUrl] = useState("");
+  const [newSubAutoUpdate, setNewSubAutoUpdate] = useState(true);
+  const [newSubInterval, setNewSubInterval] = useState(6);
   const [viewingSubscription, setViewingSubscription] = useState<SubscriptionItem | null>(null);
   const [subscriptionNodes, setSubscriptionNodes] = useState<SubscriptionNodeInfo[]>([]);
   const [subscriptionNodesError, setSubscriptionNodesError] = useState("");
   const [editingSubscription, setEditingSubscription] = useState<SubscriptionItem | null>(null);
   const [editSubscriptionName, setEditSubscriptionName] = useState("");
   const [editSubscriptionUrl, setEditSubscriptionUrl] = useState("");
+  const [editAutoUpdateEnabled, setEditAutoUpdateEnabled] = useState(true);
+  const [editAutoUpdateHours, setEditAutoUpdateHours] = useState(6);
+  const [highlightAddCard, setHighlightAddCard] = useState(false);
   const [busy, setBusy] = useState("");
+  const addFormRef = useRef<HTMLFormElement | null>(null);
+  const addNameInputRef = useRef<HTMLInputElement | null>(null);
+  const addUrlInputRef = useRef<HTMLInputElement | null>(null);
   const [speedTestJob, setSpeedTestJob] = useState<MihomoSpeedTestJob | null>(null);
   const [speedTestNow, setSpeedTestNow] = useState<number>(0);
   const [speedTestBusy, setSpeedTestBusy] = useState<string | null>(null);
@@ -3891,6 +3907,8 @@ function MihomoManager({
     setEditingSubscription(item);
     setEditSubscriptionName(item.name);
     setEditSubscriptionUrl("");
+    setEditAutoUpdateEnabled(item.autoUpdateEnabled !== false);
+    setEditAutoUpdateHours(item.autoUpdateHours || 6);
   };
 
   const saveEditedSubscription = async (event: FormEvent) => {
@@ -3906,17 +3924,16 @@ function MihomoManager({
           action: "edit",
           name: editSubscriptionName.trim(),
           url: editSubscriptionUrl.trim(),
+          autoUpdateEnabled: editAutoUpdateEnabled,
+          autoUpdateHours: editAutoUpdateHours,
         }),
       });
       if (!response.ok)
         throw new Error(await responseError(response, "保存订阅信息失败"));
       setSubscriptions((await response.json()) as SubscriptionList);
       setEditingSubscription(null);
-      setNotice(
-        editSubscriptionUrl.trim()
-          ? "订阅信息已保存，请更新订阅以获取新地址的节点"
-          : "订阅名称已保存",
-      );
+      setNotice("订阅信息与更新设置已保存");
+      finishLater();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "保存订阅信息失败");
     } finally {
@@ -3963,6 +3980,8 @@ function MihomoManager({
         body: JSON.stringify({
           name: subscriptionName.trim(),
           url: subscriptionUrl.trim(),
+          autoUpdateEnabled: newSubAutoUpdate,
+          autoUpdateHours: newSubInterval,
         }),
       });
       if (!response.ok)
@@ -3971,6 +3990,8 @@ function MihomoManager({
       setSubscriptions(nextSubscriptions);
       setSubscriptionName("");
       setSubscriptionUrl("");
+      setNewSubAutoUpdate(true);
+      setNewSubInterval(6);
       setNotice(
         nextSubscriptions.items.length === 1
           ? "订阅已添加、更新并启用"
@@ -3986,6 +4007,26 @@ function MihomoManager({
 
   const openDashboard = () => {
     window.open("/mihomo-dashboard/", "_blank", "noopener");
+  };
+
+  useEffect(() => {
+    if (!highlightAddCard) return;
+    const timer = window.setTimeout(() => setHighlightAddCard(false), 1800);
+    return () => clearTimeout(timer);
+  }, [highlightAddCard]);
+
+  const jumpToAddSubscription = (focusInput = true) => {
+    onNavigateSection("subscriptions");
+    setHighlightAddCard(true);
+    window.setTimeout(() => {
+      addFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (focusInput) {
+        const target = subscriptionName.trim()
+          ? addUrlInputRef.current
+          : addNameInputRef.current;
+        target?.focus();
+      }
+    }, 80);
   };
 
   const modes: {
@@ -4004,7 +4045,22 @@ function MihomoManager({
         <strong>{status.online && running ? "Mihomo 运行中" : "Mihomo 未就绪"}</strong>
         <span>{modes.find((mode) => mode.id === status.mode)?.label || "未知模式"}</span>
         <span>
-          {subscriptions.items.find((item) => item.active)?.name || "未启用订阅"}
+          <button
+            type="button"
+            className="context-sub-jump"
+            title="点击前往订阅管理 / 添加新订阅"
+            onClick={() => jumpToAddSubscription(!subscriptions.items.length)}
+          >
+            {(() => {
+              const activeItem = subscriptions.items.find((item) => item.active);
+              if (!activeItem) return "未启用订阅 · 点击添加";
+              const policyText =
+                activeItem.autoUpdateEnabled !== false
+                  ? `${activeItem.autoUpdateHours || 6}h 自动更新`
+                  : "仅手动更新";
+              return `${activeItem.name} (${policyText})`;
+            })()}
+          </button>
         </span>
         <span>{status.connections} 条连接</span>
       </ModuleContextBar>
@@ -4051,6 +4107,13 @@ function MihomoManager({
             onClick={() => serviceAction("restart")}
           >
             重启核心
+          </button>
+          <button
+            type="button"
+            className="mihomo-action-sub"
+            onClick={() => jumpToAddSubscription(true)}
+          >
+            ＋ 添加 / 管理订阅 ({subscriptions.items.length})
           </button>
           <button
             type="button"
@@ -4511,122 +4574,258 @@ function MihomoManager({
         </p>
       </article>
 
-      <article className="panel mihomo-section">
-        <div className="section-heading small">
-          <div>
-            <p className="eyebrow">配置来源</p>
-            <h2>订阅管理</h2>
-          </div>
-          <span className="count-badge">
-            {subscriptions.items.length} 个订阅
-          </span>
+      <article className="panel mihomo-section subscription-relocated-card">
+        <div>
+          <p className="eyebrow">配置来源</p>
+          <h3>订阅管理与添加新订阅</h3>
+          <p>
+            当前已配置 {subscriptions.items.length} 个订阅（
+            {subscriptions.items.filter((i) => i.autoUpdateEnabled !== false).length}{" "}
+            个开启定时自动更新）。订阅管理已独立至顶部「订阅管理」标签页，方便快速添加与切换。
+          </p>
         </div>
-        <div className="subscription-list">
-          {subscriptions.items.map((item) => (
-            <section
-              className={`subscription-card ${item.active ? "active" : ""}`}
-              key={item.id}
-            >
-              <div className="subscription-card-copy">
-                <div>
-                  <strong>{item.name}</strong>
-                  {item.active && (
-                    <span className="active-subscription">当前使用</span>
-                  )}
-                </div>
-                <span>{item.source}</span>
-                <small>
-                  最近更新：
-                  {item.updatedAt
-                    ? new Date(item.updatedAt).toLocaleString("zh-CN")
-                    : "尚未更新"}
-                  {item.cached ? ` · ${item.nodeCount} 个节点` : " · 需要更新"}
-                </small>
-              </div>
-              <div className="subscription-card-actions">
-                {!item.active && (
-                  <button
-                    type="button"
-                    disabled={Boolean(busy) || !item.cached}
-                    onClick={() => subscriptionAction(item, "activate")}
-                  >
-                    {busy === `activate-${item.id}` ? "启用中…" : "启用"}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={Boolean(busy)}
-                  onClick={() => subscriptionAction(item, "update")}
-                >
-                  {busy === `update-${item.id}` ? "更新中…" : "更新"}
-                </button>
-                <button
-                  type="button"
-                  disabled={Boolean(busy) || !item.cached}
-                  onClick={() => viewSubscriptionNodes(item)}
-                >
-                  {busy === `nodes-${item.id}` ? "读取中…" : "节点"}
-                </button>
-                <button
-                  type="button"
-                  disabled={Boolean(busy)}
-                  onClick={() => openEditSubscription(item)}
-                >
-                  编辑
-                </button>
-                <button
-                  className="danger-quiet"
-                  type="button"
-                  disabled={Boolean(busy)}
-                  onClick={() => deleteSubscription(item)}
-                >
-                  {busy === `delete-${item.id}` ? "删除中…" : "删除"}
-                </button>
-              </div>
-            </section>
-          ))}
-        </div>
-        {subscriptions.items.length === 0 && (
-          <div className="subscription-empty">
-            <strong>还没有订阅</strong>
-            <span>
-              在下方粘贴订阅地址，系统会先下载并校验节点；首个订阅会自动启用。
-            </span>
-          </div>
-        )}
-        <form className="subscription-add" onSubmit={addSubscription}>
-          <div>
-            <label>
-              订阅名称（可选）
-              <input
-                value={subscriptionName}
-                onChange={(event) => setSubscriptionName(event.target.value)}
-                placeholder="例如：主力机场"
-                maxLength={128}
-                autoComplete="off"
-              />
-            </label>
-            <label>
-              订阅 URL
-              <input
-                type="url"
-                value={subscriptionUrl}
-                onChange={(event) => setSubscriptionUrl(event.target.value)}
-                placeholder="https://example.com/subscribe?..."
-                autoComplete="off"
-              />
-            </label>
-          </div>
-          <button type="submit" disabled={Boolean(busy)}>
-            {busy === "add" ? "正在下载并校验…" : "添加并获取节点"}
-          </button>
-        </form>
-        <p className="safe-note">
-          当前使用的订阅每 {subscriptions.autoUpdateHours} 小时自动更新；其他订阅按需手动更新。
-          完整 URL 只保存在手机本机，页面仅显示隐藏敏感路径后的地址。
-        </p>
+        <button
+          type="button"
+          className="btn-jump-add-sub"
+          onClick={() => jumpToAddSubscription(true)}
+        >
+          ＋ 前往添加 / 管理订阅 →
+        </button>
       </article>
         </>
+      )}
+
+      {section === "subscriptions" && (
+        <article className="panel mihomo-section section-page-first">
+          <div className="section-heading small subscription-section-heading">
+            <div>
+              <p className="eyebrow">配置来源 · 独立更新策略</p>
+              <h2>订阅管理</h2>
+            </div>
+            <div className="subscription-heading-actions">
+              <span className="count-badge">
+                {subscriptions.items.length} 个订阅
+                {subscriptions.items.length > 0 &&
+                  ` · ${
+                    subscriptions.items.filter((i) => i.autoUpdateEnabled !== false)
+                      .length
+                  } 个开启自动更新`}
+              </span>
+              <button
+                type="button"
+                className="btn-jump-add-sub"
+                onClick={() => jumpToAddSubscription(true)}
+              >
+                ＋ 添加新订阅
+              </button>
+            </div>
+          </div>
+
+          {subscriptions.items.length > 0 ? (
+            <div className="subscription-list">
+              {subscriptions.items.map((item) => (
+                <section
+                  className={`subscription-card ${item.active ? "active" : ""}`}
+                  key={item.id}
+                >
+                  <div className="subscription-card-copy">
+                    <div>
+                      <strong>{item.name}</strong>
+                      {item.active && (
+                        <span className="active-subscription">当前使用</span>
+                      )}
+                      <span
+                        className={`subscription-autoupdate-badge ${
+                          item.autoUpdateEnabled !== false ? "enabled" : "disabled"
+                        }`}
+                      >
+                        {item.autoUpdateEnabled !== false
+                          ? `⟳ 自动更新 · 每 ${item.autoUpdateHours || 6} 小时`
+                          : "⏸ 自动更新已关闭 · 仅手动"}
+                      </span>
+                    </div>
+                    <span>{item.source}</span>
+                    <small>
+                      最近更新：
+                      {item.updatedAt
+                        ? new Date(item.updatedAt).toLocaleString("zh-CN")
+                        : "尚未更新"}
+                      {item.autoUpdateEnabled !== false
+                        ? item.nextAutoUpdateAt
+                          ? ` · 下次自动更新：${new Date(
+                              item.nextAutoUpdateAt,
+                            ).toLocaleString("zh-CN")}`
+                          : ` · 周期 ${item.autoUpdateHours || 6} 小时`
+                        : " · 不自动更新"}
+                      {item.cached ? ` · ${item.nodeCount} 个节点` : " · 需要更新"}
+                    </small>
+                  </div>
+                  <div className="subscription-card-actions">
+                    {!item.active && (
+                      <button
+                        type="button"
+                        disabled={Boolean(busy) || !item.cached}
+                        onClick={() => subscriptionAction(item, "activate")}
+                      >
+                        {busy === `activate-${item.id}` ? "启用中…" : "启用"}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={Boolean(busy)}
+                      onClick={() => subscriptionAction(item, "update")}
+                    >
+                      {busy === `update-${item.id}` ? "更新中…" : "更新"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={Boolean(busy) || !item.cached}
+                      onClick={() => viewSubscriptionNodes(item)}
+                    >
+                      {busy === `nodes-${item.id}` ? "读取中…" : "节点"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={Boolean(busy)}
+                      onClick={() => openEditSubscription(item)}
+                    >
+                      编辑
+                    </button>
+                    <button
+                      className="danger-quiet"
+                      type="button"
+                      disabled={Boolean(busy)}
+                      onClick={() => deleteSubscription(item)}
+                    >
+                      {busy === `delete-${item.id}` ? "删除中…" : "删除"}
+                    </button>
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : (
+            <div className="subscription-empty">
+              <strong>还没有任何订阅</strong>
+              <span>
+                在下方「添加新订阅」卡片中粘贴订阅链接，系统会自动下载并校验节点；首个订阅将自动启用。
+              </span>
+            </div>
+          )}
+
+          <form
+            ref={addFormRef}
+            className={`subscription-add-card ${highlightAddCard ? "highlight" : ""}`}
+            onSubmit={addSubscription}
+          >
+            <div className="subscription-add-header">
+              <div className="subscription-add-title-group">
+                <span className="subscription-add-icon" aria-hidden="true">
+                  ＋
+                </span>
+                <div>
+                  <h3>添加新订阅</h3>
+                  <p>
+                    支持 Clash / Mihomo 订阅链接，每个订阅可独立设置自动更新或仅手动更新
+                  </p>
+                </div>
+              </div>
+              <span className="subscription-privacy-pill">
+                URL 仅存手机本机
+              </span>
+            </div>
+
+            <div className="subscription-add-fields">
+              <label className="subscription-field">
+                <span className="subscription-field-label">
+                  订阅名称 <em>选填</em>
+                </span>
+                <input
+                  ref={addNameInputRef}
+                  value={subscriptionName}
+                  onChange={(event) => setSubscriptionName(event.target.value)}
+                  placeholder="例如：主力机场 / 备用节点"
+                  maxLength={128}
+                  autoComplete="off"
+                />
+              </label>
+              <label className="subscription-field">
+                <span className="subscription-field-label">
+                  订阅链接 URL <em className="required">必填</em>
+                </span>
+                <input
+                  ref={addUrlInputRef}
+                  type="url"
+                  value={subscriptionUrl}
+                  onChange={(event) => setSubscriptionUrl(event.target.value)}
+                  placeholder="https://example.com/api/v1/client/subscribe?token=..."
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+
+            <div className="subscription-add-footer">
+              <div className="subscription-policy-control">
+                <span className="subscription-policy-label">此订阅更新策略</span>
+                <div
+                  className="subscription-mode-switch"
+                  role="group"
+                  aria-label="新订阅更新策略"
+                >
+                  <button
+                    type="button"
+                    className={newSubAutoUpdate ? "active auto" : ""}
+                    onClick={() => setNewSubAutoUpdate(true)}
+                  >
+                    ⟳ 定时自动更新
+                  </button>
+                  <button
+                    type="button"
+                    className={!newSubAutoUpdate ? "active manual" : ""}
+                    onClick={() => setNewSubAutoUpdate(false)}
+                  >
+                    ⏸ 仅手动更新
+                  </button>
+                </div>
+                {newSubAutoUpdate ? (
+                  <label className="subscription-interval-picker">
+                    <span>更新间隔</span>
+                    <select
+                      value={newSubInterval}
+                      onChange={(event) =>
+                        setNewSubInterval(Number(event.target.value))
+                      }
+                    >
+                      <option value={1}>每 1 小时</option>
+                      <option value={2}>每 2 小时</option>
+                      <option value={4}>每 4 小时</option>
+                      <option value={6}>每 6 小时（推荐）</option>
+                      <option value={12}>每 12 小时</option>
+                      <option value={24}>每 24 小时 (1 天)</option>
+                      <option value={48}>每 48 小时 (2 天)</option>
+                      <option value={168}>每 168 小时 (1 周)</option>
+                    </select>
+                  </label>
+                ) : (
+                  <span className="subscription-manual-note">
+                    仅添加时拉取一次节点，后台不自动请求（适合阅后即焚 / 备用订阅）
+                  </span>
+                )}
+              </div>
+
+              <button
+                className="subscription-submit-btn"
+                type="submit"
+                disabled={Boolean(busy)}
+              >
+                {busy === "add" ? "正在下载并校验…" : "＋ 添加订阅并获取节点"}
+              </button>
+            </div>
+          </form>
+
+          <p className="safe-note">
+            每个订阅均可独立配置自动更新周期（点击任意订阅卡片右侧「编辑」可随时修改）；关闭自动更新后仅在手动点击「更新」时请求订阅源。完整 URL 只保存在手机本机，页面仅回显脱敏地址。
+          </p>
+        </article>
       )}
       {viewingSubscription && (
         <div className="modal-backdrop" onClick={() => setViewingSubscription(null)}>
@@ -4637,7 +4836,12 @@ function MihomoManager({
             <header>
               <div>
                 <strong>{viewingSubscription.name}</strong>
-                <p className="modal-header-desc">{subscriptionNodes.length} 个节点</p>
+                <p className="modal-header-desc">
+                  {subscriptionNodes.length} 个节点 ·{" "}
+                  {viewingSubscription.autoUpdateEnabled !== false
+                    ? `自动更新（每 ${viewingSubscription.autoUpdateHours || 6} 小时）`
+                    : "自动更新已关闭（仅手动）"}
+                </p>
               </div>
               <button type="button" onClick={() => setViewingSubscription(null)}>
                 关闭
@@ -4681,22 +4885,27 @@ function MihomoManager({
             onClick={(event) => event.stopPropagation()}
           >
             <header>
-              <strong>编辑订阅</strong>
+              <div>
+                <strong>编辑订阅 · {editingSubscription.name}</strong>
+                <p className="modal-header-desc">单独调整此订阅的名称、链接或自动更新策略</p>
+              </div>
               <button type="button" onClick={() => setEditingSubscription(null)}>
                 关闭
               </button>
             </header>
             <form onSubmit={saveEditedSubscription}>
-              <label>
-                订阅名称
+              <label className="subscription-field">
+                <span className="subscription-field-label">订阅名称</span>
                 <input
                   value={editSubscriptionName}
                   maxLength={128}
                   onChange={(event) => setEditSubscriptionName(event.target.value)}
                 />
               </label>
-              <label>
-                新订阅 URL
+              <label className="subscription-field">
+                <span className="subscription-field-label">
+                  替换订阅 URL <em>留空保持原链接不变</em>
+                </span>
                 <input
                   type="url"
                   value={editSubscriptionUrl}
@@ -4705,12 +4914,70 @@ function MihomoManager({
                   onChange={(event) => setEditSubscriptionUrl(event.target.value)}
                 />
               </label>
+              <div className="subscription-edit-section">
+                <div className="subscription-edit-policy-row">
+                  <span className="subscription-policy-label">此订阅更新策略</span>
+                  <div
+                    className="subscription-mode-switch"
+                    role="group"
+                    aria-label="编辑订阅更新策略"
+                  >
+                    <button
+                      type="button"
+                      className={editAutoUpdateEnabled ? "active auto" : ""}
+                      onClick={() => setEditAutoUpdateEnabled(true)}
+                    >
+                      ⟳ 定时自动更新
+                    </button>
+                    <button
+                      type="button"
+                      className={!editAutoUpdateEnabled ? "active manual" : ""}
+                      onClick={() => setEditAutoUpdateEnabled(false)}
+                    >
+                      ⏸ 仅手动更新
+                    </button>
+                  </div>
+                </div>
+                {editAutoUpdateEnabled && (
+                  <label className="subscription-interval-picker">
+                    <span>更新间隔</span>
+                    <select
+                      value={editAutoUpdateHours}
+                      onChange={(event) =>
+                        setEditAutoUpdateHours(Number(event.target.value))
+                      }
+                    >
+                      <option value={1}>每 1 小时</option>
+                      <option value={2}>每 2 小时</option>
+                      <option value={4}>每 4 小时</option>
+                      <option value={6}>每 6 小时（推荐）</option>
+                      <option value={12}>每 12 小时</option>
+                      <option value={24}>每 24 小时 (1 天)</option>
+                      <option value={48}>每 48 小时 (2 天)</option>
+                      <option value={168}>每 168 小时 (1 周)</option>
+                    </select>
+                  </label>
+                )}
+                <p className="subscription-edit-tip">
+                  {editAutoUpdateEnabled
+                    ? `开启后，后台将每 ${editAutoUpdateHours} 小时自动拉取该订阅最新节点并持久化缓存。`
+                    : "已关闭自动更新，此订阅仅在手动点击「更新」时请求订阅源（适合阅后即焚链接）。"}
+                </p>
+              </div>
               <div className="subscription-edit-actions">
-                <button type="button" onClick={() => setEditingSubscription(null)}>
+                <button
+                  type="button"
+                  className="btn-modal-secondary"
+                  onClick={() => setEditingSubscription(null)}
+                >
                   取消
                 </button>
-                <button type="submit" disabled={Boolean(busy)}>
-                  {busy === `edit-${editingSubscription.id}` ? "保存中…" : "保存"}
+                <button
+                  type="submit"
+                  className="btn-modal-primary"
+                  disabled={Boolean(busy)}
+                >
+                  {busy === `edit-${editingSubscription.id}` ? "保存中…" : "保存设置"}
                 </button>
               </div>
             </form>

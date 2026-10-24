@@ -312,3 +312,87 @@ func TestDeletingActiveSubscriptionSwitchesOnlyToValidCache(t *testing.T) {
 		t.Fatal("deleted subscription cache still exists")
 	}
 }
+
+func TestSubscriptionAutoUpdateSettings(t *testing.T) {
+	dataDir := t.TempDir()
+	server := &Server{data: dataDir}
+
+	firstURL := "https://first.example.com/sub"
+	first := testSubscriptionRecord("first", "First", firstURL, true)
+	first.AutoUpdateHours = 6
+	enabled := true
+	first.AutoUpdateEnabled = &enabled
+
+	secondURL := "https://second.example.com/sub"
+	second := testSubscriptionRecord("second", "Second", secondURL, true)
+	second.AutoUpdateHours = 24
+	disabled := false
+	second.AutoUpdateEnabled = &disabled
+
+	store := SubscriptionStore{
+		Version:  1,
+		ActiveID: first.ID,
+		Items:    []SubscriptionRecord{first, second},
+	}
+	writeTestFile(t, filepath.Join(dataDir, "mihomo", "subscription.url"), firstURL+"\n")
+	writeTestFile(t, server.subscriptionCachePath(first.ID), testSubscriptionYAML)
+	writeTestFile(t, server.subscriptionCachePath(second.ID), testSubscriptionYAML)
+	if err := server.saveSubscriptionStore(store); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Verify PublicSubscription reflects each subscription's settings
+	getRecorder := httptest.NewRecorder()
+	server.mihomoSubscriptionsV2(getRecorder, httptest.NewRequest(http.MethodGet, "/api/mihomo/subscriptions", nil))
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("get failed: %d", getRecorder.Code)
+	}
+	resp := decodeSubscriptionResponse(t, getRecorder)
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(resp.Items))
+	}
+	if !resp.Items[0].AutoUpdateEnabled || resp.Items[0].AutoUpdateHours != 6 {
+		t.Fatalf("item 0 invalid: enabled=%v hours=%d", resp.Items[0].AutoUpdateEnabled, resp.Items[0].AutoUpdateHours)
+	}
+	if resp.Items[1].AutoUpdateEnabled || resp.Items[1].AutoUpdateHours != 24 {
+		t.Fatalf("item 1 invalid: enabled=%v hours=%d", resp.Items[1].AutoUpdateEnabled, resp.Items[1].AutoUpdateHours)
+	}
+
+	// 2. Edit second subscription to enable auto update with 12 hours
+	patchRecorder := httptest.NewRecorder()
+	server.mihomoSubscriptionsV2(patchRecorder, httptest.NewRequest(http.MethodPatch, "/api/mihomo/subscriptions", strings.NewReader(`{"id":"second","action":"edit","autoUpdateEnabled":true,"autoUpdateHours":12}`)))
+	if patchRecorder.Code != http.StatusOK {
+		t.Fatalf("patch edit failed: %d %s", patchRecorder.Code, patchRecorder.Body.String())
+	}
+	patchResp := decodeSubscriptionResponse(t, patchRecorder)
+	if !patchResp.Items[1].AutoUpdateEnabled || patchResp.Items[1].AutoUpdateHours != 12 {
+		t.Fatalf("unexpected patched settings: enabled=%v hours=%d", patchResp.Items[1].AutoUpdateEnabled, patchResp.Items[1].AutoUpdateHours)
+	}
+
+	// 3. Test checkAndRunAutoUpdates:
+	// Set second's UpdatedAt to 13 hours ago (due for update)
+	// Set first's UpdatedAt to 1 hour ago (not due)
+	reloadedStore, err := server.loadSubscriptionStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedStore.Items[0].UpdatedAt = time.Now().Add(-1 * time.Hour)
+	reloadedStore.Items[1].UpdatedAt = time.Now().Add(-13 * time.Hour)
+	if err := server.saveSubscriptionStore(reloadedStore); err != nil {
+		t.Fatal(err)
+	}
+
+	updatedItems := make([]string, 0)
+	server.subscriptionUpdater = func(item SubscriptionRecord, activate, useCache bool) ([]byte, error) {
+		updatedItems = append(updatedItems, item.ID)
+		return []byte("ok"), nil
+	}
+
+	updatedCount, err := server.checkAndRunAutoUpdates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedCount != 1 || len(updatedItems) != 1 || updatedItems[0] != "second" {
+		t.Fatalf("expected only 'second' to auto-update, updatedCount=%d, items=%v", updatedCount, updatedItems)
+	}
+}
