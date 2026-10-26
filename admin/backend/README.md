@@ -35,6 +35,34 @@ both LAN clients and local Android/Termux application traffic; there is no separ
 Android system-proxy switch. MetaCubeXD is reached through an authenticated reverse
 proxy, while Mihomo's controller remains bound to loopback.
 
+Each subscription card also offers **订阅中转** for Clash / Mihomo clients.
+Enable it to get a persistent URL and a locally generated QR code. Public
+`GET /sub/<id>/<random-token>/<subscription-name>.yaml` requests read only that subscription's local
+node cache. They never download the provider URL, including when the provider
+link has expired or the cache is unavailable. Changing the source URL makes an
+old unmatched cache unavailable until the owner explicitly refreshes it.
+The response body is the original cached subscription document, byte for byte,
+including all nodes, groups, rules, DNS, comments and provider definitions. No
+client routing configuration is regenerated. The profile title and UTF-8 download
+filename use the router subscription name with `（中转）` appended. Newly copied
+URLs also end in that readable filename; previously imported token-only URLs
+remain valid and serve the same original document.
+
+Relay management uses the authenticated
+`/api/mihomo/subscriptions/relay` endpoint. POST actions `enable`, `disable` and
+`rotate` operate independently for each subscription and preserve its upstream
+URL, active state and automatic-update policy. A 256-bit token is persisted in
+the existing mode-0600 subscription store; disabling or rotating invalidates the
+old URL. QR images are generated on the router without third-party services.
+Clients must be able to reach the address used to open the management page;
+remote users can open it through their existing Tailscale connection.
+
+`deploy-subscription-relay.sh <binary-sha256> <web-archive-sha256>` installs
+`~/.stage/router-admin-relay` and `~/.stage/router-admin-relay-web.tar.gz`, keeps
+the existing service scripts, backs up the backend and frontend, verifies that
+subscription cache checksums remain unchanged, and rolls back an unhealthy
+release. It does not refresh subscriptions or restart the Mihomo core.
+
 The **服务** page also contains a protected Tailscale control panel. It reports
 the node state, Tailscale IP and `192.168.2.0/24` subnet-route status, and offers
 start, restart, guarded stop, login and reauthorization actions. These actions

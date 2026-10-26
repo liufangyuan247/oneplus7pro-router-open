@@ -399,6 +399,7 @@ type SubscriptionRecord struct {
 	URL               string    `json:"url"`
 	CachedURL         string    `json:"cachedUrl,omitempty"`
 	NodeCount         int       `json:"nodeCount,omitempty"`
+	RelayToken        string    `json:"relayToken,omitempty"`
 	AutoUpdateEnabled *bool     `json:"autoUpdateEnabled,omitempty"`
 	AutoUpdateHours   int       `json:"autoUpdateHours,omitempty"`
 	CreatedAt         time.Time `json:"createdAt"`
@@ -434,6 +435,7 @@ type PublicSubscription struct {
 	Cached            bool   `json:"cached"`
 	NodeCount         int    `json:"nodeCount"`
 	NeedsUpdate       bool   `json:"needsUpdate"`
+	RelayEnabled      bool   `json:"relayEnabled"`
 	Active            bool   `json:"active"`
 	AutoUpdateEnabled bool   `json:"autoUpdateEnabled"`
 	AutoUpdateHours   int    `json:"autoUpdateHours"`
@@ -565,6 +567,8 @@ func main() {
 	mux.HandleFunc("/api/mihomo/subscriptions", s.auth(s.mihomoSubscriptionsV2))
 	mux.HandleFunc("/api/mihomo/subscriptions/auto-update", s.auth(s.mihomoSubscriptionsAutoUpdate))
 	mux.HandleFunc("/api/mihomo/subscriptions/nodes", s.auth(s.mihomoSubscriptionNodes))
+	mux.HandleFunc("/api/mihomo/subscriptions/relay", s.auth(s.mihomoSubscriptionRelay))
+	mux.HandleFunc(subscriptionRelayPrefix, s.subscriptionRelay)
 	mux.HandleFunc(mihomoDashboardPrefix, s.auth(s.mihomoDashboard))
 	mux.HandleFunc(mihomoAPIPrefix, s.auth(s.mihomoAPIProxy))
 	mux.HandleFunc("/_nuxt/", s.auth(s.mihomoDashboardAssets))
@@ -4029,6 +4033,7 @@ func (s *Server) publicSubscriptions(store SubscriptionStore) map[string]any {
 			Cached:            cached,
 			NodeCount:         item.NodeCount,
 			NeedsUpdate:       !cached,
+			RelayEnabled:      item.RelayToken != "",
 			AutoUpdateEnabled: item.IsAutoUpdateEnabled(),
 			AutoUpdateHours:   item.GetAutoUpdateHours(),
 			NextAutoUpdateAt:  nextAutoUpdateAt,

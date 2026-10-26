@@ -423,3 +423,20 @@ button { font:inherit; }
   box-shadow: 0 0 8px #30c7d833;
 }
 
+
+.subscription-relay-modal{width:min(760px,calc(100vw - 32px));max-height:calc(100dvh - 40px);overflow:auto}
+.subscription-relay-content{padding:22px;display:grid;gap:18px}
+.subscription-relay-content p{margin:0;font-size:12px;line-height:1.8;color:var(--muted)}
+.subscription-relay-note{padding:14px 16px;background:#123340;border:1px solid #245461;border-radius:10px;color:#b9dce4!important}
+.subscription-relay-share{display:grid;grid-template-columns:220px minmax(0,1fr);align-items:center;gap:24px}
+.subscription-relay-qr{display:block;width:220px;height:220px;background:#fff;border:10px solid #fff;border-radius:12px}
+.subscription-relay-instructions{display:grid;gap:14px}
+.subscription-relay-instructions h3{font-size:16px;margin:0;color:var(--ink)}
+.subscription-relay-url{width:100%;min-width:0;font-family:ui-monospace,monospace;font-size:12px!important}
+.subscription-relay-actions{display:flex;flex-wrap:wrap;gap:10px}
+.subscription-relay-actions button,.subscription-relay-content>button{padding:10px 15px;border-radius:9px;border:1px solid #315465;background:#163442;color:#d4e7f0;cursor:pointer;font-size:12px}
+.subscription-relay-actions button:first-child,.subscription-relay-content>button{border-color:#288a99;background:#155363;color:#dffaff}
+.subscription-relay-actions button:disabled,.subscription-relay-content>button:disabled{opacity:.5;cursor:not-allowed}
+.subscription-relay-message{color:var(--green)!important}
+.subscription-relay-content .subscription-node-error{color:#ff9e9e}
+@media(max-width:640px){.subscription-relay-share{grid-template-columns:1fr;gap:16px}.subscription-relay-qr{margin:0 auto}.subscription-relay-content{padding:16px}.subscription-relay-actions button{flex:1 1 auto}.subscription-relay-modal{max-height:calc(100dvh - 24px)}}

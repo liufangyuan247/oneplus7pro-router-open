@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { BrowserScreenControl } from "./web-screen";
+import { SubscriptionRelay } from "./subscription-relay";
 import {
   isTab,
   ModuleContextBar,
@@ -313,6 +314,7 @@ type SubscriptionItem = {
   cached: boolean;
   nodeCount: number;
   needsUpdate: boolean;
+  relayEnabled?: boolean;
   active: boolean;
   autoUpdateEnabled?: boolean;
   autoUpdateHours?: number;
@@ -3333,6 +3335,7 @@ function MihomoManager({
   const [newSubAutoUpdate, setNewSubAutoUpdate] = useState(true);
   const [newSubInterval, setNewSubInterval] = useState(6);
   const [viewingSubscription, setViewingSubscription] = useState<SubscriptionItem | null>(null);
+  const [relayingSubscription, setRelayingSubscription] = useState<SubscriptionItem | null>(null);
   const [subscriptionNodes, setSubscriptionNodes] = useState<SubscriptionNodeInfo[]>([]);
   const [subscriptionNodesError, setSubscriptionNodesError] = useState("");
   const [editingSubscription, setEditingSubscription] = useState<SubscriptionItem | null>(null);
@@ -4634,6 +4637,7 @@ function MihomoManager({
                       {item.active && (
                         <span className="active-subscription">当前使用</span>
                       )}
+                      {item.relayEnabled && <span className="active-subscription">中转已开启</span>}
                       <span
                         className={`subscription-autoupdate-badge ${
                           item.autoUpdateEnabled !== false ? "enabled" : "disabled"
@@ -4661,6 +4665,13 @@ function MihomoManager({
                     </small>
                   </div>
                   <div className="subscription-card-actions">
+                    <button
+                      type="button"
+                      disabled={Boolean(busy)}
+                      onClick={() => setRelayingSubscription(item)}
+                    >
+                      订阅中转
+                    </button>
                     {!item.active && (
                       <button
                         type="button"
@@ -4826,6 +4837,15 @@ function MihomoManager({
             每个订阅均可独立配置自动更新周期（点击任意订阅卡片右侧「编辑」可随时修改）；关闭自动更新后仅在手动点击「更新」时请求订阅源。完整 URL 只保存在手机本机，页面仅回显脱敏地址。
           </p>
         </article>
+      )}
+      {relayingSubscription && (
+        <SubscriptionRelay
+          key={relayingSubscription.id}
+          id={relayingSubscription.id}
+          name={relayingSubscription.name}
+          onClose={() => setRelayingSubscription(null)}
+          onChanged={() => { void loadMihomo(); }}
+        />
       )}
       {viewingSubscription && (
         <div className="modal-backdrop" onClick={() => setViewingSubscription(null)}>
