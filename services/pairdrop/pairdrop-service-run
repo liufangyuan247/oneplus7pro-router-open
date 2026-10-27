@@ -1,0 +1,27 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -eu
+exec 2>&1
+
+export HOME="${TERMUX_HOME:-/data/data/com.termux/files/home}"
+export PREFIX="${TERMUX_PREFIX:-/data/data/com.termux/files/usr}"
+export PATH="$PREFIX/bin:/system/bin"
+export TMPDIR="$PREFIX/tmp/pairdrop"
+DATA="$HOME/router-data/pairdrop"
+APP="$HOME/router-apps/pairdrop"
+
+# Keep any application scratch files in a dedicated phone-local directory.
+# PairDrop streams transfers over WebRTC / WebSocket; it never stores payloads here.
+mkdir -p "$TMPDIR"
+chmod 0700 "$TMPDIR"
+export PORT=3000 WS_FALLBACK=true DEBUG_MODE=false
+export RTC_CONFIG="$DATA/rtc-config.json"
+# Optional library overlay for a newer Termux Node on an older stable router.
+# Do not replace libraries used by the existing router services.
+export LD_LIBRARY_PATH="$APP/runtime/lib:$PREFIX/lib"
+if [ -f "$DATA/service.env" ]; then
+    set -a
+    . "$DATA/service.env"
+    set +a
+fi
+cd "$APP/current"
+exec "$PREFIX/bin/node" server/index.js

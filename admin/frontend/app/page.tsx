@@ -561,6 +561,8 @@ const demo: Snapshot = {
     "mihomo",
     "healthd",
     "openlist",
+    "pairdrop",
+    "adguardhome",
     "rclone",
     "qbittorrent",
     "sshd",
@@ -575,6 +577,10 @@ const demo: Snapshot = {
             ? "CPA Usage Keeper"
           : name === "mihomo"
             ? "Mihomo · 代理核心"
+          : name === "pairdrop"
+            ? "PairDrop · 文件互传"
+          : name === "adguardhome"
+            ? "AdGuard Home · 广告拦截"
           : name === "rclone"
             ? "Rclone · 云同步"
           : name,
@@ -584,6 +590,8 @@ const demo: Snapshot = {
     Port:
       {
         openlist: 5244,
+        pairdrop: 3000,
+        adguardhome: 3001,
         rclone: 5572,
         aria2: 6800,
         caddy: 6880,
@@ -5331,6 +5339,23 @@ function TailscaleService({
   );
 }
 
+const serviceCategories = [
+  { id: "downloads", label: "下载", names: ["aria2", "qbittorrent", "caddy"] },
+  { id: "files", label: "文件共享", names: ["openlist", "rclone", "pairdrop"] },
+  { id: "network", label: "网络与安全", names: ["mihomo", "adguardhome", "tailscale"] },
+  { id: "ai", label: "AI 服务", names: ["cpa", "cpa-usage-keeper"] },
+  { id: "system", label: "系统", names: [] },
+  { id: "all", label: "全部", names: [] },
+] as const;
+
+type ServiceCategory = typeof serviceCategories[number]["id"];
+
+function serviceCategory(name: string): ServiceCategory {
+  return serviceCategories.find((category) =>
+    (category.names as readonly string[]).includes(name),
+  )?.id || "system";
+}
+
 function Services({
   data,
   history,
@@ -5352,6 +5377,10 @@ function Services({
   const [upgradeError, setUpgradeError] = useState("");
 
   const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [category, setCategory] = useState<ServiceCategory>("downloads");
+  const visibleServices = data.services.filter(
+    (service) => category === "all" || serviceCategory(service.Name) === category,
+  );
 
   const act = async (name: string, action: string) => {
     if (action === "stop" && !confirm(`确定停止 ${name}？`)) return;
@@ -5386,17 +5415,7 @@ function Services({
     if (!service) return;
     setUpgradeProcessing(true);
     setUpgradeError("");
-    setUpgradeStatusMsg("正在拉取发布资产并校验哈希完整性...");
-
-    const t1 = setTimeout(() => {
-      setUpgradeStatusMsg("正在执行沙箱隔离语法与兼容性预检 (Preflight)...");
-    }, 2800);
-    const t2 = setTimeout(() => {
-      setUpgradeStatusMsg("预检通过，正在全量快照备份现网二进制并原子替换...");
-    }, 6000);
-    const t3 = setTimeout(() => {
-      setUpgradeStatusMsg("服务已启动，正在执行连续 12 秒多频健康探测与防故障监控...");
-    }, 9000);
+    setUpgradeStatusMsg("后台正在下载、预检并执行升级，完成后会返回健康检查结果，请稍候。");
 
     try {
       const res = await fetch("/api/services/upgrade", {
@@ -5407,15 +5426,11 @@ function Services({
           version: service.latestVersion,
         }),
       });
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-
       const json = await res.json();
       if (!res.ok || !json.ok) {
         const errMsg = json.error || "升级未完成";
         if (json.rolledBack) {
-          setUpgradeError(`升级异常（健康探测未通过），系统已自动秒级回滚至原版本: ${errMsg}`);
+          setUpgradeError(`升级未完成，已恢复原版本: ${errMsg}`);
         } else {
           setUpgradeError(errMsg);
         }
@@ -5425,9 +5440,6 @@ function Services({
         setUpgradingService(null);
       }
     } catch (error: unknown) {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
       const message = error instanceof Error ? error.message : String(error);
       setUpgradeError(`网络请求异常: ${message}`);
       setNotice(`升级失败: ${message}`);
@@ -5502,11 +5514,35 @@ function Services({
               </span>
             </div>
           </div>
+          <div className="service-category-tabs" role="group" aria-label="按用途筛选服务">
+            {serviceCategories.map((item) => {
+              const members = data.services.filter(
+                (service) => item.id === "all" || serviceCategory(service.Name) === item.id,
+              );
+              const running = members.filter((service) => service.State === "运行中").length;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-pressed={category === item.id}
+                  onClick={() => setCategory(item.id)}
+                >
+                  {item.label}
+                  <span aria-label={`${running} 项运行，共 ${members.length} 项`}>{running}/{members.length}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="service-category-summary" role="status">
+            {serviceCategories.find((item) => item.id === category)?.label} · {visibleServices.length} 项服务
+            <span>标签数字为运行数 / 总数</span>
+          </p>
+          {visibleServices.length === 0 && <div className="panel service-empty">此分组暂无服务</div>}
           <div className="service-cards">
-            {data.services.map((service, index) => (
+            {visibleServices.map((service) => (
               <article className="panel service-card" key={service.Name}>
                 <div className="service-main">
-                  <span className={`service-icon s${index % 4}`}>
+                  <span className={`service-icon s${data.services.indexOf(service) % 4}`}>
                     {service.Label.slice(0, 2)}
                   </span>
                   <div>
@@ -5564,6 +5600,8 @@ function Services({
                   )}
                   {[
                     "openlist",
+                    "pairdrop",
+                    "adguardhome",
                     "rclone",
                     "caddy",
                     "qbittorrent",

@@ -53,6 +53,8 @@ const (
 
 var allowedServices = map[string]ServiceMeta{
 	"openlist":         {Label: "OpenList", Port: 5244},
+	"pairdrop":         {Label: "PairDrop · 文件互传", Port: 3000},
+	"adguardhome":      {Label: "AdGuard Home · 广告拦截", Port: 3001},
 	"rclone":           {Label: "Rclone · 云同步", Port: 5572},
 	"aria2":            {Label: "aria2", Port: 6800},
 	"cpa":              {Label: "CPA · AI API", Port: 8317},

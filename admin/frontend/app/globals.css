@@ -440,3 +440,12 @@ button { font:inherit; }
 .subscription-relay-message{color:var(--green)!important}
 .subscription-relay-content .subscription-node-error{color:#ff9e9e}
 @media(max-width:640px){.subscription-relay-share{grid-template-columns:1fr;gap:16px}.subscription-relay-qr{margin:0 auto}.subscription-relay-content{padding:16px}.subscription-relay-actions button{flex:1 1 auto}.subscription-relay-modal{max-height:calc(100dvh - 24px)}}
+.service-category-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 12px}
+.service-category-tabs button{display:flex;align-items:center;gap:9px;padding:9px 13px;border:1px solid #213d4b;border-radius:9px;background:#0b212d;color:#9db3bf;font:inherit;font-size:12px;cursor:pointer}
+.service-category-tabs button span{color:#7e98a5;font-size:10px;font-variant-numeric:tabular-nums}
+.service-category-tabs button[aria-pressed="true"]{border-color:#2f9ea9;background:#113745;color:#def5f7}
+.service-category-tabs button[aria-pressed="true"] span{color:#a3dce2}
+.service-category-tabs button:focus-visible{outline:2px solid #69d2df;outline-offset:3px}
+.service-category-summary{display:flex;flex-wrap:wrap;gap:8px 16px;margin:0 0 12px;color:#9db3bf;font-size:11px}
+.service-category-summary span{color:#7e98a5}
+.service-empty{padding:24px;color:#7e98a5;text-align:center}

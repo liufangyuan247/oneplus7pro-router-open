@@ -1,0 +1,10 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -eu
+exec 2>&1
+export HOME=/data/data/com.termux/files/home PREFIX=/data/data/com.termux/files/usr
+export PATH="$PREFIX/bin:/system/bin" TMPDIR="$PREFIX/tmp"
+export SSL_CERT_FILE="$PREFIX/etc/tls/cert.pem"
+# The official static Linux/ARM64 binary runs directly on this kernel. Avoid
+# Termux's exec interceptor, which would pass this non-PIE binary to linker64.
+unset LD_PRELOAD
+exec /system/bin/sh -c 'exec "$PREFIX/bin/AdGuardHome" -c "$HOME/router-data/adguardhome/AdGuardHome.yaml" -w "$HOME/router-data/adguardhome" --web-addr 0.0.0.0:3001 --no-check-update'

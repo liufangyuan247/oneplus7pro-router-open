@@ -60,6 +60,7 @@ type serviceUpdaterSpec struct {
 	PreflightTest func(s *Server, candidatePath string) error
 	HealthProbe   func(s *Server) bool
 	DetectionOnly bool
+	UpgradeHelper string
 }
 
 type serviceBuildInfo struct {
@@ -152,11 +153,12 @@ var (
 			},
 		},
 		"qbittorrent": {
-			Name:         "qbittorrent",
-			Binary:       "qbittorrent-nox",
-			IsAptPackage: true,
-			AptPackage:   "qbittorrent-nox",
-			Port:         8080,
+			Name:          "qbittorrent",
+			Binary:        "qbittorrent-nox",
+			IsAptPackage:  true,
+			AptPackage:    "qbittorrent-nox",
+			Port:          8080,
+			UpgradeHelper: "upgrade-qbittorrent.py",
 			HealthProbe: func(s *Server) bool {
 				client := http.Client{Timeout: 2 * time.Second}
 				resp, err := client.Get("http://127.0.0.1:8080/")
@@ -724,6 +726,17 @@ func (s *Server) performRollback(name string) (string, error) {
 	if targetBackupDir == "" {
 		return "", fmt.Errorf("未找到服务 %s 的备份快照", name)
 	}
+	if spec.UpgradeHelper != "" {
+		if _, err := os.Stat(filepath.Join(targetBackupDir, "apt-packages.json")); err != nil {
+			return "", fmt.Errorf("此旧备份仅包含程序文件，缺少配套依赖；不能自动恢复整个软件包，请使用升级后生成的完整备份")
+		}
+		result, err := s.runServiceUpgradeHelper(spec, "--rollback", targetBackupDir)
+		if err != nil {
+			return "", err
+		}
+		s.refreshServiceUpdates(false)
+		return result.Version, nil
+	}
 
 	metaBytes, err := os.ReadFile(filepath.Join(targetBackupDir, "meta.json"))
 	if err != nil {
@@ -831,6 +844,17 @@ func (s *Server) servicesUpgradeAPI(w http.ResponseWriter, r *http.Request) {
 
 	var targetVer string
 	candidatePath := filepath.Join(workDir, spec.Binary)
+	if spec.UpgradeHelper != "" {
+		result, err := s.runServiceUpgradeHelper(spec)
+		if err != nil {
+			s.refreshServiceUpdates(false)
+			jsonOut(w, http.StatusInternalServerError, result)
+			return
+		}
+		s.refreshServiceUpdates(false)
+		jsonOut(w, http.StatusOK, result)
+		return
+	}
 
 	// Step 1: Download or fetch candidate
 	if spec.IsAptPackage {

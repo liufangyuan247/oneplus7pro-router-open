@@ -1,0 +1,20 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -u
+exec 2>&1
+export HOME=/data/data/com.termux/files/home PREFIX=/data/data/com.termux/files/usr
+export PATH="$PREFIX/bin:/system/bin" TMPDIR="$PREFIX/tmp"
+GUARD=/data/adb/router-adguardhome/dns-guard
+SU_PID=''
+shutdown() {
+    trap - INT TERM HUP EXIT
+    "$PREFIX/bin/su" -c "$GUARD stop" || true
+    [ -z "$SU_PID" ] || kill "$SU_PID" 2>/dev/null || true
+    exit 0
+}
+trap shutdown INT TERM HUP EXIT
+"$PREFIX/bin/su" -c "exec /system/bin/sh $GUARD run" &
+SU_PID=$!
+wait "$SU_PID"
+status=$?
+shutdown
+exit "$status"
