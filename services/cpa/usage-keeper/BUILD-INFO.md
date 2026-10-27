@@ -1,13 +1,13 @@
 # CPA Usage Keeper Android build
 
-- Upstream tag: `v2.0.0`
-- Upstream commit: `fc8cbde97fe6baa35189e51115716865ce377ec2`
+- Upstream tag: `v2.0.2`
+- Upstream commit: `46fe6278db0c47a5460e882fa1742f15ab49bb14`
 - Target: Android ARM64 (`android/arm64`, API 24+)
-- Build: native Go/CGO with Termux clang; frontend embedded in the binary
-- Binary: `build/cpa-usage-keeper-v2.0.0-android`
+- Build: native Go 1.27.3/CGO with Termux clang; frontend embedded in the binary
+- Binary: `build/cpa-usage-keeper-v2.0.2-android`
 - Build manifest: `cpa-usage-keeper.build.json` beside the binary; stage it as
-  `~/.stage/cpa-usage-keeper-v2.0.0-android.build.json`
-- SHA-256: `bf20f01c5ac2704a792fe53e8ca815b073a24d387f0c3acf722d1361bba8b4e2`
+  `~/.stage/cpa-usage-keeper-v2.0.2-android.build.json`
+- SHA-256: `8ecd3cb6fb5f52528f572b17a688b9ed407c24d04288c9fd5af9100f10b7863b`
 - Phone service: `~/router-stack/services/cpa-usage-keeper`
 - Persistent data: `~/router-data/cpa-usage-keeper`
 - Web address: `http://192.168.2.1:8320`
@@ -36,6 +36,14 @@ The pre-upgrade database is stored on the phone under
 `~/router-data/cpa-usage-keeper/install-backups/20261019-152906/app.db`, with a
 second verified copy in the workspace at
 `backups/service-upgrade-20261019/keeper-v1/app.db`.
+
+Deployment on 2026-10-27 updated v2.0.0 to v2.0.2 with the Vite dashboard
+embedded. All 811,414 pre-upgrade usage-event IDs were retained; the snapshot
+passed SQLite integrity checking. Authenticated overview, pricing, version,
+readiness, and desktop/mobile dashboard checks passed. Frontend typechecking
+and 1,571 tests passed, along with native token-processor and helper tests.
+CPA was first updated to `v8.0.44-op7.1`. The verified pre-upgrade database is
+at `~/router-data/cpa-usage-keeper/install-backups/20261027-122607/app.db`.
 
 Upstream v2 removes local/community ranking and persists request costs. It
 rebuilds historical summaries from retained request details; changing current

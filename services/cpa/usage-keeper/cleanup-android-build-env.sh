@@ -3,8 +3,8 @@ set -eu
 
 PREFIX=/data/data/com.termux/files/usr
 HOME_DIR=/data/data/com.termux/files/home
-BUILD_DIR="$HOME_DIR/.build/cpa-usage-keeper-v2.0.0"
-EXPECTED_BUILD_DIR=/data/data/com.termux/files/home/.build/cpa-usage-keeper-v2.0.0
+BUILD_DIR="$HOME_DIR/.build/cpa-usage-keeper-v2.0.2"
+EXPECTED_BUILD_DIR=/data/data/com.termux/files/home/.build/cpa-usage-keeper-v2.0.2
 INSTALLED_BIN="$PREFIX/bin/cpa-usage-keeper"
 BUILD_INFO="$HOME_DIR/router-data/cpa-usage-keeper/build-info.json"
 
@@ -36,9 +36,9 @@ if test -d "$BUILD_DIR"; then
   find "$BUILD_DIR" -depth -delete
 fi
 rm -f \
-  "$HOME_DIR/.stage/cpa-usage-keeper-v2.0.0-android-source.tar.gz" \
-  "$HOME_DIR/.stage/cpa-usage-keeper-v2.0.0-android" \
-  "$HOME_DIR/.stage/cpa-usage-keeper-v2.0.0-android.build.json" \
+  "$HOME_DIR/.stage/cpa-usage-keeper-v2.0.2-android-source.tar.gz" \
+  "$HOME_DIR/.stage/cpa-usage-keeper-v2.0.2-android" \
+  "$HOME_DIR/.stage/cpa-usage-keeper-v2.0.2-android.build.json" \
   "$HOME_DIR/.stage/build-on-android.sh" \
   "$HOME_DIR/.stage/install-cpa-usage-keeper.sh"
 

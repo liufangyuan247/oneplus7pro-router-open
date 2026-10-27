@@ -4,11 +4,11 @@ set -eu
 PREFIX=/data/data/com.termux/files/usr
 HOME_DIR=/data/data/com.termux/files/home
 GOROOT="$PREFIX/lib/go"
-BUILD_DIR="$HOME_DIR/.build/cpa-usage-keeper-v2.0.0"
-ARCHIVE="$HOME_DIR/.stage/cpa-usage-keeper-v2.0.0-android-source.tar.gz"
-UPSTREAM_VERSION=v2.0.0
-UPSTREAM_COMMIT=fc8cbde97fe6baa35189e51115716865ce377ec2
-CUSTOM_VERSION=v2.0.0-android
+BUILD_DIR="$HOME_DIR/.build/cpa-usage-keeper-v2.0.2"
+ARCHIVE="$HOME_DIR/.stage/cpa-usage-keeper-v2.0.2-android-source.tar.gz"
+UPSTREAM_VERSION=v2.0.2
+UPSTREAM_COMMIT=46fe6278db0c47a5460e882fa1742f15ab49bb14
+CUSTOM_VERSION=v2.0.2-android
 UPSTREAM_REPOSITORY=Willxup/cpa-usage-keeper
 
 export PREFIX HOME="$HOME_DIR" GOROOT
@@ -24,7 +24,7 @@ run_android_binary "$GOROOT/bin/go" version
 test -f "$ARCHIVE"
 
 mkdir -p "$BUILD_DIR"
-test "$(realpath "$BUILD_DIR")" = "$HOME_DIR/.build/cpa-usage-keeper-v2.0.0"
+test "$(realpath "$BUILD_DIR")" = "$HOME_DIR/.build/cpa-usage-keeper-v2.0.2"
 find "$BUILD_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 tar -xzf "$ARCHIVE" -C "$BUILD_DIR"
 cd "$BUILD_DIR"

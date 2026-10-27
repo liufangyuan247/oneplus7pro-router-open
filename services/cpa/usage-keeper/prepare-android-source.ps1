@@ -1,11 +1,14 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$SourceDirectory,
-    [string]$OutputArchive = "$PSScriptRoot/build/cpa-usage-keeper-v2.0.0-android-source.tar.gz"
+    [string]$OutputArchive = ''
 )
 
 $ErrorActionPreference = 'Stop'
-$expectedCommit = 'fc8cbde97fe6baa35189e51115716865ce377ec2'
+if ([string]::IsNullOrWhiteSpace($OutputArchive)) {
+    $OutputArchive = Join-Path $PSScriptRoot 'build/cpa-usage-keeper-v2.0.2-android-source.tar.gz'
+}
+$expectedCommit = '46fe6278db0c47a5460e882fa1742f15ab49bb14'
 $source = [System.IO.Path]::GetFullPath($SourceDirectory)
 $archive = [System.IO.Path]::GetFullPath($OutputArchive)
 
