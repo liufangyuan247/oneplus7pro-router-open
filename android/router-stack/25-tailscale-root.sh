@@ -10,6 +10,7 @@ SUPERVISOR_PIDFILE="$BASE/run/supervisor.pid"
 LOG="$BASE/log/tailscaled.log"
 SUPERVISOR_LOG="$BASE/log/supervisor.log"
 UNDERLAY="$BASE/bin/tailscale-underlay"
+NETWORK_CPU_MASK=70
 
 export HOME="$BASE"
 export XDG_CACHE_HOME="$BASE/cache"
@@ -54,6 +55,23 @@ log_supervisor() {
   printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$SUPERVISOR_LOG"
 }
 
+start_daemon() {
+  set -- "$BIN/tailscaled" \
+    --state="$STATE" \
+    --socket="$SOCKET" \
+    --port=41641
+  # Match the router's network RPS/XPS cores (4-6), avoiding migrations to
+  # the efficiency cluster and prime core. Threads inherit this affinity.
+  # Keep remote access available if these cores or taskset are unavailable.
+  if /system/bin/taskset "$NETWORK_CPU_MASK" /system/bin/true >/dev/null 2>&1; then
+    set -- /system/bin/taskset "$NETWORK_CPU_MASK" "$@"
+  else
+    log_supervisor 'network CPU affinity unavailable; using scheduler defaults'
+  fi
+  "$@" >> "$LOG" 2>&1 &
+  echo $! > "$PIDFILE"
+}
+
 if [ "${1:-}" != supervise ]; then
   if supervisor_alive; then
     exit 0
@@ -91,11 +109,7 @@ while :; do
       [ -z "$stale" ] || log_supervisor "discarding stale tailscaled pid=$stale"
       rotate_log
       rm -f "$PIDFILE" "$SOCKET"
-      "$BIN/tailscaled" \
-        --state="$STATE" \
-        --socket="$SOCKET" \
-        --port=41641 >> "$LOG" 2>&1 &
-      echo $! > "$PIDFILE"
+      start_daemon
       log_supervisor "tailscaled started pid=$(cat "$PIDFILE")"
       sleep 5
     fi
