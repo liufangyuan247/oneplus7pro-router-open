@@ -562,6 +562,7 @@ const demo: Snapshot = {
     "healthd",
     "openlist",
     "pairdrop",
+    "samba",
     "adguardhome",
     "rclone",
     "qbittorrent",
@@ -579,6 +580,8 @@ const demo: Snapshot = {
             ? "Mihomo · 代理核心"
           : name === "pairdrop"
             ? "PairDrop · 文件互传"
+          : name === "samba"
+            ? "Samba · 局域网共享"
           : name === "adguardhome"
             ? "AdGuard Home · 广告拦截"
           : name === "rclone"
@@ -591,6 +594,7 @@ const demo: Snapshot = {
       {
         openlist: 5244,
         pairdrop: 3000,
+        samba: 445,
         adguardhome: 3001,
         rclone: 5572,
         aria2: 6800,
@@ -5341,7 +5345,7 @@ function TailscaleService({
 
 const serviceCategories = [
   { id: "downloads", label: "下载", names: ["aria2", "qbittorrent", "caddy"] },
-  { id: "files", label: "文件共享", names: ["openlist", "rclone", "pairdrop"] },
+  { id: "files", label: "文件共享", names: ["openlist", "rclone", "pairdrop", "samba"] },
   { id: "network", label: "网络与安全", names: ["mihomo", "adguardhome", "tailscale"] },
   { id: "ai", label: "AI 服务", names: ["cpa", "cpa-usage-keeper"] },
   { id: "system", label: "系统", names: [] },
@@ -5584,6 +5588,11 @@ function Services({
                 </div>
                 <div className="service-meta">
                   <span>运行时长 {duration(service.UptimeSec)}</span>
+                  {service.Name === "samba" && (
+                    <button type="button" onClick={() => setNotice(`Windows 文件资源管理器：\\\\${location.hostname}\\Shared；账号 router，密码同管理后台`)}>
+                      连接方式
+                    </button>
+                  )}
                   {service.canUpgrade && service.upgradable && (
                     <button
                       type="button"

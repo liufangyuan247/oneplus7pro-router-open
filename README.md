@@ -63,6 +63,7 @@ Android 11 可以正常解锁、Root 和使用 Magisk。早期“Android 11 不�
 | --- | --- | --- |
 | Router Admin | `0.0.0.0:9090` | 一体化管理后台 |
 | OpenList | `0.0.0.0:5244` | 文件与 WebDAV |
+| Samba（可选） | LAN + 回环 TCP `445` | 带密码的手机独立目录共享，SMB2/3 |
 | aria2 RPC | `0.0.0.0:6800` | 当前按设备要求关闭 RPC 鉴权；仅允许可信局域网使用 |
 | AriaNg/Caddy | `0.0.0.0:6880` | aria2 前端与同源 RPC 反代 |
 | CPA | `0.0.0.0:8317` | CLIProxyAPI |
@@ -175,6 +176,7 @@ docker compose run --rm kernel-builder bash scripts/build-resetfix-fqcodel.sh
 - [依赖下载与校验](docs/dependencies.md)
 - [安全、备份与回滚](docs/security.md)
 - [测试与验收](docs/testing.md)
+- [Samba 安装与连接](services/samba/README.md)
 
 ## 许可证
 
