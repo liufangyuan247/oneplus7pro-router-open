@@ -29,9 +29,16 @@ npm --version
 mkdir -p "$RELEASE" "$DATA" "$BACKUP"
 tar -xzf "$STAGE/source.tar.gz" -C "$RELEASE"
 cp "$STAGE/package-lock.json" "$RELEASE/package-lock.json"
+python "$STAGE/apply-local-overlay.py" "$RELEASE"
 cd "$RELEASE"
 npm ci --omit=dev --ignore-scripts --no-fund --no-audit
 node --check server/index.js
+node --check public/scripts/util.js
+node --check public/service-worker.js
+node --check public/scripts/main.js
+node --check public/scripts/router-compat.js
+node --check server/router-compat.js
+node --check server/ws-server.js
 printf '%s\n' "$REV" > UPSTREAM_COMMIT
 
 [ ! -L "$APP/current" ] || readlink "$APP/current" > "$BACKUP/previous-release"
