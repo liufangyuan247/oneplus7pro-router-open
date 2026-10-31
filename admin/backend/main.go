@@ -60,6 +60,7 @@ var allowedServices = map[string]ServiceMeta{
 	"aria2":            {Label: "aria2", Port: 6800},
 	"cpa":              {Label: "CPA · AI API", Port: 8317},
 	"cpa-usage-keeper": {Label: "CPA Usage Keeper", Port: 8320},
+	"searxng":          {Label: "SearXNG · 搜索", Port: 8888},
 	"mihomo":           {Label: "Mihomo · 代理核心", Port: 17890},
 	"qbittorrent":      {Label: "qBittorrent", Port: 8080},
 	"caddy":            {Label: "AriaNg / Caddy", Port: 6880},

@@ -1,0 +1,15 @@
+#!/data/data/com.termux/files/usr/bin/sh
+exec 2>&1
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$PREFIX/bin:/system/bin"
+export TMPDIR="$PREFIX/tmp"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+export XDG_CACHE_HOME="$HOME/router-data/searxng/cache"
+export SEARXNG_SETTINGS_PATH="$HOME/router-data/searxng/settings.yml"
+export SEARXNG_BIND_ADDRESS=127.0.0.1 SEARXNG_PORT=8888
+[ ! -f "$HOME/router-data/searxng/listen.env" ] || . "$HOME/router-data/searxng/listen.env"
+APP="$HOME/router-apps/searxng/current"
+export PYTHONPATH="$APP"
+cd "$APP" || exit 1
+exec nice -n 10 "$APP/venv/bin/python" "$HOME/router-apps/searxng/serve.py"

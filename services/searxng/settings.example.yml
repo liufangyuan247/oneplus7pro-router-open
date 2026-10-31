@@ -1,0 +1,62 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - auto
+      - tavily
+      - duckduckgo html get
+      - brave
+      - yahoo
+      - duckduckgo web
+      - 360search
+
+general:
+  instance_name: SearXNG
+  debug: false
+  enable_metrics: false
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: CHANGE_ME
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+valkey:
+  url: false
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 23.0
+  pool_connections: 4
+  proxies:
+    all://:
+      - http://127.0.0.1:17890
+
+engines:
+  - name: auto
+    engine: router_auto
+    shortcut: auto
+    disabled: false
+    timeout: 23.0
+  - name: tavily
+    engine: router_tavily
+    shortcut: tvly
+    disabled: true
+    timeout: 23.0
+  - name: duckduckgo html get
+    engine: router_ddg_get
+    shortcut: ddgget
+    disabled: true
+  - name: brave
+    disabled: true
+  - name: yahoo
+    disabled: true
+  - name: duckduckgo web
+    disabled: true
+  - name: 360search
+    disabled: true
+    timeout: 5.0

@@ -291,6 +291,8 @@ func resolveUpdateTracking(spec serviceUpdaterSpec, supported, custom bool, buil
 
 func (s *Server) detectCurrentVersion(name string) string {
 	switch name {
+	case "searxng":
+		return strings.TrimSpace(readText(filepath.Join(s.home, "router-apps", "searxng", "current", "UPSTREAM_VERSION")))
 	case "openlist":
 		out := s.runCmd(filepath.Join(s.prefix, "bin", "openlist"), "version")
 		re := regexp.MustCompile(`(?i)(?:Version|WebVersion):\s*(v[0-9.]+)`)
