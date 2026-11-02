@@ -5,12 +5,13 @@ export PREFIX='/data/data/com.termux/files/usr'
 export PATH='/data/data/com.termux/files/usr/bin'
 export TMPDIR='/data/data/com.termux/files/usr/tmp'
 
+# Local automation uses loopback RC. Remote access must pass the authenticated
+# Caddy proxy (5573), with IPv4 5572 redirected by router-security.sh.
 exec '/data/data/com.termux/files/usr/bin/rclone' rcd \
     --config='/data/data/com.termux/files/home/router-data/rclone/rclone.conf' \
     --disable copy \
     --buffer-size 16M \
-    --rc-addr=':5572' \
-    --rc-allow-origin='*' \
+    --rc-addr='127.0.0.1:5572' \
     --rc-web-gui \
     --rc-web-gui-no-open-browser \
     --rc-no-auth

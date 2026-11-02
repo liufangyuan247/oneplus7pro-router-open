@@ -1083,6 +1083,11 @@ apply_firewall() {
   "$IP6TABLES" -A OP7_FORWARD -i tailscale0 -o "$lan" -j ACCEPT 2>/dev/null || true
   "$IP6TABLES" -A OP7_FORWARD -i "$lan" -o tailscale0 -j ACCEPT 2>/dev/null || true
   "$IP6TABLES" -A OP7_FORWARD -j RETURN
+
+  # Reassert the independent ingress boundary after rebuilding INPUT jumps.
+  if [ -x /data/adb/router-security/apply ]; then
+    /data/adb/router-security/apply "$lan"
+  fi
 }
 
 mihomo_router_listening() {

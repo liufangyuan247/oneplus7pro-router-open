@@ -9,7 +9,9 @@
 - PPPoE、订阅、API key、可选的 RPC secret、后台密码只放私有 data/config 文件，权限 600。
 - SSH 仅允许公钥，关闭密码登录；不要提交 `authorized_keys`，由部署者安装自己的 key。
 - Mihomo controller 保持 `127.0.0.1`；需要远程管理时由认证后台反代。
-- 当前设备按运维要求关闭 aria2 RPC secret；`0.0.0.0:6800` 因此只能暴露在可信局域网，不能映射到公网。若重新启用 secret，AriaNg、OpenList、健康探测和 Router Admin 会自动兼容 token。
+- aria2 RPC 使用随机 secret，且仅监听本机；AriaNg/Caddy 页面额外要求登录，OpenList、健康探测和 Router Admin 使用私有配置中的 RPC token。
+- Rclone RC 仅供本机自动化调用，远程访问经过 Caddy 登录认证；IPv4 `5572` 转到认证入口 `5573`，IPv6 直接使用 `5573`。防火墙拒绝直接访问原始 RC 端口，包括尚未自然重启的旧监听进程。
+- 独立的 `OP7_SECURITY` IPv4/IPv6 入站策略限制未知接口及 Tailscale 本机服务端口；不改写 Tailscale 云端 ACL 或 LAN 转发规则。网络 ADB、iperf3 与 vlmcsd 默认关闭。
 - Router Admin 首次启动生成随机密码；生产环境应置于 LAN/Tailscale，并限制暴露接口。
 - CPA、OpenList、Usage Keeper 都使用各自认证，数据库不进入代码仓库。
 - Tailscale auth key 使用 ephemeral/reusable 策略时按上游建议管理，state 目录权限 700。

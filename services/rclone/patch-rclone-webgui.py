@@ -6,6 +6,7 @@ Fixes:
 2. RemoteListAutoSuggest TypeError: trim() of undefined value
 3. React-DnD "Cannot have two HTML5 backends at the same time" on hash navigation
 4. Auto-sanitize corrupted curState and reset stale ServiceWorker in index.html
+5. Remove the legacy hardcoded login that overrides authenticated proxy access
 """
 
 import os
@@ -31,6 +32,39 @@ def patch_file(path, replacements):
         print(f"Successfully saved {path}")
     return modified
 
+
+def patch_login_bootstrap(path):
+    """Keep the original login form; never embed credentials in static HTML."""
+    if not os.path.isfile(path):
+        return False
+    with open(path, "r", encoding="utf-8") as f:
+        original = f.read()
+    content = original
+    forced_login = "    localStorage.setItem('authKey', 'YWRtaW46YWRtaW4=');"
+    migration = """    // Clear the old fixed login once, including its persisted Redux state.
+    if (localStorage.getItem('authKey') === 'YWRtaW46YWRtaW4=') {
+      ['authKey', 'userName', 'password', 'curState'].forEach(function(key) {
+        localStorage.removeItem(key);
+      });
+    }"""
+    content = content.replace(forced_login, migration)
+    for statement in [
+        "    localStorage.setItem('userName', 'admin');\n",
+        "    localStorage.setItem('password', 'admin');\n",
+    ]:
+        content = content.replace(statement, "")
+    content = content.replace("""    if (window.location.hash === '#/login' || window.location.hash === '' || window.location.hash === '#/') {
+      window.location.hash = '#/dashboard';
+    }
+""", "")
+    if content == original:
+        return False
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("Removed legacy forced login from index.html")
+    return True
+
+
 def main():
     home = os.environ.get("HOME", "/data/data/com.termux/files/home")
     base_dir = os.path.join(home, ".cache/rclone/webgui/current/build")
@@ -40,6 +74,8 @@ def main():
     chunk11 = os.path.join(base_dir, "static/js/11.746c663a.chunk.js")
     chunk8 = os.path.join(base_dir, "static/js/8.064eb1d0.chunk.js")
     index_html = os.path.join(base_dir, "index.html")
+
+    patch_login_bootstrap(index_html)
 
     # 1. Patch chunk 11 (Explorer views & actions)
     patch_file(chunk11, [

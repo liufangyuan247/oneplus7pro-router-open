@@ -6,11 +6,9 @@
 settings put global usb_config mtp,adb >/dev/null 2>&1 || true
 setprop persist.sys.usb.config mtp,adb
 
-# Keep an authenticated management path available while the USB-C port is in
-# host mode for an Ethernet adapter. Android still requires an authorized ADB
-# host key before accepting a connection.
-setprop persist.adb.tcp.port 5555
-setprop service.adb.tcp.port 5555
+# Use key-only SSH for network management; keep ADB available over USB.
+setprop persist.adb.tcp.port -1
+setprop service.adb.tcp.port -1
 setprop ctl.restart adbd
 
 exit 0

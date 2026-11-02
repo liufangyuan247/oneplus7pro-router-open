@@ -26,7 +26,21 @@ mv "$GUARD.new" "$GUARD"
 
 ARIA_CONF="$DATA/aria2/aria2.conf"
 ARIA_SECRET=$(sed -n 's/^rpc-secret=//p' "$ARIA_CONF" 2>/dev/null | head -n 1 || true)
+[ -n "$ARIA_SECRET" ] || ARIA_SECRET=$(openssl rand -hex 32)
 ARIA_SECRET_B64=$(printf '%s' "$ARIA_SECRET" | base64 | tr -d '\r\n')
+
+# Keep web credentials private and stable across reinstall/upgrade operations.
+mkdir -p "$DATA/security"
+chmod 700 "$DATA/security"
+UI_ENV="$DATA/security/web-ui.env"
+if [ ! -s "$UI_ENV" ]; then
+  UI_PASSWORD=$(openssl rand -hex 24)
+  UI_PASSWORD_HASH=$(printf '%s\n' "$UI_PASSWORD" | caddy hash-password --bcrypt-cost 12)
+  printf "OP7_UI_USER='admin'\nOP7_UI_PASSWORD='%s'\nOP7_UI_PASSWORD_HASH='%s'\n" \
+    "$UI_PASSWORD" "$UI_PASSWORD_HASH" > "$UI_ENV"
+  chmod 600 "$UI_ENV"
+fi
+. "$UI_ENV"
 
 # Google Public DNS is unreliable on this uplink. Keep Termux-native package
 # tools and daemons on the same reachable resolvers used by router dnsmasq.
@@ -54,9 +68,9 @@ min-split-size=20M
 split=8
 disk-cache=128M
 enable-rpc=true
-rpc-listen-all=true
+rpc-listen-all=false
 rpc-listen-port=6800
-rpc-allow-origin-all=true
+rpc-allow-origin-all=false
 input-file=$DATA/aria2/aria2.session
 save-session=$DATA/aria2/aria2.session
 save-session-interval=60
@@ -75,6 +89,14 @@ log-level=notice
 console-log-level=notice
 EOF
 fi
+
+if ! grep -q '^rpc-secret=.' "$ARIA_CONF"; then
+  sed '/^rpc-secret=/d' "$ARIA_CONF" > "$ARIA_CONF.auth-new"
+  printf '\nrpc-secret=%s\n' "$ARIA_SECRET" >> "$ARIA_CONF.auth-new"
+  chmod 600 "$ARIA_CONF.auth-new"
+  mv "$ARIA_CONF.auth-new" "$ARIA_CONF"
+fi
+chmod 600 "$ARIA_CONF"
 
 # AriaNg changes global aria2 options through RPC. aria2 normally keeps those
 # changes only in memory, so mirror changed runtime options back to the
@@ -148,7 +170,7 @@ while :; do
     ["conf-path", "daemon", "enable-rpc", "help", "human-readable",
      "log", "quiet", "rpc-allow-origin-all", "rpc-listen-all",
      "rpc-listen-port", "rpc-max-request-size", "rpc-save-upload-metadata",
-     "rpc-secure", "save-session", "show-console-readout", "show-files",
+     "rpc-secure", "rpc-secret", "save-session", "show-console-readout", "show-files",
      "stderr", "stop"] as $locked
     | to_entries[]
     | . as $item
@@ -187,29 +209,78 @@ mkdir -p "$DATA/downloads/.incomplete"
 
 cat > "$DATA/caddy/Caddyfile" <<EOF
 {
-    admin off
-    auto_https off
+	admin off
+	auto_https off
+}
+
+(request_guard) {
+	@cross_site header Sec-Fetch-Site cross-site
+	respond @cross_site 403
+	@foreign_origin expression "{http.request.header.Origin} != '' && {http.request.header.Origin} != 'http://' + {http.request.hostport}"
+	respond @foreign_origin 403
+	header Cache-Control "no-store"
+}
+
+(service_auth) {
+	import request_guard
+	@external not remote_ip 127.0.0.1 ::1
+	basic_auth @external {
+		$OP7_UI_USER $OP7_UI_PASSWORD_HASH
+	}
 }
 
 :6880 {
-    bind 0.0.0.0
+	route {
+		import service_auth
 
-    @root path /
-    redir @root /op7p-setup 302
-    redir /op7p-setup "/index.html#!/settings/rpc/set?protocol=http&host=192.168.2.1&port=6880&interface=jsonrpc&secret=$ARIA_SECRET_B64" 302
+		@root path /
+		redir @root /op7p-setup 302
+		redir /op7p-setup "/index.html#!/settings/rpc/set?protocol=http&host=192.168.2.1&port=6880&interface=jsonrpc&secret=$ARIA_SECRET_B64" 302
 
-    handle /jsonrpc* {
-        reverse_proxy 127.0.0.1:6800
-    }
+		handle /jsonrpc* {
+			reverse_proxy 127.0.0.1:6800
+		}
 
-    handle {
-        root * $STACK/www/ariang
-        file_server
-    }
+		handle {
+			root * $STACK/www/ariang
+			file_server
+		}
+	}
+	log {
+		output discard
+	}
+}
 
-    log {
-        output discard
-    }
+:5573 {
+	route {
+		import request_guard
+		# Serve only UI assets publicly. API and remote-file paths stay protected.
+		@web_ui {
+			method GET HEAD
+			path / /index.html /favicon.ico /manifest.json /asset-manifest.json /robots.txt /logo192.png /logo512.png /static/*
+		}
+		handle @web_ui {
+			root * $HOME/.cache/rclone/webgui/current/build
+			file_server
+		}
+		handle {
+			basic_auth {
+				$OP7_UI_USER $OP7_UI_PASSWORD_HASH
+			}
+			reverse_proxy 127.0.0.1:5572 {
+				header_up -Authorization
+				header_down -Access-Control-Allow-Origin
+			}
+		}
+	}
+	# Authentication errors leave the normal handler chain. Strip the browser
+	# challenge in the error route so the Rclone form can display login failures.
+	handle_errors {
+		@rpc method POST OPTIONS
+		header @rpc -WWW-Authenticate
+		header Cache-Control "no-store"
+		respond "{err.status_text}" {err.status_code}
+	}
 }
 EOF
 
@@ -333,7 +404,6 @@ cat > "$STACK/bin/healthd" <<EOF
 PREFIX='$PREFIX'
 SERVICES='$SERVICES'
 STATE='$DATA/health'
-ARIA_SECRET='$ARIA_SECRET'
 PATH="\$PREFIX/bin"
 mkdir -p "\$STATE"
 sleep 25
@@ -362,6 +432,7 @@ probe() {
 
 while :; do
   probe openlist curl -fsS --max-time 5 http://127.0.0.1:5244/ping
+  ARIA_SECRET=\$(sed -n 's/^rpc-secret=//p' '$ARIA_CONF' | head -n 1)
   aria_auth=
   [ -n "\$ARIA_SECRET" ] && aria_auth="\"token:\$ARIA_SECRET\""
   probe aria2 curl -fsS --max-time 5 -H 'Content-Type: application/json' \
