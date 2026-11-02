@@ -11,6 +11,7 @@ import {
 } from "react";
 import { BrowserScreenControl } from "./web-screen";
 import { SubscriptionRelay } from "./subscription-relay";
+import { PairdropSettings } from "./pairdrop-settings";
 import {
   isTab,
   ModuleContextBar,
@@ -579,7 +580,7 @@ const demo: Snapshot = {
           : name === "mihomo"
             ? "Mihomo · 代理核心"
           : name === "pairdrop"
-            ? "PairDrop · 文件互传"
+            ? "设备传输站"
           : name === "samba"
             ? "Samba · 局域网共享"
           : name === "adguardhome"
@@ -1008,6 +1009,7 @@ export default function Home() {
           refresh={refresh}
           setNotice={setNotice}
           section={activeSection}
+          auth={auth}
           onLog={async (name) => {
             const r = await fetch(
               `/api/logs?service=${encodeURIComponent(name)}`,
@@ -5367,6 +5369,7 @@ function Services({
   setNotice,
   onLog,
   section,
+  auth,
 }: {
   data: Snapshot;
   history: HistoryPoint[];
@@ -5374,7 +5377,9 @@ function Services({
   setNotice: (value: string) => void;
   onLog: (name: string) => void;
   section: SectionId;
+  auth?: AuthState;
 }) {
+  const [pairdropSettingsOpen, setPairdropSettingsOpen] = useState(false);
   const [upgradingService, setUpgradingService] = useState<Snapshot["services"][number] | null>(null);
   const [upgradeProcessing, setUpgradeProcessing] = useState(false);
   const [upgradeStatusMsg, setUpgradeStatusMsg] = useState("");
@@ -5593,6 +5598,15 @@ function Services({
                       连接方式
                     </button>
                   )}
+                  {service.Name === "pairdrop" && (
+                    <button
+                      type="button"
+                      disabled={auth === "demo" || service.State !== "运行中"}
+                      onClick={() => setPairdropSettingsOpen(true)}
+                    >
+                      设置
+                    </button>
+                  )}
                   {service.canUpgrade && service.upgradable && (
                     <button
                       type="button"
@@ -5742,6 +5756,17 @@ function Services({
             </div>
           </section>
         </div>
+      )}
+
+      {pairdropSettingsOpen && (
+        <PairdropSettings
+          onClose={() => setPairdropSettingsOpen(false)}
+          onSaved={(msg) => {
+            setNotice(msg);
+            setPairdropSettingsOpen(false);
+          }}
+          demo={auth === "demo"}
+        />
       )}
     </div>
   );

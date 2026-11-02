@@ -53,7 +53,7 @@ const (
 
 var allowedServices = map[string]ServiceMeta{
 	"openlist":         {Label: "OpenList", Port: 5244},
-	"pairdrop":         {Label: "PairDrop · 文件互传", Port: 3000},
+	"pairdrop":         {Label: "设备传输站", Port: 3000},
 	"samba":            {Label: "Samba · 局域网共享", Port: 445},
 	"adguardhome":      {Label: "AdGuard Home · 广告拦截", Port: 3001},
 	"rclone":           {Label: "Rclone · 云同步", Port: 5572},
@@ -135,6 +135,8 @@ type Server struct {
 	commandRunner                      func(name string, args ...string) string
 	subscriptionUpdater                func(item SubscriptionRecord, activate, useCache bool) ([]byte, error)
 	mihomoController                   string
+	pairdropAdminURL                   string
+	pairdropAdminTransport             http.RoundTripper
 	speedTestMu                        sync.Mutex
 	speedTestJob                       *MihomoSpeedTestJob
 	speedTestCancel                    context.CancelFunc
@@ -579,6 +581,7 @@ func main() {
 	mux.HandleFunc("/_fonts/", s.auth(s.mihomoDashboardFonts))
 	mux.HandleFunc("/api/network-draft", s.auth(s.networkDraft))
 	mux.HandleFunc("/api/network/reconnect", s.auth(s.networkReconnect))
+	mux.HandleFunc("/api/pairdrop/settings", s.auth(s.pairdropSettings))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, http.StatusNotFound, map[string]string{"error": "API not found"})
 	})

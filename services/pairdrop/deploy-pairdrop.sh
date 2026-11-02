@@ -39,6 +39,9 @@ node --check public/scripts/main.js
 node --check public/scripts/router-compat.js
 node --check server/router-compat.js
 node --check server/ws-server.js
+node --check server/server.js
+node --check server/router-mailbox.js
+node --check public/scripts/router-mailbox.js
 printf '%s\n' "$REV" > UPSTREAM_COMMIT
 
 [ ! -L "$APP/current" ] || readlink "$APP/current" > "$BACKUP/previous-release"

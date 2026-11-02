@@ -1,0 +1,1291 @@
+/* ==========================================================================
+   设备传输站 (Router File-Delivery Station) - Telegram-inspired Theme
+   ========================================================================== */
+
+/* 1. Hide legacy PairDrop chrome completely */
+html.router-mailbox-active body > header,
+html.router-mailbox-active body > footer,
+html.router-mailbox-active canvas.circles,
+html.router-mailbox-active #websocket-fallback,
+html.router-mailbox-active #center > x-peers,
+html.router-mailbox-active #center > x-no-peers,
+html.router-mailbox-active #center > x-instructions,
+html.router-mailbox-active #center > .shr-panel,
+html.router-mailbox-active #theme,
+html.router-mailbox-active .about-btn,
+html.router-mailbox-active x-menu {
+    display: none !important;
+}
+
+/* 2. Reset viewport & base container to fresh light theme */
+html.router-mailbox-active,
+html.router-mailbox-active body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    height: 100dvh !important;
+    min-height: 100% !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+    background: #eef3f7 !important;
+    color: #111827 !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif !important;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+html.router-mailbox-active #center {
+    display: flex !important;
+    flex-direction: row !important;
+    justify-content: stretch !important;
+    align-items: stretch !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    height: 100dvh !important;
+    overflow: hidden !important;
+    background: #eef3f7 !important;
+}
+
+/* 3. Main Application Shell */
+#router-mailbox {
+    --mb-primary: #2481cc;
+    --mb-primary-hover: #1e72b5;
+    --mb-primary-light: #e8f3fc;
+    --mb-bg-shell: #eef3f7;
+    --mb-bg-sidebar: #ffffff;
+    --mb-bg-chat: #e8eff5;
+    --mb-bg-inbound: #ffffff;
+    --mb-bg-outbound: #e3f2fd;
+    --mb-border: #e2e8f0;
+    --mb-border-outbound: #bfe0f7;
+    --mb-text-main: #0f172a;
+    --mb-text-muted: #64748b;
+    --mb-text-subtle: #94a3b8;
+    --mb-green: #22c55e;
+    --mb-red: #ef4444;
+    --mb-red-bg: #fef2f2;
+    --mb-red-border: #fecaca;
+    --mb-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --mb-shadow-card: 0 1px 3px 0 rgba(15, 23, 42, 0.08);
+
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: row;
+    overflow: hidden;
+    background: var(--mb-bg-shell);
+    color: var(--mb-text-main);
+    font-size: 14px;
+    line-height: 1.5;
+    position: relative;
+    user-select: text;
+}
+
+#router-mailbox *,
+#router-mailbox *::before,
+#router-mailbox *::after {
+    box-sizing: border-box;
+}
+
+/* Scoped Resets against upstream global header/footer leaks */
+#router-mailbox header,
+#router-mailbox footer,
+#router-mailbox .mb-sidebar-header,
+#router-mailbox .mb-chat-header,
+#router-mailbox .mb-dialog-header,
+#router-mailbox .mb-sidebar-footer,
+#router-mailbox .mb-composer {
+    position: static !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    left: auto !important;
+    z-index: auto !important;
+    box-sizing: border-box !important;
+    align-items: center !important;
+    text-align: left !important;
+    letter-spacing: normal !important;
+}
+
+#router-mailbox header > *,
+#router-mailbox footer > *,
+#router-mailbox .mb-sidebar-header > *,
+#router-mailbox .mb-chat-header > *,
+#router-mailbox .mb-dialog-header > *,
+#router-mailbox .mb-sidebar-footer > *,
+#router-mailbox .mb-composer > * {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    align-self: center !important;
+    letter-spacing: normal !important;
+    text-transform: none !important;
+    font: inherit !important;
+}
+
+#router-mailbox button,
+#router-mailbox .mb-btn,
+#router-mailbox .mb-icon-btn,
+#router-mailbox .mb-send-button {
+    font-family: inherit !important;
+    letter-spacing: normal !important;
+    text-transform: none !important;
+}
+
+/* 4. Left Sidebar (320px) */
+#router-mailbox .mb-sidebar {
+    width: 320px;
+    min-width: 280px;
+    max-width: 360px;
+    flex: 0 0 320px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: var(--mb-bg-sidebar);
+    border-right: 1px solid var(--mb-border);
+    position: relative;
+    z-index: 10;
+    overflow: hidden;
+}
+
+/* Sidebar Header Toolbar */
+#router-mailbox .mb-sidebar-header {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: 60px !important;
+    min-height: 60px !important;
+    max-height: 60px !important;
+    padding: 0 16px !important;
+    margin: 0 !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    border-bottom: 1px solid var(--mb-border) !important;
+    background: var(--mb-bg-sidebar) !important;
+    flex-shrink: 0 !important;
+    box-sizing: border-box !important;
+}
+
+#router-mailbox .mb-brand {
+    display: inline-flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    align-self: center !important;
+    gap: 10px !important;
+    color: var(--mb-primary) !important;
+    font-size: 17px !important;
+    font-weight: 650 !important;
+    letter-spacing: -0.01em !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    min-width: 0 !important;
+    white-space: nowrap !important;
+}
+
+#router-mailbox .mb-brand-icon {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 22px !important;
+    height: 22px !important;
+    flex-shrink: 0 !important;
+}
+
+#router-mailbox .mb-brand svg,
+#router-mailbox .mb-brand-icon svg {
+    width: 22px !important;
+    height: 22px !important;
+    fill: none !important;
+    stroke: currentColor !important;
+    stroke-width: 2.2 !important;
+    stroke-linecap: round !important;
+    stroke-linejoin: round !important;
+    display: inline-block !important;
+}
+
+/* Search Box */
+#router-mailbox .mb-search-box {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--mb-border);
+    background: #fafbfc;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    position: relative;
+    flex-shrink: 0;
+}
+
+#router-mailbox .mb-search-box svg {
+    width: 16px !important;
+    height: 16px !important;
+    position: absolute !important;
+    left: 24px !important;
+    color: var(--mb-text-subtle) !important;
+    pointer-events: none !important;
+    fill: none !important;
+    stroke: currentColor !important;
+}
+
+#router-mailbox .mb-search-box svg circle {
+    fill: none !important;
+    stroke: currentColor !important;
+    stroke-width: 2 !important;
+}
+
+#router-mailbox .mb-search-box svg line {
+    stroke: currentColor !important;
+    stroke-width: 2 !important;
+}
+
+#router-mailbox .mb-search-input {
+    width: 100%;
+    height: 36px;
+    min-height: 36px;
+    padding: 0 12px 0 34px;
+    border: 1px solid var(--mb-border);
+    border-radius: 18px;
+    background: #ffffff;
+    color: var(--mb-text-main);
+    font-size: 13.5px;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#router-mailbox .mb-search-input:focus {
+    border-color: var(--mb-primary);
+    box-shadow: 0 0 0 3px rgba(36, 129, 204, 0.12);
+}
+
+#router-mailbox .mb-search-input::placeholder {
+    color: var(--mb-text-subtle);
+}
+
+/* Device & Inbox List */
+#router-mailbox .mb-device-list {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Device Row */
+#router-mailbox .mb-device-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    min-height: 60px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+    user-select: none;
+    outline: none;
+}
+
+#router-mailbox .mb-device-row:hover {
+    background-color: #f1f5f9;
+}
+
+#router-mailbox .mb-device-row.mb-active {
+    background-color: #e5f1fb;
+}
+
+#router-mailbox .mb-device-row:focus-visible {
+    box-shadow: 0 0 0 2px var(--mb-primary) inset;
+}
+
+/* Avatars */
+#router-mailbox .mb-avatar {
+    width: 42px;
+    height: 42px;
+    min-width: 42px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    font-weight: 600;
+    color: #ffffff;
+    background: var(--mb-primary);
+    position: relative;
+    flex-shrink: 0;
+}
+
+#router-mailbox .mb-avatar svg {
+    width: 20px;
+    height: 20px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+#router-mailbox .mb-avatar-inbox {
+    background: #0ea5e9;
+    color: #ffffff;
+}
+
+#router-mailbox .mb-avatar-local {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    background: #64748b;
+    color: #ffffff;
+}
+
+#router-mailbox .mb-online-dot {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background-color: var(--mb-green);
+    border: 2px solid #ffffff;
+}
+
+#router-mailbox .mb-online-dot.mb-offline {
+    background-color: #94a3b8;
+}
+
+/* Row Content */
+#router-mailbox .mb-row-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+#router-mailbox .mb-row-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+#router-mailbox .mb-row-name {
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--mb-text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#router-mailbox .mb-row-sub {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--mb-text-muted);
+}
+
+#router-mailbox .mb-row-preview {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#router-mailbox .mb-row-preview.mb-has-pending {
+    color: var(--mb-primary);
+    font-weight: 500;
+}
+
+#router-mailbox .mb-badge {
+    background: var(--mb-primary);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 3px 7px;
+    border-radius: 10px;
+    flex-shrink: 0;
+}
+
+#router-mailbox .mb-devices-empty {
+    padding: 24px 16px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--mb-text-muted);
+    line-height: 1.6;
+}
+
+/* Sidebar Footer (Local Identity) */
+#router-mailbox .mb-sidebar-footer {
+    height: 56px !important;
+    min-height: 56px !important;
+    max-height: 56px !important;
+    padding: 0 14px !important;
+    margin: 0 !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 10px !important;
+    border-top: 1px solid var(--mb-border) !important;
+    background: #fafbfc !important;
+    cursor: pointer !important;
+    text-align: left !important;
+    box-sizing: border-box !important;
+    outline: none !important;
+    flex-shrink: 0 !important;
+}
+
+#router-mailbox .mb-sidebar-footer:hover {
+    background-color: #f1f5f9 !important;
+}
+
+#router-mailbox .mb-sidebar-footer:focus-visible {
+    outline: 2px solid var(--mb-primary) !important;
+    outline-offset: -2px !important;
+}
+
+#router-mailbox .mb-local-info {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: left !important;
+}
+
+#router-mailbox .mb-local-name {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--mb-text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#router-mailbox .mb-local-caption {
+    font-size: 11.5px;
+    color: var(--mb-text-muted);
+}
+
+/* 5. Fluid Right Conversation Pane */
+#router-mailbox .mb-chat-pane {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: var(--mb-bg-chat);
+    position: relative;
+    overflow: hidden;
+}
+
+/* Chat Header */
+#router-mailbox .mb-chat-header {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: 60px !important;
+    min-height: 60px !important;
+    max-height: 60px !important;
+    padding: 0 18px !important;
+    margin: 0 !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 12px !important;
+    background: #ffffff !important;
+    border-bottom: 1px solid var(--mb-border) !important;
+    box-sizing: border-box !important;
+    z-index: 5 !important;
+    flex-shrink: 0 !important;
+}
+
+#router-mailbox .mb-btn-back,
+#router-mailbox header .mb-btn-back,
+#router-mailbox .mb-chat-header .mb-btn-back {
+    display: none !important;
+    margin-right: -4px !important;
+}
+
+#router-mailbox .mb-chat-avatar {
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+    font-size: 14px;
+}
+
+#router-mailbox .mb-chat-info {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: left !important;
+}
+
+#router-mailbox .mb-chat-name {
+    font-size: 15.5px;
+    font-weight: 650;
+    margin: 0;
+    line-height: 1.25;
+    color: var(--mb-text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#router-mailbox .mb-chat-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--mb-text-muted);
+    margin-top: 1px;
+}
+
+#router-mailbox .mb-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--mb-green);
+    display: inline-block;
+}
+
+#router-mailbox .mb-status-dot.mb-offline {
+    background-color: #94a3b8;
+}
+
+#router-mailbox .mb-status-dot.mb-inbox-dot {
+    background-color: #0ea5e9;
+}
+
+/* Notice Bar (Progress, Alerts, Errors) */
+#router-mailbox .mb-notice-bar {
+    padding: 9px 16px;
+    font-size: 13px;
+    line-height: 1.4;
+    background: #eff6ff;
+    border-bottom: 1px solid #bfdbfe;
+    color: #1e40af;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+    animation: mbSlideDown 0.2s ease;
+}
+
+#router-mailbox .mb-notice-bar.mb-notice-error {
+    background: #fef2f2;
+    border-bottom-color: #fecaca;
+    color: #991b1b;
+}
+
+@keyframes mbSlideDown {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Scrollable Messages Area */
+#router-mailbox .mb-messages-container {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    -webkit-overflow-scrolling: touch;
+    outline: none;
+}
+
+/* Files List */
+#router-mailbox .mb-files-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+}
+
+/* File Cards */
+#router-mailbox .mb-file-card {
+    max-width: min(500px, 88%);
+    min-width: 260px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    box-shadow: var(--mb-shadow-card);
+    transition: transform 0.12s ease;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+/* Left: Inbound White Card */
+#router-mailbox .mb-file-card.mb-card-inbound {
+    align-self: flex-start;
+    background: var(--mb-bg-inbound);
+    border: 1px solid var(--mb-border);
+    border-radius: 14px 14px 14px 4px;
+}
+
+/* Right: Outbound Pale Blue Card */
+#router-mailbox .mb-file-card.mb-card-outbound {
+    align-self: flex-end;
+    background: var(--mb-bg-outbound);
+    border: 1px solid var(--mb-border-outbound);
+    border-radius: 14px 14px 4px 14px;
+}
+
+/* Inside Card: File Info Header */
+#router-mailbox .mb-card-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+#router-mailbox .mb-file-icon-wrap {
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+    border-radius: 9px;
+    background: rgba(36, 129, 204, 0.1);
+    color: var(--mb-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+#router-mailbox .mb-card-outbound .mb-file-icon-wrap {
+    background: rgba(36, 129, 204, 0.18);
+}
+
+#router-mailbox .mb-file-icon-wrap svg {
+    width: 22px;
+    height: 22px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+#router-mailbox .mb-card-meta {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#router-mailbox .mb-card-filename {
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--mb-text-main);
+    line-height: 1.35;
+    margin: 0 0 3px;
+}
+
+#router-mailbox .mb-card-details {
+    font-size: 12px;
+    color: var(--mb-text-muted);
+    line-height: 1.4;
+}
+
+/* Card Status & Expiry */
+#router-mailbox .mb-card-status-line {
+    font-size: 11.5px;
+    color: var(--mb-text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    padding-top: 8px;
+}
+
+#router-mailbox .mb-card-status-badge {
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.05);
+    font-weight: 500;
+    font-size: 11px;
+}
+
+/* Card Actions */
+#router-mailbox .mb-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-top: 4px;
+}
+
+/* Buttons */
+#router-mailbox .mb-btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 40px;
+    padding: 0 14px;
+    border-radius: 9px;
+    font-size: 13.5px;
+    font-weight: 550;
+    text-decoration: none;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.12s ease;
+    user-select: none;
+    white-space: nowrap;
+}
+
+#router-mailbox .mb-btn svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+#router-mailbox .mb-btn-primary {
+    background: var(--mb-primary);
+    color: #ffffff;
+    border-color: var(--mb-primary);
+}
+
+#router-mailbox .mb-btn-primary:hover {
+    background: var(--mb-primary-hover);
+    border-color: var(--mb-primary-hover);
+}
+
+#router-mailbox .mb-btn-secondary {
+    background: #ffffff;
+    color: var(--mb-primary);
+    border-color: #cbd5e1;
+}
+
+#router-mailbox .mb-btn-secondary:hover {
+    background: #f8fafc;
+    border-color: #94a3b8;
+}
+
+#router-mailbox .mb-btn-danger {
+    background: #ffffff;
+    color: var(--mb-red);
+    border-color: var(--mb-red-border);
+}
+
+#router-mailbox .mb-btn-danger:hover {
+    background: var(--mb-red-bg);
+}
+
+#router-mailbox .mb-icon-btn {
+    appearance: none;
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+    border-radius: 10px;
+    border: none;
+    background: transparent;
+    color: var(--mb-text-muted);
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    flex-direction: row !important;
+    cursor: pointer;
+    transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+#router-mailbox .mb-icon-btn:hover {
+    background: #f1f5f9;
+    color: var(--mb-text-main);
+}
+
+#router-mailbox .mb-icon-btn svg {
+    width: 20px;
+    height: 20px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+#router-mailbox .mb-btn:disabled,
+#router-mailbox .mb-icon-btn:disabled,
+#router-mailbox .mb-send-button[aria-disabled="true"],
+#router-mailbox .mb-send-button.mb-disabled {
+    opacity: 0.5 !important;
+    cursor: not-allowed !important;
+    pointer-events: none !important;
+    box-shadow: none !important;
+}
+
+/* Empty Conversation Illustration & Tips */
+#router-mailbox .mb-empty-state {
+    margin: auto;
+    max-width: 420px;
+    padding: 32px 20px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+#router-mailbox .mb-empty-illustration {
+    width: 140px;
+    height: 140px;
+    margin-bottom: 16px;
+    color: var(--mb-primary);
+}
+
+#router-mailbox .mb-empty-illustration svg {
+    width: 100%;
+    height: 100%;
+}
+
+#router-mailbox .mb-empty-title {
+    font-size: 17px;
+    font-weight: 650;
+    color: var(--mb-text-main);
+    margin: 0 0 8px;
+}
+
+#router-mailbox .mb-empty-desc {
+    font-size: 13.5px;
+    color: var(--mb-text-muted);
+    line-height: 1.5;
+    margin: 0 0 20px;
+}
+
+#router-mailbox .mb-empty-tips {
+    text-align: left;
+    background: #ffffff;
+    border: 1px solid var(--mb-border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    box-shadow: var(--mb-shadow-sm);
+}
+
+#router-mailbox .mb-tip-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--mb-text-muted);
+}
+
+#router-mailbox .mb-tip-bullet {
+    color: var(--mb-primary);
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+#router-mailbox .mb-tip-item strong {
+    color: var(--mb-text-main);
+}
+
+/* 6. Compose Area (Fixed at bottom) */
+#router-mailbox .mb-composer {
+    width: 100% !important;
+    min-height: 72px !important;
+    padding: 12px 20px !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    border-top: 1px solid var(--mb-border) !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    z-index: 5 !important;
+    flex-shrink: 0 !important;
+    box-sizing: border-box !important;
+    text-align: left !important;
+}
+
+#router-mailbox .mb-composer-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    width: 100%;
+}
+
+#router-mailbox .mb-send-button {
+    position: relative;
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 22px;
+    border-radius: 10px;
+    background: var(--mb-primary);
+    color: #ffffff;
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    overflow: hidden;
+    transition: background-color 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 1px 3px rgba(36, 129, 204, 0.25);
+    flex-shrink: 0;
+    outline: none;
+}
+
+#router-mailbox .mb-send-button:hover {
+    background: var(--mb-primary-hover);
+    box-shadow: 0 2px 6px rgba(36, 129, 204, 0.35);
+}
+
+#router-mailbox .mb-send-button:focus-visible {
+    outline: 2px solid var(--mb-primary) !important;
+    outline-offset: 2px !important;
+}
+
+#router-mailbox .mb-send-button svg {
+    width: 18px;
+    height: 18px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+#router-mailbox .mb-real-file-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+}
+
+#router-mailbox .mb-composer-hint {
+    font-size: 12px;
+    color: var(--mb-text-muted);
+    text-align: right;
+    line-height: 1.4;
+    flex: 1 1 auto;
+}
+
+#router-mailbox .mb-composer-aggregate-note {
+    font-size: 13px;
+    color: var(--mb-text-muted);
+    line-height: 1.5;
+    text-align: center;
+    width: 100%;
+    padding: 8px 0;
+}
+
+/* 7. Accessible Settings Dialog / Modal Sheet */
+#router-mailbox .mb-settings-dialog {
+    border: none;
+    border-radius: 16px;
+    padding: 0;
+    width: min(480px, 92vw);
+    max-width: 480px;
+    background: #ffffff;
+    color: var(--mb-text-main);
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.18);
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    margin: 0;
+    max-height: 90vh;
+    overflow-x: hidden !important;
+    overflow-y: hidden !important;
+    z-index: 1000;
+}
+
+#router-mailbox .mb-settings-dialog::backdrop {
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(3px);
+}
+
+#router-mailbox .mb-dialog-content {
+    display: flex;
+    flex-direction: column;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 90vh;
+    overflow-x: hidden !important;
+    overflow-y: hidden;
+}
+
+#router-mailbox .mb-dialog-header {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: 60px !important;
+    min-height: 60px !important;
+    max-height: 60px !important;
+    padding: 0 20px !important;
+    margin: 0 !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    border-bottom: 1px solid var(--mb-border) !important;
+    box-sizing: border-box !important;
+    flex-shrink: 0 !important;
+    overflow: hidden !important;
+}
+
+#router-mailbox .mb-dialog-title,
+#router-mailbox .mb-settings-dialog h2 {
+    color: var(--mb-text-main) !important;
+    font-size: 17px !important;
+    font-weight: 650 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    line-height: 1.25 !important;
+}
+
+#router-mailbox .mb-dialog-body {
+    padding: 20px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+#router-mailbox .mb-dialog-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#router-mailbox .mb-field-label {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--mb-text-main);
+    display: block;
+}
+
+#router-mailbox .mb-field-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+#router-mailbox .mb-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 40px;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 9px;
+    font-size: 14px;
+    color: var(--mb-text-main);
+    background: #ffffff;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#router-mailbox .mb-input:focus {
+    border-color: var(--mb-primary);
+    box-shadow: 0 0 0 3px rgba(36, 129, 204, 0.12);
+}
+
+#router-mailbox .mb-field-tip {
+    font-size: 12px;
+    color: var(--mb-text-muted);
+    margin: 0;
+    line-height: 1.45;
+}
+
+#router-mailbox .mb-capacity-box {
+    background: #f8fafc;
+    border: 1px solid var(--mb-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#router-mailbox .mb-capacity-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12.5px;
+    font-weight: 550;
+    color: var(--mb-text-main);
+}
+
+#router-mailbox .mb-capacity-bar-bg {
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: #e2e8f0;
+    overflow: hidden;
+}
+
+#router-mailbox .mb-capacity-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--mb-primary);
+    transition: width 0.3s ease;
+}
+
+#router-mailbox .mb-capacity-limit {
+    font-size: 11.5px;
+    color: var(--mb-text-muted);
+    margin: 0;
+}
+
+#router-mailbox .mb-dialog-status {
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    background: #eff6ff;
+    color: #1e40af;
+}
+
+#router-mailbox .mb-dialog-status.mb-error {
+    background: #fef2f2;
+    color: #991b1b;
+}
+
+/* 8. Restyle Native Online Transfer Dialog & Toast */
+html.router-mailbox-active x-dialog {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    z-index: 1000 !important;
+    background: transparent !important;
+    color: #111827 !important;
+    border-radius: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
+}
+
+html.router-mailbox-active x-dialog:not([show]) { visibility: hidden; }
+html.router-mailbox-active x-dialog[show] { visibility: visible; }
+html.router-mailbox-active x-dialog x-background {
+    background: rgba(15, 23, 42, .38);
+}
+html.router-mailbox-active x-dialog x-paper {
+    background: #fff;
+    color: #0f172a;
+    border-radius: 18px;
+    box-shadow: 0 18px 50px rgba(15, 23, 42, .2);
+}
+
+html.router-mailbox-active x-dialog button {
+    font-family: inherit !important;
+    border-radius: 8px !important;
+    min-height: 40px !important;
+}
+
+html.router-mailbox-active x-toast {
+    position: fixed !important;
+    z-index: 1100 !important;
+    border-radius: 10px !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
+}
+
+/* 9. Mobile Responsive Layout (<= 700px) */
+@media (max-width: 700px) {
+    #router-mailbox {
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+        padding-left: env(safe-area-inset-left, 0px);
+        padding-right: env(safe-area-inset-right, 0px);
+        padding-top: env(safe-area-inset-top, 0px);
+    }
+
+    /* Single pane navigation */
+    #router-mailbox .mb-sidebar {
+        width: 100%;
+        max-width: 100%;
+        flex: 1 1 auto;
+        border-right: none;
+    }
+
+    #router-mailbox .mb-chat-pane {
+        display: none;
+        width: 100%;
+        flex: 1 1 auto;
+    }
+
+    /* Chat view active on mobile */
+    #router-mailbox.mb-mobile-view-chat .mb-sidebar {
+        display: none;
+    }
+
+    #router-mailbox.mb-mobile-view-chat .mb-chat-pane {
+        display: flex;
+    }
+
+    #router-mailbox.mb-mobile-view-chat .mb-btn-back,
+    #router-mailbox.mb-mobile-view-chat header .mb-btn-back,
+    #router-mailbox.mb-mobile-view-chat .mb-chat-header .mb-btn-back {
+        display: inline-flex !important;
+    }
+
+    #router-mailbox .mb-messages-container {
+        padding: 16px 14px;
+        gap: 12px;
+    }
+
+    #router-mailbox .mb-file-card {
+        max-width: 95%;
+        min-width: 0;
+        width: 100%;
+    }
+
+    #router-mailbox .mb-composer {
+        padding: 10px 14px;
+        min-height: 64px;
+    }
+
+    #router-mailbox .mb-composer-main {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    #router-mailbox .mb-send-button {
+        width: 100%;
+    }
+
+    #router-mailbox .mb-composer-hint {
+        text-align: center;
+    }
+
+    #router-mailbox .mb-settings-dialog {
+        width: 100vw;
+        max-width: 100vw;
+        bottom: 0;
+        top: auto;
+        left: 0;
+        transform: none;
+        border-radius: 20px 20px 0 0;
+        max-height: 85vh;
+        padding-bottom: env(safe-area-inset-bottom, 12px);
+    }
+}
