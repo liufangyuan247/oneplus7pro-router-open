@@ -40,6 +40,11 @@ type ServiceUpdateInfo struct {
 	Upgrading      bool   `json:"upgrading"`
 	LastChecked    string `json:"lastChecked"`
 	Error          string `json:"error,omitempty"`
+	VersionScheme  string `json:"versionScheme,omitempty"`
+	CurrentBuild   string `json:"currentBuild,omitempty"`
+	LatestBuild    string `json:"latestBuild,omitempty"`
+	UpdateState    string `json:"updateState,omitempty"`
+	UpdateMessage  string `json:"updateMessage,omitempty"`
 }
 
 type serviceBackupMeta struct {
@@ -460,6 +465,11 @@ func (s *Server) refreshServiceUpdates(forceRemote bool) {
 	needRemote := forceRemote || serviceUpdatesAt.IsZero() || now.Sub(serviceUpdatesAt) > 30*time.Minute
 
 	for name, meta := range allowedServices {
+		if name == "studioos" {
+			info := s.readStudioOSUpdateInfo()
+			serviceUpdatesCache[name] = &info
+			continue
+		}
 		cur, base, custom, buildInfo := s.detectVersionInfo(name)
 		hasBak, bakVer, bakTime := s.getBackupInfo(name)
 
@@ -527,12 +537,18 @@ func (s *Server) initServiceUpdates() {
 }
 
 func (s *Server) enrichServiceUpdates(services []ServiceInfo) {
+	// StudioOS can switch releases independently between generic update checks.
+	studioOS := s.readStudioOSUpdateInfo()
 	serviceUpdatesMu.RLock()
 	defer serviceUpdatesMu.RUnlock()
 
 	for i := range services {
 		name := services[i].Name
-		if info, ok := serviceUpdatesCache[name]; ok {
+		info := serviceUpdatesCache[name]
+		if name == "studioos" {
+			info = &studioOS
+		}
+		if info != nil {
 			services[i].CurrentVersion = info.CurrentVersion
 			services[i].BaseVersion = info.BaseVersion
 			services[i].CustomBuild = info.CustomBuild
@@ -541,6 +557,12 @@ func (s *Server) enrichServiceUpdates(services []ServiceInfo) {
 			services[i].HasBackup = info.HasBackup
 			services[i].CanUpgrade = info.CanUpgrade
 			services[i].UpgradeHint = info.UpgradeHint
+			services[i].VersionScheme = info.VersionScheme
+			services[i].CurrentBuild = info.CurrentBuild
+			services[i].LatestBuild = info.LatestBuild
+			services[i].UpdateState = info.UpdateState
+			services[i].UpdateMessage = info.UpdateMessage
+			services[i].LastChecked = info.LastChecked
 		}
 	}
 }

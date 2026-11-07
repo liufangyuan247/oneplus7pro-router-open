@@ -35,6 +35,21 @@ controls. `deploy-studioos-service-card.sh` deploys the admin binary and static
 frontend from `~/.stage/studioos-card/` with checksum checks and rollback; it
 restarts Router Admin only.
 
+The card reads StudioOS's active `current/release.json` and the native updater's
+`updates/status.json` on every snapshot. It displays formal versions such as
+`v0.4.0`, with deployment IDs retained in tooltips. An explicit manifest version
+is preferred; older manifests are matched to the published release descriptor
+by exact manifest SHA256. This small metadata lookup reuses the existing private
+read-only GitHub credential on the router and caches verified associations in
+`updates/admin-release-versions.json`. Unconfirmed builds show a pending version
+label rather than borrowing the latest release's version. Requests occur in the
+background, at most once per five minutes when a version is missing. No source
+archives are downloaded and credentials are never returned to the browser.
+Newer pending release IDs show an update badge,
+with busy, maintenance, runtime, authorization and rollback states kept distinct.
+Missing or stale checks do not claim the application is up to date. The card
+does not run the updater to check for updates.
+
 The **代理** page manages the standalone Mihomo core, multiple subscriptions,
 proxy groups, node delay tests, connections, persistent mode/listener settings,
 and whole-home transparent routing. The whole-home switch covers

@@ -142,6 +142,12 @@ type Snapshot = {
     hasBackup?: boolean;
     canUpgrade?: boolean;
     upgradeHint?: string;
+    versionScheme?: string;
+    currentBuild?: string;
+    latestBuild?: string;
+    updateState?: string;
+    updateMessage?: string;
+    lastChecked?: string;
   }[];
   aria2: {
     online: boolean;
@@ -5357,6 +5363,10 @@ const serviceCategories = [
 
 type ServiceCategory = typeof serviceCategories[number]["id"];
 
+function serviceVersion(version: string, scheme?: string) {
+  return scheme === "deployment" || version.startsWith("v") ? version : `v${version}`;
+}
+
 function serviceCategory(name: string): ServiceCategory {
   return serviceCategories.find((category) =>
     (category.names as readonly string[]).includes(name),
@@ -5481,7 +5491,10 @@ function Services({
     (service) => service.upgradable && service.canUpgrade,
   ).length;
   const rebuildCount = data.services.filter(
-    (service) => service.upgradable && !service.canUpgrade,
+    (service) => service.upgradable && !service.canUpgrade && service.versionScheme !== "deployment",
+  ).length;
+  const managedUpdateCount = data.services.filter(
+    (service) => service.upgradable && service.versionScheme === "deployment",
   ).length;
 
   return (
@@ -5498,6 +5511,7 @@ function Services({
         ) : rebuildCount > 0 ? (
           <span>{rebuildCount} 个定制服务上游有更新</span>
         ) : null}
+        {managedUpdateCount > 0 && <span>{managedUpdateCount} 个应用由自动更新器处理新版</span>}
         <span>{data.aria2.online ? `Aria2 ${data.aria2.numActive} 项活动` : "Aria2 离线"}</span>
       </ModuleContextBar>
       {section === "tailscale" && <TailscaleService setNotice={setNotice} />}
@@ -5559,8 +5573,13 @@ function Services({
                     <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                       <strong>{service.Label}</strong>
                       {!service.customBuild && service.currentVersion && (
-                        <span className="service-version-tag current" title={`当前运行版本: ${service.currentVersion}`}>
-                          当前: {service.currentVersion.startsWith("v") ? service.currentVersion : `v${service.currentVersion}`}
+                        <span className="service-version-tag current" title={`当前运行版本: ${service.currentVersion}${service.currentBuild ? `；部署编号：${service.currentBuild}` : ""}`}>
+                          当前: {serviceVersion(service.currentVersion, service.versionScheme)}
+                        </span>
+                      )}
+                      {service.versionScheme === "deployment" && !service.currentVersion && (
+                        <span className="service-version-tag current" title={service.currentBuild ? `部署编号：${service.currentBuild}` : undefined}>
+                          正式版本待确认
                         </span>
                       )}
                       {service.customBuild && service.baseVersion && (
@@ -5569,8 +5588,16 @@ function Services({
                         </span>
                       )}
                       {service.upgradable && service.latestVersion && (
-                        <span className="service-version-tag upgradable" title={`可升级至: ${service.latestVersion}`}>
-                          发现新版: {service.latestVersion.startsWith("v") ? service.latestVersion : `v${service.latestVersion}`}
+                        <span className="service-version-tag upgradable" title={`可升级至: ${service.latestVersion}${service.latestBuild ? `；部署编号：${service.latestBuild}` : ""}`}>
+                          发现新版: {serviceVersion(service.latestVersion, service.versionScheme)}
+                        </span>
+                      )}
+                      {service.updateMessage && (
+                        <span
+                          className={`service-version-tag ${service.updateState === "UP_TO_DATE" || service.updateState === "UPDATED" ? "latest" : "current"}`}
+                          title={service.lastChecked ? `更新器检查时间：${new Date(service.lastChecked).toLocaleString()}` : undefined}
+                        >
+                          {service.updateMessage}
                         </span>
                       )}
                     </div>
@@ -5580,7 +5607,7 @@ function Services({
                     </small>
                     {!service.canUpgrade && service.upgradable && service.upgradeHint && (
                       <small className="service-rebuild-note" title={service.upgradeHint}>
-                        上游有更新 · 定制版本需重新构建
+                        {service.versionScheme === "deployment" ? service.upgradeHint : "上游有更新 · 定制版本需重新构建"}
                       </small>
                     )}
                   </div>

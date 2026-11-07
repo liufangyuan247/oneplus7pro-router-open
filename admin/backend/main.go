@@ -339,6 +339,12 @@ type ServiceInfo struct {
 	HasBackup            bool   `json:"hasBackup,omitempty"`
 	CanUpgrade           bool   `json:"canUpgrade,omitempty"`
 	UpgradeHint          string `json:"upgradeHint,omitempty"`
+	VersionScheme        string `json:"versionScheme,omitempty"`
+	CurrentBuild         string `json:"currentBuild,omitempty"`
+	LatestBuild          string `json:"latestBuild,omitempty"`
+	UpdateState          string `json:"updateState,omitempty"`
+	UpdateMessage        string `json:"updateMessage,omitempty"`
+	LastChecked          string `json:"lastChecked,omitempty"`
 }
 type Aria2Info struct {
 	Online        bool        `json:"online"`
