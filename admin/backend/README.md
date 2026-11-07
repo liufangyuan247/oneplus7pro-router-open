@@ -28,6 +28,13 @@ CPA Usage Keeper is managed as the `cpa-usage-keeper` runit service. Its card
 shows the live PID and uptime, opens the standalone dashboard on TCP 8320, and
 uses the common log, start, stop and restart controls.
 
+StudioOS is managed as the `studioos` runit service. The **业务应用** group lists
+it as **StudioOS · 项目与财税**, with one **打开** button for the home page on
+TCP 8000. Project and finance management share the same status, logs and service
+controls. `deploy-studioos-service-card.sh` deploys the admin binary and static
+frontend from `~/.stage/studioos-card/` with checksum checks and rollback; it
+restarts Router Admin only.
+
 The **代理** page manages the standalone Mihomo core, multiple subscriptions,
 proxy groups, node delay tests, connections, persistent mode/listener settings,
 and whole-home transparent routing. The whole-home switch covers

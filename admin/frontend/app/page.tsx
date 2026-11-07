@@ -5348,6 +5348,7 @@ function TailscaleService({
 const serviceCategories = [
   { id: "downloads", label: "下载", names: ["aria2", "qbittorrent", "caddy"] },
   { id: "files", label: "文件共享", names: ["openlist", "rclone", "pairdrop", "samba"] },
+  { id: "business", label: "业务应用", names: ["studioos"] },
   { id: "network", label: "网络与安全", names: ["mihomo", "adguardhome", "tailscale"] },
   { id: "ai", label: "AI 服务", names: ["cpa", "cpa-usage-keeper", "searxng"] },
   { id: "system", label: "系统", names: [] },
@@ -5631,6 +5632,7 @@ function Services({
                     "cpa",
                     "cpa-usage-keeper",
                     "searxng",
+                    "studioos",
                   ].includes(service.Name) && (
                     <button type="button" onClick={() => open(service)}>
                       打开
