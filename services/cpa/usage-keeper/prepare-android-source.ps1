@@ -6,9 +6,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($OutputArchive)) {
-    $OutputArchive = Join-Path $PSScriptRoot 'build/cpa-usage-keeper-v2.0.2-android-source.tar.gz'
+    $OutputArchive = Join-Path $PSScriptRoot 'build/cpa-usage-keeper-v2.0.3-android-source.tar.gz'
 }
-$expectedCommit = '46fe6278db0c47a5460e882fa1742f15ab49bb14'
+$expectedCommit = '9db74cfc380d11064af80cf1626efd6e3d068217'
 $source = [System.IO.Path]::GetFullPath($SourceDirectory)
 $archive = [System.IO.Path]::GetFullPath($OutputArchive)
 

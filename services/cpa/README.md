@@ -58,3 +58,49 @@ protection loop.
 Re-running `install-cpa.sh` preserves an existing `config.yaml`, account files
 and keys. It only replaces the executable and regenerates credentials when
 they are absent or match the rejected weak bootstrap value.
+
+## OpenAI API credits before Codex subscription usage
+
+Use a native `api-keys.codex` group for an official OpenAI API key. Give it a
+higher `priority` than the existing file-backed Codex subscription and expose
+the same model names. Clients keep one CPA endpoint and their existing client
+key; CPA selects the higher-priority credential and fails over before streaming
+output when the upstream refuses a request. Neither client-side model aliases
+nor separate Codex providers are needed to select the funding source.
+
+This routing applies only to clients explicitly using CPA. Keep local Codex's
+normal signed-in provider as the default, and select the existing optional
+`cpa` profile when using this gateway. Do not change Codex's global default
+provider or its login credentials as part of server-side routing setup.
+
+For example, the following group uses the official Responses API:
+
+```yaml
+api-keys:
+  codex:
+    - name: openai-grant
+      base-url: https://api.openai.com/v1
+      priority: 100
+      request-retry: 0
+      models:
+        - name: gpt-6.1-sol
+        - name: gpt-5.6-sol
+      keys:
+        - api-key: REPLACE_IN_PRIVATE_CONFIG
+          proxy-url: http://127.0.0.1:17891
+          disable-codex-cloaking: true
+```
+
+Keep session affinity disabled when every eligible request should prefer the
+API credential over an already bound subscription. Do not add `disabled` to a
+native Codex group: it is not a supported group field. Validate configuration
+with a separate loopback-only instance of the actual Android binary before
+restarting production. On 2026-11-09, `v8.0.61-op7.1` passed an isolated
+`insufficient_quota` test: the first request tried the API credential and
+completed through the existing subscription; the next request skipped that
+credential while the upstream's `Retry-After` cooldown was active.
+
+The API key does not expose the remaining promotional credit balance. Failover
+depends on the upstream returning an error such as insufficient quota; if the
+OpenAI project permits paid usage after promotional credits are spent, CPA
+cannot distinguish that paid usage from promotional usage.

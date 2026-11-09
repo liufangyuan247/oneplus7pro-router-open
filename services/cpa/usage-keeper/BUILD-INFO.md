@@ -1,13 +1,13 @@
 # CPA Usage Keeper Android build
 
-- Upstream tag: `v2.0.2`
-- Upstream commit: `46fe6278db0c47a5460e882fa1742f15ab49bb14`
+- Upstream tag: `v2.0.3`
+- Upstream commit: `9db74cfc380d11064af80cf1626efd6e3d068217`
 - Target: Android ARM64 (`android/arm64`, API 24+)
 - Build: native Go 1.27.3/CGO with Termux clang; frontend embedded in the binary
-- Binary: `build/cpa-usage-keeper-v2.0.2-android`
+- Binary: `build/cpa-usage-keeper-v2.0.3-android`
 - Build manifest: `cpa-usage-keeper.build.json` beside the binary; stage it as
-  `~/.stage/cpa-usage-keeper-v2.0.2-android.build.json`
-- SHA-256: `8ecd3cb6fb5f52528f572b17a688b9ed407c24d04288c9fd5af9100f10b7863b`
+  `~/.stage/cpa-usage-keeper-v2.0.3-android.build.json`
+- SHA-256: `3c0c4d4b231601d73a7105cca3355967c227c710872c38f4711ff264bbeab7e2`
 - Phone service: `~/router-stack/services/cpa-usage-keeper`
 - Persistent data: `~/router-data/cpa-usage-keeper`
 - Web address: `http://192.168.2.1:8320`
@@ -44,6 +44,15 @@ readiness, and desktop/mobile dashboard checks passed. Frontend typechecking
 and 1,571 tests passed, along with native token-processor and helper tests.
 CPA was first updated to `v8.0.44-op7.1`. The verified pre-upgrade database is
 at `~/router-data/cpa-usage-keeper/install-backups/20261027-122607/app.db`.
+
+Deployment on 2026-11-09 updated v2.0.2 to v2.0.3 with the official Vite
+dashboard embedded. Frontend typechecking and 1,569 tests passed, as did native
+token-processor and helper tests. Authenticated session, version, overview,
+API-key settings and readiness checks passed. Both served JavaScript and CSS
+matched the newly built frontend byte for byte. SQLite integrity checking and
+an ID comparison verified that all 963,238 pre-upgrade events were retained.
+CPA was first updated to `v8.0.61-op7.1`. The verified pre-upgrade database is
+at `~/router-data/cpa-usage-keeper/install-backups/20261109-193134/app.db`.
 
 Upstream v2 removes local/community ranking and persists request costs. It
 rebuilds historical summaries from retained request details; changing current
