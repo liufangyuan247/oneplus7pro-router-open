@@ -1,14 +1,25 @@
 # 设备传输站（PairDrop 直传与离线暂存）
 
-浏览器打开同一台路由器的 `http://<router>:3000/`，选择设备发送文件。
+浏览器打开同一台路由器的 `http://<router>:3000/`，选择设备发送文字或文件。
 浏览器会保存本机身份，已登记的设备离线时仍保留在列表中；清除网站数据、换浏览器
 或换访问地址后会成为新的身份，可在页面修改设备名称。
 
 界面采用浅蓝白色会话布局：桌面左侧搜索和选择设备，右侧按收发方向显示待领取的
-文件卡片，底部发送文件；手机上切换设备列表与单个会话。客户端设置只修改本机名称；
+文字消息和文件卡片，底部输入文字或发送文件；手机上切换设备列表与单个会话。客户端设置只修改本机名称；
 全局过期时间、单文件上限和暂存总容量由 Router Admin 的“服务 → 文件共享 → 设备传输站 → 设置”管理。
 原有雷达背景、配对/房间入口与工具栏不再显示，保留在线收件确认
-和下载所需的核心弹窗。这里显示的是待处理文件，不是永久聊天记录。
+和下载所需的核心弹窗。这里显示的是暂存内容，不是永久聊天记录。
+
+文字统一经路由器持久暂存，在线设备实时收到刷新通知，离线设备下次打开页面领取。
+输入框支持多行：电脑 Enter 发送、Shift+Enter 换行，手机 Enter 换行、点击“发送”。
+文字气泡支持复制、收件人清理和发送人撤回；HTTP 局域网入口提供兼容复制方式，
+浏览器拒绝剪贴板时也可长按或选中手动复制。接收内容始终按纯文字显示。
+每条文字最多 16 KiB（UTF-8），同时计入服务端单项大小、总容量及 1,000 项配额，
+沿用相同过期时间（默认 2 小时）和收发设备鉴权；不会因已读自动删除。
+`POST /mailbox/api/messages` 接受 `{to: "设备 UUID", text: "文字"}`，返回与文件箱兼容的
+`file` 记录（`kind: "text"`），支持 UUID 格式的 `Idempotency-Key` 去重重试。
+`GET /mailbox/api/files` 同时列出收发文字和文件；文字的确认清理、撤回沿用 `/files/:id/ack`
+和 `/files/:id`。WebSocket 的 `mailbox-updated` 只通知收发双方刷新，不广播消息正文。
 
 双方在线且直传通道已就绪时，沿用 PairDrop 在线互传；否则流式上传到路由器的
 临时文件箱。接收设备下次打开页面即可看到待收文件，点击“保存文件”，保存完成后
@@ -69,7 +80,7 @@ sh ~/.stage/pairdrop/deploy-pairdrop.sh <source-archive-sha256>
 
 脚本安装到独立 release 目录，检查依赖与语法，保存旧版本和启动配置后切换软链接；健康检查失败则恢复旧版本，首次部署失败则禁用新服务。已有 `service.env`、RTC 配置保留。默认健康探测端口为 3000。
 
-`apply-local-overlay.py` 为固定上游安装兼容扩展与文件箱，更新 service worker 缓存版本；脚本可重复执行，遇到不匹配的源码则拒绝修改。`LOCAL_OVERLAY` 记录 `op7-mailbox3-native-ping1`，service worker 为 `v1.11.2-op7-mailbox3`，第三方原始源码仍不提交 Git。原有 RTC 转发只接受同房间真实成员的请求。文件箱新增前端资源，更新后需重新打开页面。
+`apply-local-overlay.py` 为固定上游安装兼容扩展与文件箱，更新 service worker 缓存版本；脚本可重复执行，遇到不匹配的源码则拒绝修改。`LOCAL_OVERLAY` 记录 `op7-mailbox4-text1-native-ping1`，service worker 为 `v1.11.2-op7-mailbox4`，第三方原始源码仍不提交 Git。原有 RTC 转发只接受同房间真实成员的请求。文件箱新增前端资源，更新后需重新打开页面。
 
 已有安装需备份 `public/scripts/util.js`、`public/service-worker.js`、`public/scripts/main.js`、两个 `router-*.js` 客户端、`public/styles/router-mailbox.css`、`server/server.js`、`server/ws-server.js`、两个服务端扩展和 `LOCAL_OVERLAY`，记录原先不存在的新文件以便回滚。先执行 `python apply-local-overlay.py <release> --check`，再应用并检查 JS 语法。服务端扩展需要重启一次 PairDrop；应选择没有传输的时候操作。
 

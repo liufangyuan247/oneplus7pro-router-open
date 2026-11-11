@@ -104,6 +104,112 @@ async function createServerFixture(options = {}) {
     };
 }
 
+test('Text survives restart, is isolated to participants, and follows server expiry and cleanup', async () => {
+    const fix = await createServerFixture();
+    let restarted;
+    const register = name => fetch(fix.baseUrl + '/devices', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})
+    }).then(r => r.json());
+    const auth = d => ({Authorization: `Bearer ${d.device.id}:${d.token}`});
+    try {
+        const [a, b, c] = await Promise.all(['Sender', 'Receiver', 'Other'].map(register));
+        const text = '中文与 emoji 🌟\n<script>alert(1)</script>\nhttps://example.com/';
+        const response = await fetch(fix.baseUrl + '/messages', {method: 'POST',
+            headers: {...auth(a), 'Content-Type': 'application/json'}, body: JSON.stringify({to: b.device.id, text})});
+        assert.equal(response.status, 201);
+        const {file} = await response.json();
+        assert.equal(file.kind, 'text');
+        assert.equal(file.text, text);
+        assert.equal(file.size, Buffer.byteLength(text));
+        assert.equal(file.expiresAt - file.createdAt, 7200_000);
+        assert.equal(fs.readFileSync(path.join(fix.dataDir, 'blobs', file.id + '.bin'), 'utf8'), text);
+        const inbox = await fetch(fix.baseUrl + '/files', {headers: auth(b)}).then(r => r.json());
+        assert.equal(inbox.inbox[0].text, text);
+        assert.deepEqual(await fetch(fix.baseUrl + '/files', {headers: auth(c)}).then(r => r.json()), {inbox: [], outbox: []});
+        assert.equal((await fetch(`${fix.baseUrl}/files/${file.id}/content`, {headers: auth(c)})).status, 403);
+        assert.equal((await fetch(`${fix.baseUrl}/files/${file.id}/ack`, {method: 'POST', headers: auth(a)})).status, 403);
+        await fix.mailbox.close();
+        fix.server.closeAllConnections?.();
+        await new Promise(resolve => fix.server.close(resolve));
+        restarted = await createServerFixture({dataDir: fix.dataDir, clock: fix.clock});
+        assert.equal((await fetch(restarted.baseUrl + '/files', {headers: auth(b)}).then(r => r.json())).inbox[0].text, text);
+        const settings = {retentionSeconds: 60, maxFileBytes: 1024, maxTotalBytes: 4096};
+        const key = fs.readFileSync(path.join(fix.dataDir, 'admin.key'), 'utf8').trim();
+        assert.equal((await fetch(restarted.baseUrl + '/admin/settings', {method: 'PUT',
+            headers: {'Content-Type': 'application/json', 'x-router-mailbox-admin': key}, body: JSON.stringify(settings)})).status, 200);
+        fix.clock.advance(60_001);
+        assert.equal((await fetch(restarted.baseUrl + '/files', {headers: auth(b)}).then(r => r.json())).inbox.length, 0);
+        assert.equal(fs.existsSync(path.join(fix.dataDir, 'blobs', file.id + '.bin')), false);
+        assert.equal(fs.existsSync(path.join(fix.dataDir, 'meta', file.id + '.json')), false);
+    } finally {
+        if (restarted) await restarted.cleanup();
+        else await fix.cleanup();
+    }
+});
+
+test('Text validates size, quotas, idempotent retries and storage failures', async () => {
+    const fix = await createServerFixture({maxTotalBytes: 20, maxFileBytes: 16384});
+    const write = fs.writeFileSync;
+    try {
+        const a = await fetch(fix.baseUrl + '/devices', {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: 'Sender'})}).then(r => r.json());
+        const headers = {Authorization: `Bearer ${a.device.id}:${a.token}`, 'Content-Type': 'application/json'};
+        const send = (text, extra = {}) => fetch(fix.baseUrl + '/messages', {method: 'POST',
+            headers: {...headers, ...extra}, body: JSON.stringify({to: a.device.id, text})});
+        assert.equal((await send('   ')).status, 400);
+        assert.equal((await send(42)).status, 400);
+        assert.equal((await send('🌟'.repeat(4097))).status, 413);
+        assert.equal((await fetch(fix.baseUrl + '/messages', {method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({to: a.device.id, text: 'hello'})})).status, 401);
+        const retryHeaders = {'Idempotency-Key': crypto.randomUUID()};
+        const first = await send('hello', retryHeaders).then(r => r.json());
+        const second = await send('hello', retryHeaders).then(r => r.json());
+        assert.equal(first.file.id, second.file.id);
+        assert.equal((await send('different', retryHeaders)).status, 409);
+        assert.equal((await send('x'.repeat(16))).status, 507);
+        fs.writeFileSync = (...args) => {
+            if (String(args[0]).includes('.bin.tmp.')) throw Object.assign(new Error('Full'), {code: 'ENOSPC'});
+            return write(...args);
+        };
+        assert.equal((await send('fail')).status, 507);
+        fs.writeFileSync = write;
+        assert.equal((await fetch(fix.baseUrl + '/settings', {headers}).then(r => r.json())).storedBytes, 5);
+        assert.equal((await fetch(`${fix.baseUrl}/files/${first.file.id}/ack`, {method: 'POST', headers})).status, 200);
+        assert.equal((await fetch(fix.baseUrl + '/settings', {headers}).then(r => r.json())).storedBytes, 0);
+        assert.equal((await send('works')).status, 201);
+    } finally {
+        fs.writeFileSync = write;
+        await fix.cleanup();
+    }
+});
+
+test('Mailbox updates notify only authenticated participant sockets without exposing text', async () => {
+    const fix = await createServerFixture();
+    try {
+        const peers = [];
+        for (const name of ['Sender', 'Receiver', 'Other']) {
+            const d = await fetch(fix.baseUrl + '/devices', {method: 'POST',
+                headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})}).then(r => r.json());
+            const socket = new EventEmitter();
+            socket.sent = [];
+            socket.readyState = 1;
+            socket.send = data => socket.sent.push(JSON.parse(data));
+            fix.mailbox.attachSocket({id: crypto.randomUUID(), socket});
+            socket.emit('message', JSON.stringify({type: 'mailbox-auth', id: d.device.id, token: d.token}));
+            peers.push({...d, socket});
+        }
+        const [a, b, c] = peers;
+        const headers = {Authorization: `Bearer ${a.device.id}:${a.token}`, 'Content-Type': 'application/json'};
+        const {file} = await fetch(fix.baseUrl + '/messages', {method: 'POST', headers,
+            body: JSON.stringify({to: b.device.id, text: 'Private test'})}).then(r => r.json());
+        for (const p of [a, b]) assert.deepEqual(p.socket.sent.at(-1), {type: 'mailbox-updated'});
+        assert.equal(c.socket.sent.some(m => m.type === 'mailbox-updated'), false);
+        const notifications = b.socket.sent.filter(m => m.type === 'mailbox-updated').length;
+        assert.equal((await fetch(`${fix.baseUrl}/files/${file.id}`, {method: 'DELETE', headers})).status, 200);
+        assert.equal(b.socket.sent.filter(m => m.type === 'mailbox-updated').length, notifications + 1);
+    } finally { await fix.cleanup(); }
+});
+
 test('Device registration, validation, auth isolation, and origin checks', async () => {
     const fix = await createServerFixture({ maxDevices: 3 });
     try {

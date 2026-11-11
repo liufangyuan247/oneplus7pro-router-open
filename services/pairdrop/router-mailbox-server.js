@@ -108,6 +108,7 @@ export function mountMailbox(app, options = {}) {
     let maxTotalBytes = options.maxTotalBytes ?? (2 * 1024 * 1024 * 1024);
     const maxFiles = options.maxFiles ?? 1000;
     const maxDevices = options.maxDevices ?? 64;
+    const maxTextBytes = 16 * 1024;
     const cleanupIntervalMs = options.cleanupIntervalMs ?? 60_000;
 
     // Admin key: load or create 32-byte hex key with 0600 permissions
@@ -248,6 +249,11 @@ export function mountMailbox(app, options = {}) {
                     } else {
                         files.set(fileRec.id, fileRec);
                         storedBytes += fileRec.size;
+                        if (fileRec.kind === 'text' && isValidUuid(fileRec.requestId)) {
+                            idempotentUploads.set(`text:${fileRec.senderId}:${fileRec.recipientId}:${fileRec.requestId}`,
+                                {file: fileRec, fileId: fileRec.id, timestamp: fileRec.createdAt});
+                            if (idempotentUploads.size > 200) idempotentUploads.delete(idempotentUploads.keys().next().value);
+                        }
                     }
                 } else {
                     try { fs.unlinkSync(metaPath); } catch (_) {}
@@ -312,6 +318,20 @@ export function mountMailbox(app, options = {}) {
         });
         for (const sockets of deviceSockets.values()) {
             for (const entry of sockets) {
+                try {
+                    if (entry.socket.readyState === undefined || entry.socket.readyState === 1) {
+                        entry.socket.send(msg);
+                    }
+                } catch (_) {}
+            }
+        }
+    }
+
+    // Notify only the participants; payloads remain behind authenticated HTTP.
+    function notifyMailbox(record) {
+        const msg = JSON.stringify({ type: 'mailbox-updated' });
+        for (const id of new Set([record.senderId, record.recipientId])) {
+            for (const entry of deviceSockets.get(id) || []) {
                 try {
                     if (entry.socket.readyState === undefined || entry.socket.readyState === 1) {
                         entry.socket.send(msg);
@@ -462,6 +482,7 @@ export function mountMailbox(app, options = {}) {
 
         try { fs.unlinkSync(path.join(blobsDir, `${id}.bin`)); } catch (_) {}
         try { fs.unlinkSync(path.join(metaDir, `${id}.json`)); } catch (_) {}
+        notifyMailbox(file);
     }
 
     function cleanup() {
@@ -539,11 +560,13 @@ export function mountMailbox(app, options = {}) {
 
     // JSON body parser with 16 KiB limit (skip for binary POST /files)
     const jsonParser = express.json({ limit: '16kb' });
+    const messageParser = express.json({ limit: '128kb' }); // Escaped Unicode may expand in JSON.
     router.use((req, res, next) => {
         if (req.method === 'POST' && req.path === '/files') {
             return next();
         }
-        jsonParser(req, res, (err) => {
+        const parser = req.method === 'POST' && req.path === '/messages' ? messageParser : jsonParser;
+        parser(req, res, (err) => {
             if (err) {
                 const status = err.status || (err.type === 'entity.too.large' ? 413 : 400);
                 return res.status(status).json({ error: err.message || 'Invalid JSON body' });
@@ -832,6 +855,7 @@ export function mountMailbox(app, options = {}) {
     router.get('/settings', authenticateBearer, (req, res) => {
         res.json({
             directRoomSecret,
+            maxTextBytes,
             retentionSeconds,
             maxFileBytes,
             maxTotalBytes,
@@ -843,6 +867,64 @@ export function mountMailbox(app, options = {}) {
     // PUT /settings (always 403 for ordinary auth clients)
     router.put('/settings', authenticateBearer, (req, res) => {
         return res.status(403).json({ error: 'Forbidden: settings can only be modified via admin API' });
+    });
+
+    // Text shares file ownership, quotas, durable storage and expiry handling.
+    router.post('/messages', authenticateBearer, (req, res) => {
+        const { to, text } = req.body || {};
+        if (!isValidUuid(to) || !devices.has(to)) {
+            return res.status(404).json({ error: 'Recipient device not found' });
+        }
+        if (typeof text !== 'string' || !text.trim()) {
+            return res.status(400).json({ error: 'Message text must not be blank' });
+        }
+        const payload = Buffer.from(text, 'utf8');
+        if (payload.length > maxTextBytes || payload.length > maxFileBytes) {
+            return res.status(413).json({ error: 'Message exceeds text or single-item size limit' });
+        }
+        const key = req.headers['idempotency-key'];
+        if (key && !isValidUuid(key)) {
+            return res.status(400).json({ error: 'Idempotency-Key must be a valid UUID' });
+        }
+        const compositeKey = key ? `text:${req.device.id}:${to}:${key}` : null;
+        const previous = compositeKey && idempotentUploads.get(compositeKey);
+        if (previous && files.has(previous.fileId) && previous.file.expiresAt > now()) {
+            if (previous.file.text !== text) {
+                return res.status(409).json({ error: 'Idempotency-Key already used for different text' });
+            }
+            return res.json({ file: previous.file });
+        }
+        cleanup();
+        if (storedBytes + reservedBytes + payload.length > maxTotalBytes || files.size + inFlightCount >= maxFiles) {
+            return res.status(507).json({ error: 'Mailbox storage or item quota exceeded' });
+        }
+        const id = crypto.randomUUID();
+        const createdAt = now();
+        const record = {
+            id, kind: 'text', text, requestId: key || undefined, name: '文字消息', size: payload.length,
+            senderId: req.device.id, senderName: req.device.name,
+            recipientId: to, recipientName: devices.get(to).name,
+            createdAt, expiresAt: createdAt + retentionSeconds * 1000,
+            sha256: crypto.createHash('sha256').update(payload).digest('hex')
+        };
+        const binPath = path.join(blobsDir, `${id}.bin`);
+        const metaPath = path.join(metaDir, `${id}.json`);
+        try {
+            atomicWriteFileSync(binPath, payload, 0o600);
+            atomicWriteFileSync(metaPath, JSON.stringify(record), 0o600);
+        } catch (error) {
+            try { fs.unlinkSync(binPath); } catch (_) {}
+            try { fs.unlinkSync(metaPath); } catch (_) {}
+            return res.status(error.code === 'ENOSPC' ? 507 : 500).json({ error: 'Failed to store message' });
+        }
+        files.set(id, record);
+        storedBytes += payload.length;
+        if (compositeKey) {
+            idempotentUploads.set(compositeKey, { file: record, fileId: id, timestamp: createdAt });
+            if (idempotentUploads.size > 200) idempotentUploads.delete(idempotentUploads.keys().next().value);
+        }
+        notifyMailbox(record);
+        res.status(201).json({ file: record });
     });
 
     // POST /files?to=<recipientUUID>&name=<filename>&size=<bytes>
@@ -1062,6 +1144,7 @@ export function mountMailbox(app, options = {}) {
 
                     isCompleted = true;
                     releaseReservation();
+                    notifyMailbox(fileRecord);
 
                     if (!res.headersSent) {
                         res.status(201).json({ file: fileRecord });

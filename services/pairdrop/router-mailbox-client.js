@@ -120,9 +120,13 @@
                     const str = (raw && typeof raw === 'object' && typeof raw.data === 'string')
                         ? raw.data
                         : (typeof raw === 'string' ? raw : null);
-                    if (str && str.includes('"mailbox-roster"')) {
+                    if (str && (str.includes('"mailbox-roster"') || str.includes('"mailbox-updated"'))) {
                         try {
                             const msg = JSON.parse(str);
+                            if (msg?.type === 'mailbox-updated') {
+                                window.routerMailbox?.refresh();
+                                return;
+                            }
                             if (msg && msg.type === 'mailbox-roster') {
                                 if (window.routerMailbox) {
                                     window.routerMailbox.handleRosterPush(msg);
@@ -157,6 +161,8 @@
             this.searchQuery = '';
             this.deviceRows = new Map();
             this.lastRenderedConversationId = null;
+            this.textDrafts = new Map();
+            this.textRequests = new Map();
 
             if (typeof window !== 'undefined' && window.peersManager) {
                 this.manager = window.peersManager;
@@ -295,15 +301,15 @@
                         <input type="search" class="mb-search-input" placeholder="搜索设备..." aria-label="搜索设备">
                     </div>
                     <div class="mb-device-list" role="list">
-                        <div class="mb-device-row mb-inbox-row" role="listitem" tabindex="0" data-id="__inbox__" aria-label="待收文件箱">
+                        <div class="mb-device-row mb-inbox-row" role="listitem" tabindex="0" data-id="__inbox__" aria-label="收件箱">
                             <div class="mb-avatar mb-avatar-inbox"></div>
                             <div class="mb-row-main">
                                 <div class="mb-row-top">
-                                    <span class="mb-row-name">待收文件箱</span>
+                                    <span class="mb-row-name">收件箱</span>
                                     <span class="mb-badge mb-inbox-badge" style="display:none">0</span>
                                 </div>
                                 <div class="mb-row-sub">
-                                    <span class="mb-row-preview mb-inbox-preview">集中查看待收文件</span>
+                                    <span class="mb-row-preview mb-inbox-preview">集中查看待收文字和文件</span>
                                 </div>
                             </div>
                         </div>
@@ -339,12 +345,12 @@
                         <span class="mb-notice-text"></span>
                     </div>
 
-                    <div class="mb-messages-container" tabindex="0" role="region" aria-label="文件记录">
+                    <div class="mb-messages-container" tabindex="0" role="region" aria-label="文字与文件记录">
                         <div class="mb-files-list"></div>
                         <div class="mb-empty-state">
                             <div class="mb-empty-illustration"></div>
-                            <h3 class="mb-empty-title">暂无待处理文件</h3>
-                            <p class="mb-empty-desc">与当前设备之间没有待领取的暂存文件。</p>
+                            <h3 class="mb-empty-title">暂无待处理内容</h3>
+                            <p class="mb-empty-desc">与当前设备之间没有待领取的文字或文件。</p>
                             <div class="mb-empty-tips">
                                 <div class="mb-tip-item">
                                     <span class="mb-tip-bullet">●</span>
@@ -358,17 +364,23 @@
                         </div>
                     </div>
 
-                    <div class="mb-composer" role="region" aria-label="文件发送区">
+                    <div class="mb-composer" role="region" aria-label="文字与文件发送区">
                         <div class="mb-composer-main">
-                            <label class="mb-send-button" tabindex="0" role="button" aria-label="选择并发送文件">
-                                <span class="mb-send-button-text">发送文件</span>
-                            </label>
-                            <div class="mb-composer-hint">
-                                <span class="mb-retention-note">在线优先互传；通道未就绪时暂存（保留 2 小时，接收端确认收到后清理）。</span>
+                            <div class="mb-text-compose-row">
+                                <textarea class="mb-text-input" rows="2" maxlength="16384" placeholder="输入文字，Enter 发送，Shift+Enter 换行" aria-label="消息文字"></textarea>
+                                <button type="button" class="mb-btn mb-btn-primary mb-send-text">发送</button>
+                            </div>
+                            <div class="mb-composer-tools">
+                                <label class="mb-send-button" tabindex="0" role="button" aria-label="选择并发送文件">
+                                    <span class="mb-send-button-text">发送文件</span>
+                                </label>
+                                <div class="mb-composer-hint">
+                                    <span class="mb-retention-note">文字和文件按服务端设置自动过期。</span>
+                                </div>
                             </div>
                         </div>
                         <div class="mb-composer-aggregate-note" style="display:none;">
-                            <span>待收文件箱集中展示所有待收文件。若要发送文件，请在左侧选择目标设备。</span>
+                            <span>收件箱集中展示待收文字和文件。若要发送，请在左侧选择目标设备。</span>
                         </div>
                     </div>
                 </main>
@@ -462,6 +474,23 @@
             this.sendButtonLabel = this.root.querySelector('.mb-send-button');
             this.sendButtonText = this.root.querySelector('.mb-send-button-text');
             this.retentionNote = this.root.querySelector('.mb-retention-note');
+            this.textInput = this.root.querySelector('.mb-text-input');
+            this.sendTextButton = this.root.querySelector('.mb-send-text');
+            if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
+                this.textInput.placeholder = '输入文字，点击发送';
+            }
+            this.textInput.addEventListener('input', () => {
+                this.textDrafts.set(this.selectedDeviceId, this.textInput.value);
+                this.updateSendButtonState();
+            });
+            this.textInput.addEventListener('keydown', event => {
+                if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229 &&
+                    (!/Android|iPhone|iPad/i.test(navigator.userAgent) || event.ctrlKey || event.metaKey)) {
+                    event.preventDefault();
+                    this.sendText();
+                }
+            });
+            this.sendTextButton.onclick = () => this.sendText();
 
             // Settings dialog elements
             this.dialog = this.root.querySelector('.mb-settings-dialog');
@@ -633,7 +662,7 @@
         }
 
         async api(path, options = {}) {
-            const headers = {'Accept': 'application/json'};
+            const headers = {'Accept': 'application/json', ...options.headers};
             if (this.creds) headers.Authorization = `Bearer ${this.creds.id}:${this.creds.token}`;
             if (options.body !== undefined) headers['Content-Type'] = 'application/json';
             const controller = new AbortController();
@@ -733,7 +762,7 @@
                 this.renderCapacity();
 
                 if (manual) {
-                    this.notice('设备列表与暂存文件已刷新。');
+                    this.notice('设备列表与暂存内容已刷新。');
                 }
                 this.root.dataset.ready = 'true';
             } catch (error) {
@@ -866,7 +895,8 @@
 
                 const preview = row.querySelector('.mb-row-preview');
                 if (pendingFromDevice.length > 0) {
-                    preview.textContent = `[待收] ${pendingFromDevice[0].name}`;
+                    const first = pendingFromDevice[0];
+                    preview.textContent = `[待收] ${first.kind === 'text' ? first.text.slice(0, 60).replace(/\s+/g, ' ') : first.name}`;
                     preview.classList.add('mb-has-pending');
                 } else {
                     if (isOnline) {
@@ -904,6 +934,10 @@
         }
 
         renderActiveConversation() {
+            if (this.textInput.dataset.deviceId !== this.selectedDeviceId) {
+                this.textInput.dataset.deviceId = this.selectedDeviceId;
+                this.textInput.value = this.textDrafts.get(this.selectedDeviceId) || '';
+            }
             if (this.selectedDeviceId === '__inbox__') {
                 this.renderInboxConversation();
             } else {
@@ -919,9 +953,9 @@
             this.chatAvatar.style.backgroundColor = '#0ea5e9';
             this.chatAvatar.style.color = '#ffffff';
 
-            this.chatName.textContent = '待收文件箱';
+            this.chatName.textContent = '收件箱';
             const count = (this.files.inbox || []).length;
-            this.chatStatusText.textContent = `共 ${count} 个待收文件`;
+            this.chatStatusText.textContent = `共 ${count} 条待收内容`;
             this.chatStatusDot.className = 'mb-status-dot mb-inbox-dot';
 
             this.composerMain.style.display = 'none';
@@ -992,13 +1026,13 @@
                 this.filesList.style.display = 'none';
                 this.emptyState.style.display = 'flex';
                 if (isInboxView) {
-                    this.emptyTitle.textContent = '暂无待收文件';
-                    this.emptyDesc.textContent = '当前没有其他设备发给本机的暂存文件。在左侧选择设备即可开始传输。';
+                    this.emptyTitle.textContent = '暂无待收内容';
+                    this.emptyDesc.textContent = '当前没有其他设备发给本机的文字或文件。在左侧选择设备即可开始传输。';
                 } else {
-                    this.emptyTitle.textContent = '暂无待处理文件';
+                    this.emptyTitle.textContent = '暂无待处理内容';
                     this.emptyDesc.textContent = deviceName
-                        ? `与“${deviceName}”之间没有待领取的暂存文件。`
-                        : '与当前设备之间没有待领取的暂存文件。';
+                        ? `与“${deviceName}”之间没有待领取的文字或文件。`
+                        : '与当前设备之间没有待领取的文字或文件。';
                 }
                 return;
             }
@@ -1027,6 +1061,8 @@
                 const card = document.createElement('article');
                 card.className = 'mb-file-card ' + (isInbound || isInboxView ? 'mb-card-inbound' : 'mb-card-outbound');
                 card.dataset.fileId = file.id;
+                const isText = file.kind === 'text';
+                if (isText) card.classList.add('mb-text-card');
 
                 // Card Header
                 const header = document.createElement('div');
@@ -1042,7 +1078,7 @@
 
                 const filenameEl = document.createElement('div');
                 filenameEl.className = 'mb-card-filename';
-                filenameEl.textContent = file.name;
+                filenameEl.textContent = isText ? '文字消息' : file.name;
                 meta.append(filenameEl);
 
                 const detailsEl = document.createElement('div');
@@ -1053,6 +1089,14 @@
 
                 header.append(meta);
                 card.append(header);
+
+                if (isText) {
+                    const body = document.createElement('div');
+                    body.className = 'mb-message-text';
+                    // Plain text only: never interpret received HTML or executable links.
+                    body.textContent = file.text;
+                    card.append(body);
+                }
 
                 // Status & Expiry
                 const statusLine = document.createElement('div');
@@ -1073,23 +1117,41 @@
                 const actionsRow = document.createElement('div');
                 actionsRow.className = 'mb-card-actions';
 
+                if (isText) {
+                    const copyBtn = document.createElement('button');
+                    copyBtn.type = 'button';
+                    copyBtn.className = 'mb-btn mb-btn-secondary';
+                    copyBtn.textContent = '复制文字';
+                    copyBtn.onclick = async () => {
+                        try {
+                            await this.copyText(file.text);
+                            this.notice('文字已复制。');
+                        } catch (_) {
+                            this.notice('复制未完成，可长按或选中文字手动复制。', true);
+                        }
+                    };
+                    actionsRow.append(copyBtn);
+                }
+
                 if (isInbound || isInboxView || file.recipientId === this.creds?.id) {
-                    const saveLink = document.createElement('a');
-                    saveLink.className = 'mb-btn mb-btn-primary';
-                    saveLink.href = `/mailbox/api/files/${encodeURIComponent(file.id)}/content`;
-                    saveLink.download = file.name;
-                    saveLink.append(createSvg(ICONS.save), document.createTextNode('保存文件'));
-                    actionsRow.append(saveLink);
+                    if (!isText) {
+                        const saveLink = document.createElement('a');
+                        saveLink.className = 'mb-btn mb-btn-primary';
+                        saveLink.href = `/mailbox/api/files/${encodeURIComponent(file.id)}/content`;
+                        saveLink.download = file.name;
+                        saveLink.append(createSvg(ICONS.save), document.createTextNode('保存文件'));
+                        actionsRow.append(saveLink);
+                    }
 
                     const ackBtn = document.createElement('button');
                     ackBtn.type = 'button';
                     ackBtn.className = 'mb-btn mb-btn-secondary';
-                    ackBtn.append(createSvg(ICONS.ack), document.createTextNode('确认收到并清理'));
+                    ackBtn.append(createSvg(ICONS.ack), document.createTextNode(isText ? '清理消息' : '确认收到并清理'));
                     ackBtn.onclick = async () => {
-                        if (!confirm(`确认已保存“${file.name}”？确认后会删除路由器上的暂存文件。`)) return;
+                        if (!confirm(isText ? '清理这条文字消息？收发两端都将不再显示。' : `确认已保存“${file.name}”？确认后会删除路由器上的暂存文件。`)) return;
                         try {
                             await this.api(`/files/${file.id}/ack`, {method: 'POST'});
-                            this.notice('已确认收到，暂存文件已清理。');
+                            this.notice(isText ? '文字消息已清理。' : '已确认收到，暂存文件已清理。');
                             await this.refresh();
                         } catch (error) {
                             this.notice(error.message, true);
@@ -1104,10 +1166,10 @@
                     revokeBtn.className = 'mb-btn mb-btn-danger';
                     revokeBtn.append(createSvg(ICONS.revoke), document.createTextNode('撤回'));
                     revokeBtn.onclick = async () => {
-                        if (!confirm(`撤回“${file.name}”并删除路由器上的暂存文件？`)) return;
+                        if (!confirm(isText ? '撤回这条文字消息？' : `撤回“${file.name}”并删除路由器上的暂存文件？`)) return;
                         try {
                             await this.api(`/files/${file.id}`, {method: 'DELETE'});
-                            this.notice('已撤回暂存文件。');
+                            this.notice(isText ? '文字消息已撤回。' : '已撤回暂存文件。');
                             await this.refresh();
                         } catch (error) {
                             this.notice(error.message, true);
@@ -1134,9 +1196,9 @@
             const hours = this.settings ? (this.settings.retentionSeconds / 3600) : 2;
             const device = this.devices.find(d => d.id === this.selectedDeviceId);
             if (device && device.online) {
-                this.retentionNote.textContent = `在线优先互传；通道未就绪时暂存（保留 ${hours} 小时，接收端确认收到后清理）。`;
+                this.retentionNote.textContent = `文字经路由器转交；文件优先直传。暂存内容保留 ${hours} 小时。`;
             } else {
-                this.retentionNote.textContent = `对方当前离线，文件暂存至路由器（保留 ${hours} 小时，接收端确认收到后清理）。`;
+                this.retentionNote.textContent = `对方离线，文字和文件暂存至路由器（保留 ${hours} 小时）。`;
             }
         }
 
@@ -1146,6 +1208,67 @@
             this.sendButtonLabel.classList.toggle('mb-disabled', !ready);
             this.sendButtonLabel.setAttribute('aria-disabled', String(!ready));
             this.sendButtonText.textContent = this.busy ? '正在发送…' : '发送文件';
+            this.textInput.disabled = !ready;
+            this.sendTextButton.disabled = !ready || !this.textInput.value.trim();
+            this.sendTextButton.textContent = this.busy ? '发送中…' : '发送';
+        }
+
+        async copyText(text) {
+            if (window.isSecureContext && navigator.clipboard?.writeText) {
+                try { await navigator.clipboard.writeText(text); return; } catch (_) {}
+            }
+            // Clipboard API is unavailable on the router's plain HTTP LAN address.
+            const input = document.createElement('textarea');
+            input.value = text;
+            input.style.cssText = 'position:fixed;left:-9999px;top:0;';
+            input.setAttribute('readonly', '');
+            document.body.append(input);
+            const focused = document.activeElement;
+            try {
+                input.select();
+                input.setSelectionRange(0, input.value.length);
+                if (!document.execCommand('copy')) throw Error('Copy rejected');
+            } finally {
+                input.remove();
+                focused?.focus({preventScroll: true});
+            }
+        }
+
+        async sendText() {
+            if (!this.canSend() || !this.textInput.value.trim()) return;
+            const to = this.selectedDeviceId;
+            const text = this.textInput.value;
+            const restoreFocus = document.activeElement === this.textInput;
+            const maxBytes = Math.min(this.settings.maxTextBytes || 16384, this.settings.maxFileBytes);
+            if (new TextEncoder().encode(text).length > maxBytes) {
+                this.notice(`文字过长，请控制在 ${bytes(maxBytes)} 以内。`, true);
+                return;
+            }
+            let request = this.textRequests.get(to);
+            if (!request || request.text !== text) {
+                const values = crypto.getRandomValues(new Uint8Array(16));
+                values[6] = (values[6] & 15) | 64;
+                values[8] = (values[8] & 63) | 128;
+                const hex = Array.from(values, b => b.toString(16).padStart(2, '0')).join('');
+                request = {text, key: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`};
+                this.textRequests.set(to, request);
+            }
+            this.busy = true;
+            this.updateSendButtonState();
+            try {
+                await this.api('/messages', {method: 'POST', body: {to, text}, headers: {'Idempotency-Key': request.key}});
+                this.textDrafts.delete(to);
+                this.textRequests.delete(to);
+                if (this.selectedDeviceId === to) this.textInput.value = '';
+                this.notice('文字已发送；对方离线时，上线后可查看。');
+                await this.refresh();
+            } catch (error) {
+                this.notice(error.name === 'AbortError' ? '发送结果未确认，可再次发送；相同文字重试会自动去重。' : error.message, true);
+            } finally {
+                this.busy = false;
+                this.updateSendButtonState();
+                if (restoreFocus && this.selectedDeviceId === to) this.textInput.focus({preventScroll: true});
+            }
         }
 
         renderCapacity() {

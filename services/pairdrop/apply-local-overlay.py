@@ -20,7 +20,8 @@ previous_version = "const cacheVersion = 'v1.11.2-op7-ws1';"
 previous_auto_version = "const cacheVersion = 'v1.11.2-op7-auto-ws2';"
 previous_mailbox_version = "const cacheVersion = 'v1.11.2-op7-mailbox1';"
 previous_ui_version = "const cacheVersion = 'v1.11.2-op7-mailbox2';"
-new_version = "const cacheVersion = 'v1.11.2-op7-mailbox3';"
+previous_presence_version = "const cacheVersion = 'v1.11.2-op7-mailbox3';"
+new_version = "const cacheVersion = 'v1.11.2-op7-mailbox4';"
 plans = []
 
 
@@ -33,7 +34,7 @@ def replace_once(path, content, old, new):
 
 
 plans.append((util, replace_once(util, util.read_text(encoding='utf-8'), original, replacement)))
-content = worker.read_text(encoding='utf-8').replace(previous_version, old_version).replace(previous_auto_version, old_version).replace(previous_mailbox_version, old_version).replace(previous_ui_version, old_version)
+content = worker.read_text(encoding='utf-8').replace(previous_version, old_version).replace(previous_auto_version, old_version).replace(previous_mailbox_version, old_version).replace(previous_ui_version, old_version).replace(previous_presence_version, old_version)
 content = replace_once(worker, content, old_version, new_version)
 content = replace_once(worker, content, "    'scripts/main.js',", "    'scripts/router-compat.js',\n    'scripts/main.js',")
 content = replace_once(worker, content, "    'scripts/router-compat.js',",
@@ -118,5 +119,5 @@ if not args.check:
         temporary.write_text(content, encoding='utf-8', newline='\n')
         temporary.chmod(stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600)
         temporary.replace(path)
-    (args.release / 'LOCAL_OVERLAY').write_text('op7-mailbox3-native-ping1\n', encoding='utf-8')
+    (args.release / 'LOCAL_OVERLAY').write_text('op7-mailbox4-text1-native-ping1\n', encoding='utf-8')
 print(f'PAIRDROP_WS_MODE_{"CHECKED" if args.check else "APPLIED"} changed_files={len(plans)}')

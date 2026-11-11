@@ -922,10 +922,67 @@ html.router-mailbox-active #center {
 
 #router-mailbox .mb-composer-main {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    align-items: stretch;
     justify-content: space-between;
-    gap: 16px;
+    gap: 10px;
     width: 100%;
+}
+
+#router-mailbox .mb-text-compose-row,
+#router-mailbox .mb-composer-tools {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-width: 0;
+}
+
+#router-mailbox .mb-text-input {
+    display: block;
+    flex: 1;
+    width: 100%;
+    min-width: 0;
+    min-height: 48px;
+    max-height: 144px;
+    margin: 0;
+    padding: 10px 12px;
+    box-sizing: border-box;
+    border: 1px solid var(--mb-border);
+    border-radius: 12px;
+    background: #f7f9fc;
+    color: var(--mb-text-main);
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+    resize: vertical;
+    user-select: text;
+}
+
+#router-mailbox .mb-text-input:focus {
+    outline: 2px solid var(--mb-primary);
+    outline-offset: 1px;
+}
+
+#router-mailbox .mb-send-text {
+    flex-shrink: 0;
+    min-height: 44px;
+}
+
+#router-mailbox .mb-message-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+    font-size: 15px;
+    line-height: 1.6;
+    max-height: 45vh;
+    overflow-y: auto;
+}
+
+#router-mailbox .mb-text-card .mb-file-icon-wrap {
+    display: none;
 }
 
 #router-mailbox .mb-send-button {
@@ -1270,11 +1327,12 @@ html.router-mailbox-active x-toast {
     }
 
     #router-mailbox .mb-send-button {
-        width: 100%;
+        width: auto;
+        padding: 0 12px;
     }
 
     #router-mailbox .mb-composer-hint {
-        text-align: center;
+        text-align: left;
     }
 
     #router-mailbox .mb-settings-dialog {
