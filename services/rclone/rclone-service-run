@@ -12,6 +12,6 @@ exec '/data/data/com.termux/files/usr/bin/rclone' rcd \
     --disable copy \
     --buffer-size 16M \
     --rc-addr='127.0.0.1:5572' \
-    --rc-web-gui \
-    --rc-web-gui-no-open-browser \
+    --rc-files="$HOME/.cache/rclone/webgui/current/build" \
+    --rc-serve \
     --rc-no-auth

@@ -63,6 +63,7 @@ var allowedServices = map[string]ServiceMeta{
 	"searxng":          {Label: "SearXNG · 搜索", Port: 8888},
 	"studioos":         {Label: "StudioOS · 项目与财税", Port: 8000},
 	"mihomo":           {Label: "Mihomo · 代理核心", Port: 17890},
+	"tailscale":        {Label: "Tailscale · 远程组网", Port: 0},
 	"qbittorrent":      {Label: "qBittorrent", Port: 8080},
 	"caddy":            {Label: "AriaNg / Caddy", Port: 6880},
 	"sshd":             {Label: "SSH", Port: 8022},
@@ -2484,6 +2485,9 @@ func (s *Server) getClientTrafficSnapshot() (map[string]netCounter, map[string]n
 func (s *Server) readServices() []ServiceInfo {
 	names := make([]string, 0, len(allowedServices))
 	for n := range allowedServices {
+		if n == "tailscale" {
+			continue // Root supervisor, not a runit service.
+		}
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -2522,6 +2526,7 @@ func (s *Server) readServices() []ServiceInfo {
 		}
 		out = append(out, ServiceInfo{Name: name, Label: meta.Label, State: state, PID: pid, UptimeSec: up, Port: meta.Port, WebURL: web})
 	}
+	out = append(out, s.readTailscaleService())
 	s.enrichServiceUpdates(out)
 	return out
 }
@@ -2762,6 +2767,14 @@ func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 400, map[string]string{"error": "无效操作"})
 		return
 	}
+	if b.Name == "tailscale" {
+		if _, err := s.tailscaleCommand(b.Action); err != nil {
+			jsonOut(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		jsonOut(w, 200, map[string]bool{"ok": true})
+		return
+	}
 	if b.Name == "mihomo" {
 		disabled := filepath.Join(s.data, "mihomo", "disabled")
 		if b.Action == "stop" {
@@ -2797,6 +2810,15 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("service")
 	if _, ok := allowedServices[name]; !ok {
 		jsonOut(w, 400, map[string]string{"error": "无效服务"})
+		return
+	}
+	if name == "tailscale" {
+		text, err := s.tailscaleCommand("logs")
+		if err != nil {
+			jsonOut(w, 503, map[string]string{"error": "无法读取 Tailscale 日志"})
+			return
+		}
+		jsonOut(w, 200, map[string]string{"service": name, "log": redactSystemLog(text)})
 		return
 	}
 	path := filepath.Join(s.stack, "services", name, "log", "main", "current")

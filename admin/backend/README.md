@@ -89,6 +89,15 @@ The **服务** page also contains a protected Tailscale control panel. It report
 the node state, Tailscale IP and `192.168.2.0/24` subnet-route status, and offers
 start, restart, guarded stop, login and reauthorization actions. These actions
 operate the existing root supervisor and do not migrate Tailscale into runit.
+Tailscale also appears in the unified **网络与安全** service list with its PID,
+uptime and installed version. A lightweight local process check reads its Root
+supervisor state without polling peers or the Tailscale cloud on each dashboard
+refresh. Start/stop/restart and logs use the same private Root helper.
+The existing hourly update checker and **检查更新** button compare the installed
+version with `tailscale/tailscale`'s latest official stable GitHub release.
+Updates are detection-only: the generic single-binary updater must not replace
+this Root installation, which requires matching `tailscale` and `tailscaled`
+binaries and subnet-route validation.
 
 Runtime paths:
 

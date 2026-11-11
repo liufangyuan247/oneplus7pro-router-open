@@ -5403,7 +5403,9 @@ function Services({
   );
 
   const act = async (name: string, action: string) => {
-    if (action === "stop" && !confirm(`确定停止 ${name}？`)) return;
+    if (name === "tailscale" && (action === "stop" || action === "restart")) {
+      if (!confirm(`确定${action === "stop" ? "停止" : "重启"} Tailscale？通过它建立的远程连接将中断，登录状态会保留。`)) return;
+    } else if (action === "stop" && !confirm(`确定停止 ${name}？`)) return;
     const r = await fetch("/api/services/action", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -5503,13 +5505,13 @@ function Services({
         <strong>
           {data.services.filter((service) => service.State === "运行中").length} / {data.services.length} 项运行中
         </strong>
-        <span>Runit 自动守护</span>
+        <span>Runit / Root 自动守护</span>
         {directUpgradeCount > 0 ? (
           <span style={{ color: "#36d6a8", fontWeight: 600 }}>
             {directUpgradeCount} 个服务可直接升级
           </span>
         ) : rebuildCount > 0 ? (
-          <span>{rebuildCount} 个定制服务上游有更新</span>
+          <span>{rebuildCount} 个服务需专用流程更新</span>
         ) : null}
         {managedUpdateCount > 0 && <span>{managedUpdateCount} 个应用由自动更新器处理新版</span>}
         <span>{data.aria2.online ? `Aria2 ${data.aria2.numActive} 项活动` : "Aria2 离线"}</span>
@@ -5520,7 +5522,7 @@ function Services({
         <>
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Runit 托管 · 升级与自动回滚保障</p>
+              <p className="eyebrow">Runit / Root 托管 · 服务状态与更新检测</p>
               <h2>应用与系统服务</h2>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
@@ -5592,7 +5594,7 @@ function Services({
                           发现新版: {serviceVersion(service.latestVersion, service.versionScheme)}
                         </span>
                       )}
-                      {service.updateMessage && (
+                      {service.updateMessage && !["UP_TO_DATE", "UPDATED", "RECOVERED_UPDATED"].includes(service.updateState || "") && (
                         <span
                           className={`service-version-tag ${service.updateState === "UP_TO_DATE" || service.updateState === "UPDATED" ? "latest" : "current"}`}
                           title={service.lastChecked ? `更新器检查时间：${new Date(service.lastChecked).toLocaleString()}` : undefined}
@@ -5607,7 +5609,7 @@ function Services({
                     </small>
                     {!service.canUpgrade && service.upgradable && service.upgradeHint && (
                       <small className="service-rebuild-note" title={service.upgradeHint}>
-                        {service.versionScheme === "deployment" ? service.upgradeHint : "上游有更新 · 定制版本需重新构建"}
+                        {service.upgradeHint}
                       </small>
                     )}
                   </div>

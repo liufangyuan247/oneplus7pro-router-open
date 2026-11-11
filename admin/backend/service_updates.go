@@ -65,6 +65,7 @@ type serviceUpdaterSpec struct {
 	PreflightTest func(s *Server, candidatePath string) error
 	HealthProbe   func(s *Server) bool
 	DetectionOnly bool
+	DetectionHint string
 	UpgradeHelper string
 }
 
@@ -91,6 +92,12 @@ var (
 	// Services with upstream release tracking. DetectionOnly entries deliberately
 	// do not use the generic binary updater because they require a custom build.
 	supportedServiceUpdaters = map[string]serviceUpdaterSpec{
+		"tailscale": {
+			Name:          "tailscale",
+			GitHubRepo:    "tailscale/tailscale",
+			DetectionOnly: true,
+			DetectionHint: "Root 版需成对更新 tailscale / tailscaled 并验证子网路由，暂不提供单文件一键升级",
+		},
 		"cpa": {
 			Name:          "cpa",
 			Binary:        "cli-proxy-api",
@@ -175,11 +182,12 @@ var (
 			},
 		},
 		"rclone": {
-			Name:         "rclone",
-			Binary:       "rclone",
-			IsAptPackage: true,
-			AptPackage:   "rclone",
-			Port:         5572,
+			Name:          "rclone",
+			Binary:        "rclone",
+			IsAptPackage:  true,
+			AptPackage:    "rclone",
+			Port:          5572,
+			UpgradeHelper: "upgrade-rclone.py",
 			HealthProbe: func(s *Server) bool {
 				client := http.Client{Timeout: 2 * time.Second}
 				resp, err := client.Get("http://127.0.0.1:5572/")
@@ -296,6 +304,11 @@ func resolveUpdateTracking(spec serviceUpdaterSpec, supported, custom bool, buil
 
 func (s *Server) detectCurrentVersion(name string) string {
 	switch name {
+	case "tailscale":
+		out, err := s.tailscaleCommand("version")
+		if err == nil {
+			return parseTailscaleVersion(out)
+		}
 	case "searxng":
 		return strings.TrimSpace(readText(filepath.Join(s.home, "router-apps", "searxng", "current", "UPSTREAM_VERSION")))
 	case "openlist":
@@ -493,6 +506,9 @@ func (s *Server) refreshServiceUpdates(forceRemote bool) {
 		existing.CanUpgrade = tracked && !detectionOnly
 		if tracked && detectionOnly {
 			existing.UpgradeHint = "检测到上游新版本后，需要重新构建并部署此设备的定制版本"
+			if spec.DetectionHint != "" {
+				existing.UpgradeHint = spec.DetectionHint
+			}
 		} else {
 			existing.UpgradeHint = ""
 		}
@@ -829,6 +845,9 @@ func (s *Server) servicesUpgradeAPI(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "无效请求参数"})
 		return
 	}
+	// Package downloads and recovery backups can exceed the normal API deadline.
+	// Keep a bounded deadline for this authenticated upgrade request only.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Minute))
 
 	serviceName := payload.Service
 	spec, ok := supportedServiceUpdaters[serviceName]
@@ -837,7 +856,11 @@ func (s *Server) servicesUpgradeAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if spec.DetectionOnly || s.readServiceBuildInfo(serviceName) != nil {
-		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "此服务使用设备定制构建，请在项目中重新构建并部署，不能直接安装上游二进制"})
+		hint := spec.DetectionHint
+		if hint == "" {
+			hint = "此服务使用设备定制构建，请在项目中重新构建并部署，不能直接安装上游二进制"
+		}
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": hint})
 		return
 	}
 

@@ -167,6 +167,24 @@ login_start() {
   return 1
 }
 
+# Lightweight service-list snapshot: do not query peers, prefs or cloud state.
+service_status() {
+  echo "installed=$([ -x "$TS" ] && [ -x "$DAEMON" ] && echo yes || echo no)"
+  echo "enabled=$([ -f "$ENABLED" ] && echo yes || echo no)"
+  if daemon_alive; then
+    pid="$(cat "$PIDFILE")"
+    echo 'daemon=running'
+    echo "pid=$pid"
+    # Android arm64 exposes /proc process starttime in USER_HZ=100 ticks.
+    /data/data/com.termux/files/usr/bin/awk 'NR==1 {up=$1; next} {n=int(up-$22/100); printf "uptime=%d\n", (n>0?n:0)}' \
+      /proc/uptime "/proc/$pid/stat" 2>/dev/null || echo 'uptime=0'
+  else
+    echo 'daemon=stopped'
+    echo 'pid=0'
+    echo 'uptime=0'
+  fi
+}
+
 status() {
   echo "installed=$([ -x "$TS" ] && [ -x "$DAEMON" ] && echo yes || echo no)"
   echo "enabled=$([ -f "$ENABLED" ] && echo yes || echo no)"
@@ -224,10 +242,13 @@ status() {
 
 case "${1:-status}" in
   status) status ;;
+  service-status) service_status ;;
+  version) "$TS" version ;;
+  logs) tail -n 160 "$BASE/log/tailscaled.log" ;;
   start) start_daemon; log_control 'service started'; status ;;
   stop) stop_daemon; log_control 'service stopped'; status ;;
   restart) restart_daemon; log_control 'service restarted'; status ;;
   login) login_start 0 ;;
   reauth) login_start 1 ;;
-  *) echo 'usage: tailscale-control {status|start|stop|restart|login|reauth}' >&2; exit 2 ;;
+  *) echo 'usage: tailscale-control {status|service-status|version|logs|start|stop|restart|login|reauth}' >&2; exit 2 ;;
 esac

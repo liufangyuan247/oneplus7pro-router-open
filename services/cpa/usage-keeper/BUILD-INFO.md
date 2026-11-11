@@ -1,13 +1,13 @@
 # CPA Usage Keeper Android build
 
-- Upstream tag: `v2.0.3`
-- Upstream commit: `9db74cfc380d11064af80cf1626efd6e3d068217`
+- Upstream tag: `v2.1.0`
+- Upstream commit: `41b34f12dbef209292765415b860583aad5afc09`
 - Target: Android ARM64 (`android/arm64`, API 24+)
 - Build: native Go 1.27.3/CGO with Termux clang; frontend embedded in the binary
-- Binary: `build/cpa-usage-keeper-v2.0.3-android`
+- Binary: `build/cpa-usage-keeper-v2.1.0-android`
 - Build manifest: `cpa-usage-keeper.build.json` beside the binary; stage it as
-  `~/.stage/cpa-usage-keeper-v2.0.3-android.build.json`
-- SHA-256: `3c0c4d4b231601d73a7105cca3355967c227c710872c38f4711ff264bbeab7e2`
+  `~/.stage/cpa-usage-keeper-v2.1.0-android.build.json`
+- SHA-256: `8dd3b8e5764e80ade8485ab57f9ff7cebca5073d1e6aa2a00dc1b9f55965e381`
 - Phone service: `~/router-stack/services/cpa-usage-keeper`
 - Persistent data: `~/router-data/cpa-usage-keeper`
 - Web address: `http://192.168.2.1:8320`
@@ -53,6 +53,17 @@ matched the newly built frontend byte for byte. SQLite integrity checking and
 an ID comparison verified that all 963,238 pre-upgrade events were retained.
 CPA was first updated to `v8.0.61-op7.1`. The verified pre-upgrade database is
 at `~/router-data/cpa-usage-keeper/install-backups/20261109-193134/app.db`.
+
+Deployment on 2026-11-11 updated v2.0.3 to v2.1.0 with the official dashboard
+embedded, including the Models tab and live Request Events. Frontend
+typechecking and 1,727 tests passed, along with native helper and quota tests.
+The previous login session remained valid; version, readiness, overview,
+API-key settings, model catalog and pricing checks passed. Served JavaScript
+and CSS matched the build byte for byte. SQLite integrity checking and an ID
+comparison verified that all 972,630 pre-upgrade events were retained.
+CPA was first updated to `v8.0.67-op7.1`; its management page matches official
+Management Center `v1.27.3`. The pre-upgrade database is at
+`~/router-data/cpa-usage-keeper/install-backups/20261111-235030/app.db`.
 
 Upstream v2 removes local/community ranking and persists request costs. It
 rebuilds historical summaries from retained request details; changing current

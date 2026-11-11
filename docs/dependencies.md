@@ -10,9 +10,9 @@
 | OpenList | `v4.2.5` linux-musl-arm64 | [OpenListTeam/OpenList Releases](https://github.com/OpenListTeam/OpenList/releases) |
 | AriaNg | `1.3.14` AllInOne | [mayswind/AriaNg Releases](https://github.com/mayswind/AriaNg/releases) |
 | Mihomo | `v1.19.30` android-arm64-v8 | [MetaCubeX/mihomo Releases](https://github.com/MetaCubeX/mihomo/releases)；需要新协议时可升级，但先离线验证订阅 |
-| Tailscale | `1.102.3` arm64 | [Tailscale stable packages](https://pkgs.tailscale.com/stable/) |
-| CLIProxyAPI | `v8.0.28-op7.1` Android/ARM64 自构建 | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)；基于上游 `v8.0.28`，Android 兼容构建见 `services/cpa` |
-| CPA Usage Keeper | `v1.14.8`, commit `c0129050def1f3e980ed68492014326d35710917` | [Willxup/cpa-usage-keeper](https://github.com/Willxup/cpa-usage-keeper)；Android 上按集成脚本源码构建 |
+| Tailscale | `1.104.6` arm64 | [Tailscale stable packages](https://pkgs.tailscale.com/stable/) |
+| CLIProxyAPI | `v8.0.67-op7.1` Android/ARM64 自构建 | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)；基于上游 `v8.0.67`，Android 兼容构建见 `services/cpa` |
+| CPA Usage Keeper | `v2.1.0-android`, commit `41b34f12dbef209292765415b860583aad5afc09` | [Willxup/cpa-usage-keeper](https://github.com/Willxup/cpa-usage-keeper)；Android 上按集成脚本源码构建，含官方前端 |
 | scrcpy | Windows `v4.1`；web server 组件按管理端代码要求 | [Genymobile/scrcpy Releases](https://github.com/Genymobile/scrcpy/releases)；仓库不包含 EXE/DLL/server |
 | MetaCubeXD | 安装时固定 release/commit | [MetaCubeX/metacubexd](https://github.com/MetaCubeX/metacubexd) |
 
@@ -37,11 +37,14 @@ Android Gooblesource 可用 `git clone` 后只归档需要的子目录，或使�
 ```text
 72fdb596045116bf5ba1b5bdf5b26fddb9acc0bd074ad9f2da9eb0ae85e83a4e  termux-app_v0.118.3+github-debug_arm64-v8a.apk
 a0fa1b154af8c61f862a2259f559f7396d96c0225f4a863eae2333e1546bbe25  tailscale_1.102.3_arm64.tgz
+d0e4f297da3c428d02162c6235b9948e4ddc245c64502b7b05647da9b96a0971  tailscale_1.104.6_arm64.tgz
 19afeb40fca190fc2e3906a4e3b87c74a0c2120626fd3cb3ae0cf4092cb780ad  mihomo-android-arm64-v8-v1.19.30.gz
 65bc5ed3573ef05313ea953a5c5363c8b33a4996849b2986c78660eab1a9edb2  AriaNg-1.3.14-AllInOne.zip
 82d1c8b10d2cd75fca7889610a6aadc6035605045affd5a80d9ed63e5e71e64a  openlist-linux-musl-arm64-v4.2.5.tar.gz
 4a825e2a10e723788fb4e4b567349e1d3ccfad118ba80863541d96cc674caa70  CLIProxyAPI_7.2.140_linux_aarch64_no-plugin.tar.gz
 f4b5446e2114bd216274a98e81a634b9b669ac3efeb42f366ca1ab40b6391919  cpa-usage-keeper-v1.14.8-android-source.tar.gz
+d7dfa2b9005072633c02c96e05007ddb7d542116945ddc0164846e1f50abdbd4  cpa-usage-keeper-v2.1.0-android-source.tar.gz
+8dd3b8e5764e80ade8485ab57f9ff7cebca5073d1e6aa2a00dc1b9f55965e381  cpa-usage-keeper-v2.1.0-android
 fd650b715ee41d2a871e7a1c5ab5c42e01aa5a252cc9a4b4fcdb89f1287482b6  ASIX_USB_NIC_Linux_Driver_Source_v4.1.0.tar.bz2
 dfac13612ecbbe9567ccc5fb6ed0fe3bce367cecc848b17c3064affe3d7ca6ae  oneplus-sm8150-SM8150_R_10.0.tar.gz
 da80b1675fb1098bbd47ec3c6683a2563e5dcc4b7bc8217438682c2176bf8516  oneplus-opensource-kernel-SM8150_R_10.0.tar.gz
