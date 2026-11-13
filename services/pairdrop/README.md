@@ -9,6 +9,9 @@
 全局过期时间、单文件上限和暂存总容量由 Router Admin 的“服务 → 文件共享 → 设备传输站 → 设置”管理。
 原有雷达背景、配对/房间入口与工具栏不再显示，保留在线收件确认
 和下载所需的核心弹窗。这里显示的是暂存内容，不是永久聊天记录。
+首页直接输出传输站标题、浅色主题和加载提示，主题样式在 head 中加载。
+即使业务脚本或翻译加载缓慢，也不会先显示原版 PairDrop；新会话界面插入后
+加载提示才消失。网页图标与 PWA 名称同步使用设备传输站，安装预览不再引用旧界面截图。
 
 文字统一经路由器持久暂存，在线设备实时收到刷新通知，离线设备下次打开页面领取。
 输入框支持多行：电脑 Enter 发送、Shift+Enter 换行，手机 Enter 换行、点击“发送”。
@@ -72,7 +75,7 @@ PairDrop 1.11.2 会先通过服务器发现设备，等 WebRTC 数据通道建�
 
 先在 Termux 安装 `nodejs-lts`（不需要全量升级其他路由服务），准备固定版本官方源码归档。归档根目录包含 `server/`、`public/`、`package.json` 和上游许可证，不含顶层目录。
 
-本目录的 `package.json` 记录对应上游的依赖范围。将源码归档以 `source.tar.gz` 命名，与本目录的 `package-lock.json`、`pairdrop-service-run`、`rtc-config.json`、`apply-local-overlay.py`、`router-compat-client.js`、`router-compat-server.js`、`router-mailbox-client.js`、`router-mailbox-server.js`、`router-mailbox.css`、`deploy-pairdrop.sh` 一起传入 `~/.stage/pairdrop/`。用 Termux 用户执行：
+本目录的 `package.json` 记录对应上游的依赖范围。将源码归档以 `source.tar.gz` 命名，与本目录的 `package-lock.json`、`pairdrop-service-run`、`rtc-config.json`、`apply-local-overlay.py`、`router-compat-client.js`、`router-compat-server.js`、`router-mailbox-client.js`、`router-mailbox-server.js`、`router-mailbox.css`、`router-mailbox.svg`、`deploy-pairdrop.sh` 一起传入 `~/.stage/pairdrop/`。用 Termux 用户执行：
 
 ```sh
 sh ~/.stage/pairdrop/deploy-pairdrop.sh <source-archive-sha256>
@@ -80,13 +83,16 @@ sh ~/.stage/pairdrop/deploy-pairdrop.sh <source-archive-sha256>
 
 脚本安装到独立 release 目录，检查依赖与语法，保存旧版本和启动配置后切换软链接；健康检查失败则恢复旧版本，首次部署失败则禁用新服务。已有 `service.env`、RTC 配置保留。默认健康探测端口为 3000。
 
-`apply-local-overlay.py` 为固定上游安装兼容扩展与文件箱，更新 service worker 缓存版本；脚本可重复执行，遇到不匹配的源码则拒绝修改。`LOCAL_OVERLAY` 记录 `op7-mailbox4-text1-native-ping1`，service worker 为 `v1.11.2-op7-mailbox4`，第三方原始源码仍不提交 Git。原有 RTC 转发只接受同房间真实成员的请求。文件箱新增前端资源，更新后需重新打开页面。
+`apply-local-overlay.py` 为固定上游安装兼容扩展与文件箱，更新 service worker 缓存版本；脚本可重复执行，遇到不匹配的源码则拒绝修改。`LOCAL_OVERLAY` 记录 `op7-mailbox5-text1-initial-shell1-native-ping1`，service worker 为 `v1.11.2-op7-mailbox5`，第三方原始源码仍不提交 Git。原有 RTC 转发只接受同房间真实成员的请求。文件箱新增前端资源，更新后需重新打开页面。
 
 已有安装需备份 `public/scripts/util.js`、`public/service-worker.js`、`public/scripts/main.js`、两个 `router-*.js` 客户端、`public/styles/router-mailbox.css`、`server/server.js`、`server/ws-server.js`、两个服务端扩展和 `LOCAL_OVERLAY`，记录原先不存在的新文件以便回滚。先执行 `python apply-local-overlay.py <release> --check`，再应用并检查 JS 语法。服务端扩展需要重启一次 PairDrop；应选择没有传输的时候操作。
 
 已安装文件箱后的纯界面更新只需备份并更新 `public/scripts/router-mailbox.js`、
 `public/styles/router-mailbox.css`、`public/service-worker.js` 和 `LOCAL_OVERLAY`。
 确认后端文件一致即可直接替换静态资源，无需重启服务或迁移设备、文件数据。
+首屏清理还需一并部署 `public/index.html`、`public/manifest.json` 和
+`public/images/router-mailbox.svg`。先更新客户端脚本，再切换首页，最后更新 service worker；
+初始加载提示通过 DOM 兄弟选择器兼容旧版缓存客户端，不依赖新脚本才能隐藏。
 
 服务端测试：`node --test services/pairdrop/router-compat-server.test.mjs`。浏览器验证覆盖正常直连、RTC 卡住、构造失败及不支持 RTC，均需验证设备发现和文件逐字节一致。
 

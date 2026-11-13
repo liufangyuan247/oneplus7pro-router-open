@@ -276,10 +276,14 @@
         }
 
         build() {
-            const css = document.createElement('link');
-            css.rel = 'stylesheet';
-            css.href = 'styles/router-mailbox.css';
-            document.head.appendChild(css);
+            // New pages load the theme in <head>; retain compatibility with an old cached HTML entry.
+            if (!document.getElementById('router-mailbox-styles')) {
+                const css = document.createElement('link');
+                css.id = 'router-mailbox-styles';
+                css.rel = 'stylesheet';
+                css.href = 'styles/router-mailbox.css';
+                document.head.appendChild(css);
+            }
 
             this.root = document.createElement('section');
             this.root.id = 'router-mailbox';
@@ -606,7 +610,8 @@
 
             const center = document.getElementById('center');
             center.prepend(this.root);
-            document.documentElement.classList.add('router-mailbox-active');
+            document.documentElement.classList.add('router-mailbox-active', 'router-mailbox-mounted');
+            document.getElementById('router-mailbox-loading')?.remove();
         }
 
         notice(text, isError = false) {

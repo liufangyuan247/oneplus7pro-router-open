@@ -1,5 +1,6 @@
 """Add automatic, per-pair WebRTC fallback to the pinned PairDrop release."""
 import argparse
+import json
 from pathlib import Path
 import stat
 
@@ -21,7 +22,8 @@ previous_auto_version = "const cacheVersion = 'v1.11.2-op7-auto-ws2';"
 previous_mailbox_version = "const cacheVersion = 'v1.11.2-op7-mailbox1';"
 previous_ui_version = "const cacheVersion = 'v1.11.2-op7-mailbox2';"
 previous_presence_version = "const cacheVersion = 'v1.11.2-op7-mailbox3';"
-new_version = "const cacheVersion = 'v1.11.2-op7-mailbox4';"
+previous_text_version = "const cacheVersion = 'v1.11.2-op7-mailbox4';"
+new_version = "const cacheVersion = 'v1.11.2-op7-mailbox5';"
 plans = []
 
 
@@ -34,11 +36,13 @@ def replace_once(path, content, old, new):
 
 
 plans.append((util, replace_once(util, util.read_text(encoding='utf-8'), original, replacement)))
-content = worker.read_text(encoding='utf-8').replace(previous_version, old_version).replace(previous_auto_version, old_version).replace(previous_mailbox_version, old_version).replace(previous_ui_version, old_version).replace(previous_presence_version, old_version)
+content = worker.read_text(encoding='utf-8').replace(previous_version, old_version).replace(previous_auto_version, old_version).replace(previous_mailbox_version, old_version).replace(previous_ui_version, old_version).replace(previous_presence_version, old_version).replace(previous_text_version, old_version)
 content = replace_once(worker, content, old_version, new_version)
 content = replace_once(worker, content, "    'scripts/main.js',", "    'scripts/router-compat.js',\n    'scripts/main.js',")
 content = replace_once(worker, content, "    'scripts/router-compat.js',",
                        "    'scripts/router-mailbox.js',\n    'styles/router-mailbox.css',\n    'scripts/router-compat.js',")
+content = replace_once(worker, content, "    'manifest.json',",
+                       "    'manifest.json',\n    'images/router-mailbox.svg',")
 content = replace_once(worker, content,
                        "self.addEventListener('fetch', function(event) {",
                        "self.addEventListener('fetch', function(event) {\n"
@@ -48,6 +52,72 @@ content = replace_once(worker, content,
                        "        return;\n"
                        "    }")
 plans.append((worker, content))
+
+index = args.release / 'public/index.html'
+content = index.read_text(encoding='utf-8')
+content = replace_once(index, content, '<html lang="en">',
+                       '<html lang="zh-CN" class="router-mailbox-active">')
+content = replace_once(index, content,
+                       '<title>PairDrop | Transfer Files Cross-Platform. No Setup, No Signup.</title>',
+                       '<title>设备传输站</title>')
+initial_styles = '''    <!-- OP7: render the transfer-station shell before deferred scripts. -->
+    <style id="router-mailbox-initial-style">
+        :root { color-scheme: light; }
+        html.router-mailbox-active, html.router-mailbox-active body {
+            margin: 0; min-height: 100%; background: #eef3f7 !important; color: #0f172a;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        }
+        html.router-mailbox-active body > header, html.router-mailbox-active body > footer,
+        html.router-mailbox-active canvas.circles, html.router-mailbox-active #websocket-fallback,
+        html.router-mailbox-active x-menu { display: none !important; }
+        html.router-mailbox-active #center { opacity: 1 !important; }
+        html.router-mailbox-active #center > :not(#router-mailbox):not(#router-mailbox-loading) {
+            display: none !important;
+        }
+        #router-mailbox-loading {
+            position: fixed; inset: 0; display: grid; place-content: center; gap: 12px;
+            text-align: center; background: #eef3f7; padding: 24px; box-sizing: border-box;
+        }
+        #router-mailbox-loading svg { width: 48px; height: 48px; margin: auto; color: #2481cc; }
+        #router-mailbox-loading h1 { margin: 0; font-size: 22px; font-weight: 600; }
+        #router-mailbox-loading p { margin: 0; color: #64748b; font-size: 14px; }
+        html.router-mailbox-mounted #router-mailbox-loading { display: none; }
+        #router-mailbox ~ #router-mailbox-loading { display: none !important; }
+    </style>
+    <link id="router-mailbox-styles" rel="stylesheet" href="styles/router-mailbox.css">
+'''
+content = replace_once(index, content, '<head>', '<head>\n' + initial_styles)
+loading = '''<div id="center" class="opacity-0">
+    <section id="router-mailbox-loading" role="status" aria-live="polite" aria-label="正在打开设备传输站">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7Z"/>
+        </svg>
+        <h1>设备传输站</h1>
+        <p>正在打开传输界面…</p>
+    </section>'''
+content = replace_once(index, content, '<div id="center" class="opacity-0">', loading)
+content = replace_once(index, content, '<noscript>',
+                       '<noscript><style>#router-mailbox-loading { display: none; }</style>')
+for before, after in (
+    ('<meta name="theme-color" content="#3367d6">', '<meta name="theme-color" content="#eef3f7">'),
+    ('<meta name="color-scheme" content="dark light">', '<meta name="color-scheme" content="light">'),
+    ('<meta name="apple-mobile-web-app-title" content="PairDrop">', '<meta name="apple-mobile-web-app-title" content="设备传输站">'),
+    ('<meta name="application-name" content="PairDrop">', '<meta name="application-name" content="设备传输站">'),
+    ('<meta property="og:title" content="PairDrop">', '<meta property="og:title" content="设备传输站">'),
+    ('href="images/favicon-96x96.png"', 'href="images/router-mailbox.svg"'),
+    ('<h1>Enable JavaScript</h1>', '<h1>请启用 JavaScript</h1>'),
+    ('<h3>PairDrop works only with JavaScript</h3>', '<h3>设备传输站需要 JavaScript 才能运行</h3>'),
+):
+    # The upstream document has two identical favicon hrefs.
+    content = content.replace(before, after)
+plans.append((index, content))
+
+manifest = args.release / 'public/manifest.json'
+content = json.loads(manifest.read_text(encoding='utf-8'))
+content.update(name='设备传输站', short_name='传输站', description='在自己的设备之间传送文字和文件，支持离线暂存。',
+               theme_color='#eef3f7', background_color='#eef3f7', lang='zh-CN')
+content.pop('screenshots', None)  # Upstream screenshots show the retired radar UI.
+plans.append((manifest, json.dumps(content, ensure_ascii=False, indent=4) + '\n'))
 
 main = args.release / 'public/scripts/main.js'
 content = main.read_text(encoding='utf-8')
@@ -110,6 +180,7 @@ plans.extend(((args.release / 'public/scripts/router-compat.js', (sources / 'rou
               (args.release / 'server/router-compat.js', (sources / 'router-compat-server.js').read_text(encoding='utf-8')),
               (args.release / 'public/scripts/router-mailbox.js', (sources / 'router-mailbox-client.js').read_text(encoding='utf-8')),
               (args.release / 'public/styles/router-mailbox.css', (sources / 'router-mailbox.css').read_text(encoding='utf-8')),
+              (args.release / 'public/images/router-mailbox.svg', (sources / 'router-mailbox.svg').read_text(encoding='utf-8')),
               (args.release / 'server/router-mailbox.js', (sources / 'router-mailbox-server.js').read_text(encoding='utf-8'))))
 plans = [(path, content) for path, content in plans if not path.exists() or path.read_text(encoding='utf-8') != content]
 
@@ -119,5 +190,5 @@ if not args.check:
         temporary.write_text(content, encoding='utf-8', newline='\n')
         temporary.chmod(stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600)
         temporary.replace(path)
-    (args.release / 'LOCAL_OVERLAY').write_text('op7-mailbox4-text1-native-ping1\n', encoding='utf-8')
+    (args.release / 'LOCAL_OVERLAY').write_text('op7-mailbox5-text1-initial-shell1-native-ping1\n', encoding='utf-8')
 print(f'PAIRDROP_WS_MODE_{"CHECKED" if args.check else "APPLIED"} changed_files={len(plans)}')
