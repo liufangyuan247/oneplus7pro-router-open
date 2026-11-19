@@ -445,6 +445,10 @@ while :; do
   if [ -d "\$SERVICES/cpa" ]; then
     probe cpa curl -fsS --max-time 5 http://127.0.0.1:8317/
   fi
+  # CPA_MODEL_ALIAS_SYNC
+  if [ -r '$STACK/bin/cpa-model-alias-sync-hook' ]; then
+    . '$STACK/bin/cpa-model-alias-sync-hook'
+  fi
   sleep 60
 done
 EOF

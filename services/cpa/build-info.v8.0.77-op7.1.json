@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "service": "cpa",
+  "product": "CLIProxyAPI",
+  "customVersion": "v8.0.77-op7.1",
+  "upstreamVersion": "v8.0.77",
+  "upstreamCommit": "a5e8f69e56309e1ef6d6872e667da81fdfbce2ce",
+  "upstreamRepository": "router-for-me/CLIProxyAPI",
+  "variant": "op7.1",
+  "buildDate": "2026-11-18T00:57:53.937618+00:00",
+  "platform": "android/arm64",
+  "sha256": "3ba9ce729439b925c3a9d26e702f92d26fe24560e427e55f60bfb8f061fc1e23",
+  "patches": [
+    "anet-android-go1.26-compatibility"
+  ]
+}

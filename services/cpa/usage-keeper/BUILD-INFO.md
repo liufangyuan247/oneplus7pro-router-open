@@ -1,13 +1,13 @@
 # CPA Usage Keeper Android build
 
-- Upstream tag: `v2.1.0`
-- Upstream commit: `41b34f12dbef209292765415b860583aad5afc09`
+- Upstream tag: `v2.1.1`
+- Upstream commit: `5c97bee91678e3cd9e75201a8025bfcaadf77681`
 - Target: Android ARM64 (`android/arm64`, API 24+)
-- Build: native Go 1.27.3/CGO with Termux clang; frontend embedded in the binary
-- Binary: `build/cpa-usage-keeper-v2.1.0-android`
+- Build: native Go 1.27.4/CGO with Termux clang; frontend embedded in the binary
+- Binary: `build/cpa-usage-keeper-v2.1.1-android`
 - Build manifest: `cpa-usage-keeper.build.json` beside the binary; stage it as
-  `~/.stage/cpa-usage-keeper-v2.1.0-android.build.json`
-- SHA-256: `8dd3b8e5764e80ade8485ab57f9ff7cebca5073d1e6aa2a00dc1b9f55965e381`
+  `~/.stage/cpa-usage-keeper-v2.1.1-android.build.json`
+- SHA-256: `9a8d4d2aaa53b03cd511dc61419ed3dbf179523eeab59e4ca2fec602172a4732`
 - Phone service: `~/router-stack/services/cpa-usage-keeper`
 - Persistent data: `~/router-data/cpa-usage-keeper`
 - Web address: `http://192.168.2.1:8320`
@@ -68,3 +68,13 @@ Management Center `v1.27.3`. The pre-upgrade database is at
 Upstream v2 removes local/community ranking and persists request costs. It
 rebuilds historical summaries from retained request details; changing current
 pricing no longer changes historical costs automatically.
+
+Deployment on 2026-11-18 updated v2.1.0 to v2.1.1 with the official dashboard
+embedded. Frontend typechecking and 1,766 tests passed, along with native helper
+and quota tests. The prior login remained valid; version, readiness, overview,
+API-key settings, model catalog and pricing checks passed. Served JavaScript
+and CSS matched the build byte for byte. SQLite integrity checking and an ID
+comparison verified that all 992,420 pre-upgrade usage events were retained.
+CPA was first updated to `v8.0.77-op7.1`; its official Management Center page is
+`v1.28.1`. The verified database backup is at
+`~/router-data/cpa-usage-keeper/install-backups/20261118-091103/app.db`.

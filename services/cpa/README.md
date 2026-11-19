@@ -16,7 +16,7 @@ used by Pion.
 - Management key: `~/router-data/cpa/management-key`
 - Service: `~/router-stack/services/cpa`
 - Rotated logs: `~/router-stack/services/cpa/log/main`
-- CPA application and request logs: `~/router-data/cpa/logs` (128 MB cap)
+- CPA application and request logs: `~/router-data/cpa/auth/logs` (128 MB cap)
 - Management center: `http://192.168.2.1:8317/management.html`
 
 The management key intentionally reuses the router-admin password so the two
@@ -54,10 +54,22 @@ protection loop.
   `gemini-3.8-flash-high`, then verifies the original client model name with a
   real streaming request and rolls back on failure. Re-run this verification
   whenever the pinned upstream CPA version changes.
+- `sync-model-aliases.py`: previews or batch-adds unambiguous Gemini and Claude aliases
+  through CPA's official management API. This replaces the older one-model
+  helper for routine alias maintenance; see [automatic aliases](MODEL-ALIASES.md).
 
 Re-running `install-cpa.sh` preserves an existing `config.yaml`, account files
 and keys. It only replaces the executable and regenerates credentials when
 they are absent or match the rejected weak bootstrap value.
+
+The current verified Android build is `v8.0.77-op7.1`, based on upstream
+`v8.0.77` (`a5e8f69e56309e1ef6d6872e667da81fdfbce2ce`). Its public build
+manifest is `build-info.v8.0.77-op7.1.json`; the only local compatibility change
+remains the Android `anet` replacement. The matching deployed official
+Management Center page is `v1.28.1`, SHA256
+`c00ac5577db8feb12d37de6ecb783cf919bb81536902308079f754337d7a7bc5`.
+This update adds the upstream GPT-6.2 model catalog without changing client
+model defaults or the existing credential priorities.
 
 ## OpenAI API credits before Codex subscription usage
 

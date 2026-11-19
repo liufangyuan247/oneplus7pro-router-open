@@ -70,3 +70,4 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+__pycache__/
