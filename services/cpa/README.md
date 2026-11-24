@@ -62,14 +62,16 @@ Re-running `install-cpa.sh` preserves an existing `config.yaml`, account files
 and keys. It only replaces the executable and regenerates credentials when
 they are absent or match the rejected weak bootstrap value.
 
-The current verified Android build is `v8.0.77-op7.1`, based on upstream
-`v8.0.77` (`a5e8f69e56309e1ef6d6872e667da81fdfbce2ce`). Its public build
-manifest is `build-info.v8.0.77-op7.1.json`; the only local compatibility change
+The current verified Android build is `v8.1.2-op7.1`, based on upstream
+`v8.1.2` (`85225381d89915595598ed13766cd79890c03a84`). Its public build
+manifest is `build-info.v8.1.2-op7.1.json`; the only local compatibility change
 remains the Android `anet` replacement. The matching deployed official
-Management Center page is `v1.28.1`, SHA256
-`c00ac5577db8feb12d37de6ecb783cf919bb81536902308079f754337d7a7bc5`.
-This update adds the upstream GPT-6.2 model catalog without changing client
-model defaults or the existing credential priorities.
+Management Center page is `v1.29.1`, SHA256
+`30df9503402af03e04affb55920458c13139a07757c8428fc845299876d19c43`.
+This update includes upstream Antigravity routing, thinking-level and tool-call
+continuation fixes. Native Responses, Messages and Gemini streaming requests
+passed after deployment. Existing settings and eight model aliases were
+preserved; first startup added the upstream `server.server-id` instance field.
 
 ## OpenAI API credits before Codex subscription usage
 
