@@ -1558,12 +1558,57 @@ refresh_proxy_state() {
   esac
 }
 
+ipv4_address_present() {
+  address_snapshot="$("$IP" -4 -o addr show dev "$1" scope global 2>/dev/null)" || return 1
+  # Match the full CIDR token, not a substring or a regular expression.
+  case " $address_snapshot " in *" inet $2 "*) return 0 ;; esac
+  return 1
+}
+
+ensure_ipv4_address() {
+  if ! ipv4_address_present "$1" "$2"; then
+    "$IP" -4 addr replace "$2" dev "$1"
+  fi
+}
+
+managed_route_present() {
+  # One snapshot per table, shared by all three direct-route checks. A query
+  # failure supplies an empty snapshot and retains the old repair behavior.
+  while IFS= read -r route_line; do
+    case "$route_line " in "$1 dev $2 "*) ;; *) continue ;; esac
+    case " $route_line " in *" via "*|*" nexthop "*|*" nhid "*) continue ;; esac
+    case " $route_line " in
+      *" metric "*)
+        route_metric="${route_line##* metric }"
+        route_metric="${route_metric%% *}"
+        [ "$route_metric" = 0 ] || continue
+        ;;
+    esac
+    if [ -n "$3" ]; then
+      case " $route_line " in *" src $3 "*) ;; *) continue ;; esac
+    else
+      case " $route_line " in *" src "*) continue ;; esac
+    fi
+    return 0
+  done <<EOF
+$4
+EOF
+  return 1
+}
+
 apply_routes() {
   wan="$1" lan="$2" ppp="$3"
-  "$IP" addr replace "$MODEM_ADDRESS" dev "$wan"
-  "$IP" route replace "$LAN_SUBNET" dev "$lan" src 192.168.2.1 table "$TABLE_WAN"
-  "$IP" route replace "$MODEM_SUBNET" dev "$wan" src 192.168.1.2 table "$TABLE_WAN"
-  "$IP" route replace default dev "$ppp" table "$TABLE_WAN"
+  ensure_ipv4_address "$wan" "$MODEM_ADDRESS"
+  wan_route_snapshot="$("$IP" -4 route show table "$TABLE_WAN" 2>/dev/null)" || wan_route_snapshot=''
+  if ! managed_route_present "$LAN_SUBNET" "$lan" 192.168.2.1 "$wan_route_snapshot"; then
+    "$IP" route replace "$LAN_SUBNET" dev "$lan" src 192.168.2.1 table "$TABLE_WAN"
+  fi
+  if ! managed_route_present "$MODEM_SUBNET" "$wan" 192.168.1.2 "$wan_route_snapshot"; then
+    "$IP" route replace "$MODEM_SUBNET" dev "$wan" src 192.168.1.2 table "$TABLE_WAN"
+  fi
+  if ! managed_route_present default "$ppp" '' "$wan_route_snapshot"; then
+    "$IP" route replace default dev "$ppp" table "$TABLE_WAN"
+  fi
   if ! "$IP" route show table main 2>/dev/null | grep -q "^default .*dev $ppp.*metric 50"; then
     "$IP" route replace default dev "$ppp" table main metric 50
   fi
@@ -1793,7 +1838,7 @@ daemon() {
     # or the optical modem is down. This makes 192.168.2.1 and DHCP reachable
     # from the downstream AP during recovery.
     if has_carrier "$lan"; then
-      if ! "$IP" -4 addr show dev "$lan" 2>/dev/null | grep -q "$LAN_ADDRESS"; then
+      if ! ipv4_address_present "$lan" "$LAN_ADDRESS"; then
         sanitize_lan_ipv4 "$lan"
         "$IP" addr replace "$LAN_ADDRESS" dev "$lan"
       fi
@@ -1824,8 +1869,7 @@ daemon() {
         # to eliminate CPU spikes and avoid constant route netlink churn
         if [ "$reconcile_counter" -ge 6 ]; then
           reconcile_counter=0
-          "$IP" addr replace "$LAN_ADDRESS" dev "$lan"
-          "$IP" addr replace "$MODEM_ADDRESS" dev "$wan"
+          ensure_ipv4_address "$lan" "$LAN_ADDRESS"
           apply_ppp_queue "$ppp"
           apply_routes "$wan" "$lan" "$ppp"
           reconcile_lan_data_plane "$lan"

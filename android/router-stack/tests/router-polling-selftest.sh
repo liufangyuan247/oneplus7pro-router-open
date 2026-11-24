@@ -63,4 +63,14 @@ printf '%s\n' "$$" > "$TEST_ROOT/pid"
 pid_alive "$TEST_ROOT/pid"
 printf '999999\n' > "$TEST_ROOT/pid"
 ! pid_alive "$TEST_ROOT/pid"
+managed_route_present 192.168.2.0/24 eth1 192.168.2.1 '192.168.2.0/24 dev eth1 scope link src 192.168.2.1'
+managed_route_present default ppp0 '' 'default dev ppp0 scope link'
+managed_route_present default ppp0 '' 'default dev ppp0 proto boot metric 0'
+! managed_route_present default ppp0 '' 'default dev ppp01 scope link'
+! managed_route_present default ppp0 '' 'default dev ppp0 metric 50'
+! managed_route_present default ppp0 '' 'default via 192.168.1.1 dev ppp0'
+! managed_route_present default ppp0 '' 'default dev ppp0 src 192.168.1.2'
+! managed_route_present 192.168.2.0/24 eth1 192.168.2.1 '192.168.2.0/24 dev eth1 src 192.168.2.12'
+! managed_route_present 192.168.2.0/24 eth1 192.168.2.1 '192.168.2.0/24 dev eth0 src 192.168.2.1'
+! managed_route_present default ppp0 '' ''
 echo ROUTER_POLLING_TEST_OK
