@@ -76,6 +76,21 @@ log() {
   printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"
 }
 
+# All callers use one-line sysfs values, pidfiles or runtime state. Shell
+# builtins avoid loading a separate cat process for each five-second check.
+read_line() {
+  line_value=''
+  { IFS= read -r line_value < "$1"; } 2>/dev/null || [ -n "$line_value" ] || return 1
+  printf '%s\n' "$line_value"
+}
+
+lower_mac() {
+  case "$1" in
+    *[A-F]*) printf '%s' "$1" | /system/bin/tr 'A-F' 'a-f' ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 trim_log_in_place() {
   target="$1"
   [ -f "$target" ] || return 0
@@ -165,11 +180,12 @@ resolve_wan_iface() {
   # The CM418 built-in RTL8153 is the permanent WAN. Its hardware MAC is the
   # strongest identity and survives Android ethX renumbering and LAN swaps.
   if [ -n "${WAN_MAC:-}" ]; then
+    expected_mac="$(lower_mac "$WAN_MAC")"
     for path in "$NET_CLASS"/eth*; do
       [ -e "$path" ] || continue
-      mac="$(cat "$path/address" 2>/dev/null | tr 'A-F' 'a-f')"
-      [ "$mac" = "$(printf '%s' "$WAN_MAC" | tr 'A-F' 'a-f')" ] && {
-        basename "$path"
+      mac="$(read_line "$path/address" || true)"
+      [ "$mac" = "$expected_mac" ] && {
+        printf '%s\n' "${path##*/}"
         return 0
       }
     done
@@ -181,7 +197,7 @@ resolve_wan_iface() {
     for path in "$NET_CLASS"/eth*; do
       [ -e "$path" ] || continue
       [ "$(iface_usb_port "$path" 2>/dev/null)" = "$WAN_USB_PORT" ] && {
-        basename "$path"
+        printf '%s\n' "${path##*/}"
         return 0
       }
     done
@@ -193,7 +209,7 @@ resolve_wan_iface() {
   for path in "$NET_CLASS"/eth*; do
     [ -e "$path" ] || continue
     if [ "$(iface_vidpid "$path")" = "${WAN_VIDPID:-missing}" ]; then
-      selected="$(basename "$path")"
+      selected="${path##*/}"
       count=$((count + 1))
     fi
   done
@@ -209,7 +225,7 @@ resolve_lan_iface() {
   # Ethernet interface is LAN regardless of its chipset, VID/PID or ethX name.
   for path in "$NET_CLASS"/eth*; do
     [ -e "$path" ] || continue
-    iface="$(basename "$path")"
+    iface="${path##*/}"
     [ "$iface" = "$wan" ] && continue
     selected="$iface"
     count=$((count + 1))
@@ -223,12 +239,13 @@ resolve_lan_iface() {
   # If extra USB NICs are attached, retain the previous LAN by MAC when it is
   # still present; otherwise accept exactly one linked non-WAN interface.
   if [ -n "${LAN_MAC:-}" ]; then
+    expected_mac="$(lower_mac "$LAN_MAC")"
     for path in "$NET_CLASS"/eth*; do
       [ -e "$path" ] || continue
-      iface="$(basename "$path")"
+      iface="${path##*/}"
       [ "$iface" = "$wan" ] && continue
-      mac="$(cat "$path/address" 2>/dev/null | tr 'A-F' 'a-f')"
-      [ "$mac" = "$(printf '%s' "$LAN_MAC" | tr 'A-F' 'a-f')" ] && {
+      mac="$(read_line "$path/address" || true)"
+      [ "$mac" = "$expected_mac" ] && {
         echo "$iface"
         return 0
       }
@@ -239,12 +256,26 @@ resolve_lan_iface() {
 }
 
 has_carrier() {
-  [ -n "$1" ] && [ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = "1" ]
+  [ -n "$1" ] && [ "$(read_line "$NET_CLASS/$1/carrier" || true)" = "1" ]
+}
+
+ensure_link_up() {
+  link_flags="$(read_line "$NET_CLASS/$1/flags" || true)"
+  link_flags="${link_flags#0x}"
+  case "$link_flags" in
+    ''|*[!0-9a-fA-F]*) ;;
+    *)
+      # Repeated RTM_NEWLINK writes also wake Android netd/Ethernet listeners.
+      # Inspect IFF_UP every cycle and write only when it actually needs repair.
+      [ "$((0x$link_flags & 1))" -eq 0 ] || return 0
+      ;;
+  esac
+  "$IP" link set "$1" up 2>/dev/null || true
 }
 
 pid_alive() {
   [ -s "$1" ] || return 1
-  pid="$(cat "$1" 2>/dev/null)"
+  pid="$(read_line "$1")"
   process_alive_pid "$pid"
 }
 
@@ -253,7 +284,12 @@ process_alive_pid() {
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   kill -0 "$pid" 2>/dev/null || return 1
   [ -r "/proc/$pid/stat" ] || return 1
-  [ "$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" != Z ]
+  process_stat="$(read_line "/proc/$pid/stat" || true)"
+  [ -n "$process_stat" ] || return 1
+  # comm can contain spaces or ')'; the final ') ' precedes state/ppid.
+  process_fields="${process_stat##*) }"
+  process_state="${process_fields%% *}"
+  [ -n "$process_state" ] && [ "$process_state" != Z ]
 }
 
 read_process_cmdline() {
@@ -263,7 +299,7 @@ read_process_cmdline() {
   # A procfs cmdline descriptor on this kernel can spin forever when its
   # process exits during the read. Never let identity checks pin a CPU or
   # wedge the network manager.
-  /system/bin/timeout 2 tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null
+  /system/bin/timeout 2 /system/bin/tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null
 }
 
 write_pidfile() {
@@ -282,10 +318,10 @@ manager_process_matches() {
 }
 
 release_manager_lock() {
-  if [ "$(cat "$PIDFILE" 2>/dev/null || true)" = "$$" ]; then
+  if [ "$(read_line "$PIDFILE" 2>/dev/null || true)" = "$$" ]; then
     rm -f "$PIDFILE"
   fi
-  if [ "$(cat "$MANAGER_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+  if [ "$(read_line "$MANAGER_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
     rm -f "$MANAGER_LOCK/pid"
     rmdir "$MANAGER_LOCK" 2>/dev/null || true
   fi
@@ -293,7 +329,7 @@ release_manager_lock() {
 
 acquire_manager_lock() {
   mkdir -p "$RUNTIME"
-  existing="$(cat "$PIDFILE" 2>/dev/null || true)"
+  existing="$(read_line "$PIDFILE" 2>/dev/null || true)"
   if manager_process_matches "$existing"; then
     return 1
   fi
@@ -304,7 +340,7 @@ acquire_manager_lock() {
       write_pidfile "$$" "$PIDFILE"
       return 0
     fi
-    owner="$(cat "$MANAGER_LOCK/pid" 2>/dev/null || true)"
+    owner="$(read_line "$MANAGER_LOCK/pid" 2>/dev/null || true)"
     if manager_process_matches "$owner"; then
       return 1
     fi
@@ -343,11 +379,11 @@ find_managed_dnsmasq_pid() {
 
 managed_dnsmasq_alive() {
   [ -s "$DNSMASQ_PID" ] || return 1
-  managed_dnsmasq_pid_matches "$(cat "$DNSMASQ_PID" 2>/dev/null || true)"
+  managed_dnsmasq_pid_matches "$(read_line "$DNSMASQ_PID" 2>/dev/null || true)"
 }
 
 adopt_dnsmasq() {
-  tracked="$(cat "$DNSMASQ_PID" 2>/dev/null || true)"
+  tracked="$(read_line "$DNSMASQ_PID" 2>/dev/null || true)"
   if managed_dnsmasq_pid_matches "$tracked"; then
     return 0
   fi
@@ -480,8 +516,8 @@ start_ppp() {
   wan="$1"
   [ ! -f "$PPPOE_SWITCH_LOCK" ] || return 0
   if pid_alive "$PPPD_PID"; then
-    pid="$(cat "$PPPD_PID" 2>/dev/null || true)"
-    backend_pid="$(cat "$PPPOE_BACKEND_PID" 2>/dev/null || true)"
+    pid="$(read_line "$PPPD_PID" 2>/dev/null || true)"
+    backend_pid="$(read_line "$PPPOE_BACKEND_PID" 2>/dev/null || true)"
     if managed_pppd_pid_matches "$pid" && \
        { [ -z "$backend_pid" ] || [ "$backend_pid" = "$pid" ]; }; then
       return 0
@@ -511,7 +547,7 @@ start_ppp() {
       return 1
     fi
   fi
-  previous_backend="$(cat "$PPPOE_BACKEND_STATE" 2>/dev/null || true)"
+  previous_backend="$(read_line "$PPPOE_BACKEND_STATE" 2>/dev/null || true)"
   if [ "$previous_backend" != "$backend" ]; then
     printf '%s\n' "$backend" > "$PPPOE_BACKEND_STATE"
     date +%s > "$PPPOE_BACKEND_STARTED_AT"
@@ -577,13 +613,13 @@ kernel_pppoe_transport_ready() {
 
 record_pppoe_backend_success() {
   ppp="$1"
-  [ "$(cat "$PPPOE_BACKEND_STATE" 2>/dev/null || true)" = kernel ] || return 0
+  [ "$(read_line "$PPPOE_BACKEND_STATE" 2>/dev/null || true)" = kernel ] || return 0
   [ ! -f "$PPPOE_KERNEL_PROVEN" ] || {
     rm -f "$PPPOE_KERNEL_DOWN_SINCE"
     return 0
   }
-  started_pid="$(cat "$PPPOE_BACKEND_PID" 2>/dev/null || true)"
-  tracked_pid="$(cat "$PPPD_PID" 2>/dev/null || true)"
+  started_pid="$(read_line "$PPPOE_BACKEND_PID" 2>/dev/null || true)"
+  tracked_pid="$(read_line "$PPPD_PID" 2>/dev/null || true)"
   [ -n "$started_pid" ] && [ "$started_pid" = "$tracked_pid" ] || return 1
   managed_pppd_pid_matches "$started_pid" || return 1
   "$IP" -4 addr show dev "$ppp" 2>/dev/null | grep -q 'inet ' || return 1
@@ -602,17 +638,17 @@ pppoe_switch_holdoff() {
 fallback_unproven_kernel_pppoe() {
   wan="$1"
   [ "$PPPOE_BACKEND" = auto ] || return 1
-  [ "$(cat "$PPPOE_BACKEND_STATE" 2>/dev/null || true)" = kernel ] || return 1
+  [ "$(read_line "$PPPOE_BACKEND_STATE" 2>/dev/null || true)" = kernel ] || return 1
   now="$(date +%s)"
   if [ -f "$PPPOE_KERNEL_PROVEN" ]; then
     if [ ! -s "$PPPOE_KERNEL_DOWN_SINCE" ]; then
       printf '%s\n' "$now" > "$PPPOE_KERNEL_DOWN_SINCE"
       return 1
     fi
-    started="$(cat "$PPPOE_KERNEL_DOWN_SINCE" 2>/dev/null || echo 0)"
+    started="$(read_line "$PPPOE_KERNEL_DOWN_SINCE" 2>/dev/null || echo 0)"
     threshold="$PPPOE_KERNEL_DOWN_FALLBACK_SECONDS"
   else
-    started="$(cat "$PPPOE_BACKEND_STARTED_AT" 2>/dev/null || echo 0)"
+    started="$(read_line "$PPPOE_BACKEND_STARTED_AT" 2>/dev/null || echo 0)"
     threshold="$PPPOE_KERNEL_TRIAL_SECONDS"
   fi
   [ "$started" -gt 0 ] 2>/dev/null || return 1
@@ -630,7 +666,7 @@ fallback_unproven_kernel_pppoe() {
 find_ppp() {
   for path in /sys/class/net/ppp*; do
     [ -e "$path" ] || continue
-    iface="$(basename "$path")"
+    iface="${path##*/}"
     if "$IP" -4 addr show dev "$iface" 2>/dev/null | grep -q 'inet '; then
       echo "$iface"
       return 0
@@ -824,10 +860,10 @@ update_static_lease() {
     echo "failed to publish static leases; previous configuration restored" >&2
     return 1
   fi
-  if managed_dnsmasq_alive && { ! kill -HUP "$(cat "$DNSMASQ_PID")" 2>/dev/null || ! kill -0 "$(cat "$DNSMASQ_PID")" 2>/dev/null; }; then
+  if managed_dnsmasq_alive && { ! kill -HUP "$(read_line "$DNSMASQ_PID")" 2>/dev/null || ! kill -0 "$(read_line "$DNSMASQ_PID")" 2>/dev/null; }; then
     cp -p "$backup" "$DNSMASQ_HOSTS_FILE"
     write_static_hosts_runtime
-    kill -HUP "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
+    kill -HUP "$(read_line "$DNSMASQ_PID")" 2>/dev/null || true
     echo "dnsmasq refresh failed; previous static leases restored" >&2
     return 1
   fi
@@ -906,7 +942,7 @@ start_dnsmasq() {
 stop_dnsmasq() {
   adopt_dnsmasq >/dev/null 2>&1 || true
   if managed_dnsmasq_alive; then
-    kill "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
+    kill "$(read_line "$DNSMASQ_PID")" 2>/dev/null || true
     sleep 1
   fi
   rm -f "$DNSMASQ_PID" "$DNSMASQ_POLICY" "$DNSMASQ_STATIC_SCHEMA_PID"
@@ -917,7 +953,7 @@ ensure_dnsmasq() {
   policy="$2"
   case "$policy" in mihomo|direct) ;; *) return 2 ;; esac
   adopt_dnsmasq >/dev/null 2>&1 || true
-  current="$(cat "$DNSMASQ_POLICY" 2>/dev/null || true)"
+  current="$(read_line "$DNSMASQ_POLICY" 2>/dev/null || true)"
   if managed_dnsmasq_alive && [ "$current" = "$policy" ]; then
     return 0
   fi
@@ -1559,11 +1595,11 @@ remove_routes() {
 publish_interfaces() {
   wan="$1" lan="$2" ppp="$3"
   desired="$wan $lan $ppp"
-  if [ "$(cat "$RUNTIME/interfaces" 2>/dev/null || true)" != "$desired" ]; then
+  if [ "$(read_line "$RUNTIME/interfaces" 2>/dev/null || true)" != "$desired" ]; then
     printf '%s\n' "$desired" > "$RUNTIME/interfaces"
   fi
   mkdir -p "$(dirname "$ADMIN_INTERFACES")"
-  if [ "$(cat "$ADMIN_INTERFACES" 2>/dev/null || true)" != "$desired" ]; then
+  if [ "$(read_line "$ADMIN_INTERFACES" 2>/dev/null || true)" != "$desired" ]; then
     printf '%s\n' "$desired" > "$ADMIN_INTERFACES.new.$$"
     chown 10207:10207 "$ADMIN_INTERFACES.new.$$" 2>/dev/null || true
     chmod 600 "$ADMIN_INTERFACES.new.$$" 2>/dev/null || true
@@ -1610,7 +1646,7 @@ cleanup_runtime() {
   remove_jump6 filter FORWARD OP7_FORWARD
   remove_routes
   if [ -s "$RUNTIME/interfaces" ]; then
-    set -- $(cat "$RUNTIME/interfaces")
+    set -- $(read_line "$RUNTIME/interfaces")
     [ -n "${1:-}" ] && "$IP" addr del "$MODEM_ADDRESS" dev "$1" 2>/dev/null || true
     [ -n "${2:-}" ] && "$IP" addr del "$LAN_ADDRESS" dev "$2" 2>/dev/null || true
   fi
@@ -1658,7 +1694,7 @@ status() {
   echo "role_policy=cm418-wan/auto-lan wan_usb=${WAN_USB_PORT:-unknown}"
   echo "ppp=${ppp:-down}"
   echo "pppoe_backend_requested=${PPPOE_BACKEND:-auto}"
-  echo "pppoe_backend_active=$(cat "$PPPOE_BACKEND_STATE" 2>/dev/null || echo down)"
+  echo "pppoe_backend_active=$(read_line "$PPPOE_BACKEND_STATE" 2>/dev/null || echo down)"
   echo "pppoe_kernel_plugin=$([ -s "${PPPOE_PLUGIN:-$PPPOE_PLUGIN_DEFAULT}" ] && echo available || echo missing)"
   echo "pppoe_kernel_session=$(awk 'NR > 1 { found=1 } END { print found ? "active" : "inactive" }' /proc/net/pppoe 2>/dev/null || echo unavailable)"
   echo "tcp_congestion_control=$(cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null || echo unavailable)"
@@ -1674,7 +1710,7 @@ status() {
     echo "ppp_qdisc=unavailable"
   fi
   echo "dnsmasq=$([ -s "$DNSMASQ_PID" ] && cat "$DNSMASQ_PID" || echo down)"
-  echo "dns_policy=$(cat "$DNSMASQ_POLICY" 2>/dev/null || echo unknown)"
+  echo "dns_policy=$(read_line "$DNSMASQ_POLICY" 2>/dev/null || echo unknown)"
   echo "lan_data_plane=$(cat "$DATA_PLANE_STATE" 2>/dev/null || echo direct)"
   mode="$(mihomo_mode)"
   echo "traffic_engine=mihomo"
@@ -1708,7 +1744,7 @@ daemon() {
   log "network manager started"
   if managed_dnsmasq_alive && {
        [ ! -s "$DNSMASQ_POLICY" ] ||
-       [ "$(cat "$DNSMASQ_STATIC_SCHEMA_PID" 2>/dev/null || true)" != "$(cat "$DNSMASQ_PID")" ];
+       [ "$(read_line "$DNSMASQ_STATIC_SCHEMA_PID" 2>/dev/null || true)" != "$(read_line "$DNSMASQ_PID")" ];
      }; then
     # A live upgrade has no policy marker or the running dnsmasq predates the
     # hot-reloadable static-hosts schema. Restart once so the process actually
@@ -1719,7 +1755,7 @@ daemon() {
   maintenance_loops=0
   reconcile_counter=0
   while :; do
-    if [ "$(cat "$MANAGER_LOCK/pid" 2>/dev/null || true)" != "$$" ]; then
+    if [ "$(read_line "$MANAGER_LOCK/pid" 2>/dev/null || true)" != "$$" ]; then
       log "manager lock ownership lost; exiting"
       exit 0
     fi
@@ -1750,8 +1786,8 @@ daemon() {
       sleep 10
       continue
     fi
-    "$IP" link set "$wan" up 2>/dev/null || true
-    "$IP" link set "$lan" up 2>/dev/null || true
+    ensure_link_up "$wan"
+    ensure_link_up "$lan"
 
     # Keep the LAN management plane available even while PPPoE is negotiating
     # or the optical modem is down. This makes 192.168.2.1 and DHCP reachable
@@ -1777,7 +1813,7 @@ daemon() {
       ppp="$(find_ppp 2>/dev/null || true)"
     fi
     if [ -n "$ppp" ] && has_carrier "$lan"; then
-      current="$(cat "$RUNTIME/interfaces" 2>/dev/null || true)"
+      current="$(read_line "$RUNTIME/interfaces" 2>/dev/null || true)"
       desired="$wan $lan $ppp"
       if [ ! -f "$ACTIVE" ] || [ "$current" != "$desired" ] || ! firewall_ready; then
         activate_router "$wan" "$lan" "$ppp"

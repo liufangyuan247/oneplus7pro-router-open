@@ -8,6 +8,12 @@ CHAIN=OP7_ADGUARD
 PIDFILE="$BASE/guard.pid"
 STATE="$BASE/state"
 
+# Keep the shell implementation as a safe fallback for an incomplete install.
+# The persistent worker imports the health probe once; checks still run every 5s.
+if [ -r "$BASE/dns-guard.py" ]; then
+    exec "$PREFIX/bin/python" "$BASE/dns-guard.py" "${1:-run}"
+fi
+
 remove_rules() {
     while "$IPTABLES" -w 2 -t nat -C PREROUTING -j "$CHAIN" 2>/dev/null; do
         "$IPTABLES" -w 2 -t nat -D PREROUTING -j "$CHAIN" || break

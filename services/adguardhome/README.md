@@ -18,6 +18,23 @@ LAN 设备 -> 路由器 IPv4:53 -> PREROUTING REDIRECT :5354
 
 独立 runit 服务 `adguardhome-dns` 每 5 秒检查本地 DNS。健康则维护专用 `OP7_ADGUARD` 链，故障则撤销入口，让原有 dnsmasq 直接响应。服务恢复后自动重新接入。守护程序作为 root 运行，包装脚本显式转发停止信号；AdGuard 主程序初始化后作为 Termux 用户运行。
 
+`dns-guard.sh` 优先启动常驻的 `dns-guard.py`，只导入一次可复用的
+`dns-health.py`，通过 ioctl 读取当前 LAN 主 IPv4 地址，避免每轮启动 Python、ip
+和 awk。每轮仍检查 UDP/TCP 规则和入口跳转，检测周期保持 5 秒，缺失规则会在下一轮
+修复。内核文件锁防止重复启动；停止时撤销 DNS 入口，保留 dnsmasq 回退。部署新版
+时必须等待旧 root 守护完全退出并结束清理，不能只以 runit 包装进程退出作为依据。
+若常驻程序文件缺失，包装脚本仍可使用原来的 shell 实现。
+
+在 Termux 运行 `python -B test_dns_guard.py` 做故障/恢复测试。root 隔离集成测试为：
+
+```sh
+original_netns=$(readlink /proc/self/ns/net)
+/system/bin/unshare -n "$PREFIX/bin/python" -B dns-guard-netns-selftest.py "$original_netns"
+```
+
+该测试拒绝在原网络命名空间运行，只在临时虚拟 LAN 中验证实际 DNS 客户端流量、
+故障回退、恢复、规则修复、地址变更和守护进程启停，不修改生产网络。
+
 保留自定义健康规则 `||adguard-health.invalid^$dnsrewrite=NOERROR;A;127.0.0.1`。删除此规则会使守护程序安全绕过过滤。关闭 AdGuard 保护也可能进入绕过状态。
 
 此部署覆盖使用 DHCP 提供的路由器 IPv4 DNS 的设备。客户端自行使用加密 DNS、VPN 自带 DNS 或其他 IPv6 DNS 时可能绕过。DNS 过滤不能移除网页中的所有广告元素，或与视频共用域名的插播广告。

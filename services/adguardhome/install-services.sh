@@ -9,7 +9,7 @@ test -s "$HOME/router-data/adguardhome/AdGuardHome.yaml"
 test ! -e "$SERVICES/adguardhome"
 test ! -e "$SERVICES/adguardhome-dns"
 
-"$PREFIX/bin/su" -c "mkdir -p /data/adb/router-adguardhome; chmod 700 /data/adb/router-adguardhome; cp '$STAGE/dns-guard.sh' /data/adb/router-adguardhome/dns-guard; cp '$STAGE/dns-health.py' /data/adb/router-adguardhome/dns-health.py; chown -R root:root /data/adb/router-adguardhome; chmod 700 /data/adb/router-adguardhome/dns-guard; chmod 600 /data/adb/router-adguardhome/dns-health.py; /system/bin/sh -n /data/adb/router-adguardhome/dns-guard"
+"$PREFIX/bin/su" -c "mkdir -p /data/adb/router-adguardhome; chmod 700 /data/adb/router-adguardhome; cp '$STAGE/dns-guard.sh' /data/adb/router-adguardhome/dns-guard; cp '$STAGE/dns-health.py' /data/adb/router-adguardhome/dns-health.py; cp '$STAGE/dns-guard.py' /data/adb/router-adguardhome/dns-guard.py; chown -R root:root /data/adb/router-adguardhome; chmod 700 /data/adb/router-adguardhome/dns-guard; chmod 600 /data/adb/router-adguardhome/dns-health.py /data/adb/router-adguardhome/dns-guard.py; /system/bin/sh -n /data/adb/router-adguardhome/dns-guard"
 
 for name in adguardhome adguardhome-dns; do
     dir="$STAGE/$name.service"
